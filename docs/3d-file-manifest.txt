@@ -1,0 +1,41 @@
+NET30 3D VITAMIN BOTTLE MANIFEST
+================================
+
+PRODUCT DATA
+------------
+app/src/landing-copy.ts
+app/src/main.tsx
+app/src/pricing-model.ts
+app/src/sku-data.ts
+
+DESIGN-SYSTEM BRIDGE
+--------------------
+docs/design-system/Storefront.tsx
+docs/design-system/entry.ts
+docs/design-system/index.tsx
+docs/design-system/render-label-texture.ts
+docs/design-system/schema.ts
+
+WEB 3D ASSET
+------------
+app/public/assets/3d/vitamin-bottle/README.md
+app/public/assets/3d/vitamin-bottle/model/config.js
+app/public/assets/3d/vitamin-bottle/model/geometry.js
+app/public/assets/3d/vitamin-bottle/model/label-texture.js
+app/public/assets/3d/vitamin-bottle/model/math.js
+app/public/assets/3d/vitamin-bottle/model/shaders.js
+app/public/assets/3d/vitamin-bottle/model/vitamin-bottle-model.js
+app/public/assets/3d/vitamin-bottle/shared/camera-controls.js
+app/public/assets/3d/vitamin-bottle/shared/sku-bridge.js
+app/public/assets/3d/vitamin-bottle/editor/editor.css
+app/public/assets/3d/vitamin-bottle/editor/editor.js
+app/public/assets/3d/vitamin-bottle/editor/index.html
+app/public/assets/3d/vitamin-bottle/output/index.html
+app/public/assets/3d/vitamin-bottle/output/viewer.css
+app/public/assets/3d/vitamin-bottle/output/viewer.js
+
+DOCUMENTATION
+-------------
+docs/3d-file-manifest.txt
+docs/3d-model-integration.md
+docs/3d-validation.md

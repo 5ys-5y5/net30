@@ -41,12 +41,12 @@ try {
   }, { once: true });
 
   model.ready.then(() => {
-    sourceStatus.textContent = window.parent === window ? "기본 라벨" : "SKU 연결 대기";
+    sourceStatus.textContent = window.parent === window ? "라벨 동기화 대기" : "SKU 연결 대기";
     document.documentElement.dataset.modelReady = "true";
   }).catch(showError);
 
   canvas.addEventListener("net30-model-change", (event) => {
-    if (event.detail?.state?.labelMode === "sku") sourceStatus.textContent = "SKU 실시간 적용";
+    if (event.detail?.state?.labelMode === "rendered") sourceStatus.textContent = "웹 라벨 직접 적용";
   });
   canvas.addEventListener("net30-model-error", (event) => showError(event.detail));
 } catch (error) {

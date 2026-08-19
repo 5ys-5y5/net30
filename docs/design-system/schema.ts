@@ -7,15 +7,16 @@ export type ProductVisual =
       alt: string;
     };
 
+export type RenderedLabelTexture = {
+  dataUrl: string;
+  pixelWidth: number;
+  pixelHeight: number;
+  sourceLabels: readonly [string, string];
+};
+
 export type ThreeDLabelPayload = {
-  brand: string;
-  productName: string;
-  subtitle: string;
-  dose: string;
-  quantity: string;
-  accentColor: string;
-  koreanLabelLines: readonly string[];
-  priceStructureLines: readonly string[];
+  skuId: string;
+  renderedLabel: RenderedLabelTexture;
 };
 
 export type PrimaryOption = {

@@ -1,3 +1,7 @@
+const EDITOR_TEXTURE_WIDTH = 2048;
+const EDITOR_TEXTURE_HEIGHT = 944;
+const RENDERED_TEXTURE_EDGE_LIMIT = 3072;
+
 function createTextureFromCanvas(gl, canvas) {
   const texture = gl.createTexture();
   if (!texture) throw new Error("WebGL texture allocation failed.");
@@ -44,24 +48,12 @@ function roundRect(context, x, y, width, height, radius) {
   context.closePath();
 }
 
-function fitImage(context, image, x, y, width, height) {
-  const scale = Math.min(width / image.width, height / image.height);
-  const drawWidth = image.width * scale;
-  const drawHeight = image.height * scale;
-  context.drawImage(
-    image,
-    x + (width - drawWidth) / 2,
-    y + (height - drawHeight) / 2,
-    drawWidth,
-    drawHeight,
-  );
-}
-
 function loadImage(source) {
   return new Promise((resolve, reject) => {
     const image = new Image();
+    image.decoding = "async";
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Unable to load label image: ${source}`));
+    image.onerror = () => reject(new Error("Unable to load the requested label texture."));
     image.src = source;
   });
 }
@@ -90,8 +82,7 @@ function splitWrappedLines(context, text, maxWidth, maxLines = Number.POSITIVE_I
     if (current) lines.push(current);
     if (lines.length >= maxLines) break;
   }
-  if (lines.length > maxLines) return lines.slice(0, maxLines);
-  return lines;
+  return lines.slice(0, maxLines);
 }
 
 function fitText(context, text, maxWidth, startSize, minSize, weight = 800) {
@@ -102,168 +93,121 @@ function fitText(context, text, maxWidth, startSize, minSize, weight = 800) {
     if (context.measureText(String(text)).width <= maxWidth) return size;
     size -= 2;
   } while (size >= minSize);
+  context.font = `${weight} ${minSize}px ${family}`;
   return minSize;
+}
+
+function clearLabel(context, canvas, color = "#ffffff") {
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = color;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawBlankLabel(context, canvas) {
+  clearLabel(context, canvas);
+  context.strokeStyle = "#e5e7eb";
+  context.lineWidth = 3;
+  context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+}
+
+function resizeCanvas(canvas, width, height) {
+  const nextWidth = Math.max(1, Math.round(width));
+  const nextHeight = Math.max(1, Math.round(height));
+  if (canvas.width === nextWidth && canvas.height === nextHeight) return;
+  canvas.width = nextWidth;
+  canvas.height = nextHeight;
+}
+
+function resetEditorTextureSize(canvas) {
+  resizeCanvas(canvas, EDITOR_TEXTURE_WIDTH, EDITOR_TEXTURE_HEIGHT);
+}
+
+function drawImageContained(context, canvas, image) {
+  clearLabel(context, canvas);
+  const scale = Math.min(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
+  const width = image.naturalWidth * scale;
+  const height = image.naturalHeight * scale;
+  const x = (canvas.width - width) / 2;
+  const y = (canvas.height - height) / 2;
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(image, x, y, width, height);
+}
+
+function drawRenderedLabel(context, canvas, image, maxTextureEdge) {
+  const sourceWidth = Math.max(1, image.naturalWidth);
+  const sourceHeight = Math.max(1, image.naturalHeight);
+  const scale = Math.min(1, maxTextureEdge / sourceWidth, maxTextureEdge / sourceHeight);
+  resizeCanvas(canvas, sourceWidth * scale, sourceHeight * scale);
+  clearLabel(context, canvas);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
 }
 
 function drawTextLabel(context, canvas, state) {
   const { width, height } = canvas;
-  context.clearRect(0, 0, width, height);
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, width, height);
+  clearLabel(context, canvas);
   context.fillStyle = state.accentColor;
   context.fillRect(0, 0, width, 34);
 
   context.fillStyle = "#111827";
-  context.font = '700 44px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  context.fillText(String(state.brand).toUpperCase(), 78, 105);
-  fitText(context, state.productName, 1080, 106, 56, 900);
-  context.fillText(state.productName, 74, 242);
+  context.font = '700 54px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.fillText(String(state.brand).toUpperCase(), 92, 132);
+  fitText(context, state.productName, 1390, 132, 68, 900);
+  context.fillText(state.productName, 88, 316);
 
   context.fillStyle = "#4b5563";
-  context.font = '500 35px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  const lines = splitWrappedLines(context, state.subtitle, 920, 3);
-  lines.forEach((line, index) => context.fillText(line, 78, 320 + index * 49));
+  context.font = '500 43px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
+  const lines = splitWrappedLines(context, state.subtitle, 1180, 3);
+  lines.forEach((line, index) => context.fillText(line, 92, 410 + index * 58));
 
   context.fillStyle = "#111827";
-  context.font = '800 58px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  context.fillText(state.dose, 78, 585);
+  context.font = '800 72px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.fillText(state.dose, 92, 740);
   context.fillStyle = "#6b7280";
-  context.font = '700 33px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  context.fillText(state.quantity, 82, 645);
+  context.font = '700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.fillText(state.quantity, 96, 812);
 
   context.save();
-  context.translate(1290, 360);
+  context.translate(1640, 450);
   context.rotate(-0.32);
   context.fillStyle = state.accentColor;
-  roundRect(context, -145, -54, 290, 108, 54);
+  roundRect(context, -182, -68, 364, 136, 68);
   context.fill();
   context.beginPath();
-  context.rect(0, -54, 145, 108);
+  context.rect(0, -68, 182, 136);
   context.clip();
   context.fillStyle = "#fff3b5";
-  roundRect(context, -145, -54, 290, 108, 54);
+  roundRect(context, -182, -68, 364, 136, 68);
   context.fill();
   context.restore();
+
   context.fillStyle = "#111827";
-  context.font = '800 27px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  context.font = '800 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   context.textAlign = "center";
-  context.fillText("VITAMIN", 1290, 508);
+  context.fillText("VITAMIN", 1640, 637);
   context.textAlign = "left";
   context.strokeStyle = "#e5e7eb";
   context.lineWidth = 3;
   context.strokeRect(2, 2, width - 4, height - 4);
 }
 
-function extractPriceRows(lines) {
-  const expanded = [];
-  for (const rawLine of Array.isArray(lines) ? lines : []) {
-    String(rawLine).split("\n").forEach((line, index) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      expanded.push({ text: trimmed, detail: index > 0 });
-    });
-  }
-  return expanded;
-}
-
-function drawSkuLabel(context, canvas, state) {
-  const { width, height } = canvas;
-  const accent = state.accentColor || "#111827";
-  context.clearRect(0, 0, width, height);
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, width, height);
-  context.fillStyle = accent;
-  context.fillRect(0, 0, width, 26);
-
-  const leftX = 58;
-  const splitX = 815;
-  context.strokeStyle = "#d1d5db";
-  context.lineWidth = 2;
-  context.beginPath();
-  context.moveTo(splitX, 64);
-  context.lineTo(splitX, height - 52);
-  context.stroke();
-
-  context.fillStyle = "#111827";
-  context.font = '800 40px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  context.fillText(String(state.brand || "NET30"), leftX, 92);
-  fitText(context, state.productName, 680, 78, 46, 900);
-  const titleLines = splitWrappedLines(context, state.productName, 680, 2);
-  titleLines.forEach((line, index) => context.fillText(line, leftX, 188 + index * 82));
-
-  context.fillStyle = "#4b5563";
-  context.font = '600 29px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  splitWrappedLines(context, state.subtitle, 680, 2).forEach((line, index) => {
-    context.fillText(line, leftX, 352 + index * 40);
-  });
-
-  context.fillStyle = "#111827";
-  context.font = '800 34px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  context.fillText(state.dose || "", leftX, 475);
-  context.fillStyle = "#6b7280";
-  context.font = '700 26px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  context.fillText(state.quantity || "", leftX, 520);
-
-  const legalLines = (state.koreanLabelLines || []).filter(Boolean).slice(0, 5);
-  context.fillStyle = "#374151";
-  context.font = '500 21px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  legalLines.forEach((line, index) => {
-    const clipped = String(line).length > 58 ? `${String(line).slice(0, 57)}…` : String(line);
-    context.fillText(clipped, leftX, 582 + index * 29);
-  });
-
-  const rightX = splitX + 42;
-  const rightWidth = width - rightX - 48;
-  context.fillStyle = "#111827";
-  context.font = '900 45px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-  context.fillText("전체 가격 구조", rightX, 92);
-
-  const priceRows = extractPriceRows(state.priceStructureLines);
-  let y = 140;
-  let renderedRows = 0;
-  for (const row of priceRows) {
-    if (y > height - 46 || renderedRows >= 13) break;
-    if (row.detail) {
-      context.fillStyle = "#6b7280";
-      context.font = '500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif';
-      const clipped = row.text.length > 62 ? `${row.text.slice(0, 61)}…` : row.text;
-      context.fillText(`· ${clipped}`, rightX + 16, y);
-      y += 25;
-      continue;
-    }
-    const separatorIndex = row.text.indexOf(":");
-    const name = separatorIndex >= 0 ? row.text.slice(0, separatorIndex).trim() : row.text;
-    const amount = separatorIndex >= 0 ? row.text.slice(separatorIndex + 1).trim() : "";
-    const isTotal = /총 소비자가|소비자가/.test(name);
-    context.fillStyle = "#111827";
-    context.font = `${isTotal ? 900 : 700} ${isTotal ? 31 : 24}px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif`;
-    context.fillText(name, rightX, y);
-    context.textAlign = "right";
-    fitText(context, amount, rightWidth * 0.62, isTotal ? 31 : 24, 18, isTotal ? 900 : 700);
-    context.fillText(amount, rightX + rightWidth, y);
-    context.textAlign = "left";
-    context.strokeStyle = isTotal ? "#111827" : "#e5e7eb";
-    context.lineWidth = isTotal ? 3 : 1.5;
-    context.beginPath();
-    context.moveTo(rightX, y + 14);
-    context.lineTo(rightX + rightWidth, y + 14);
-    context.stroke();
-    y += isTotal ? 58 : 46;
-    renderedRows += 1;
-  }
-
-  context.strokeStyle = "#111827";
-  context.lineWidth = 3;
-  context.strokeRect(2, 2, width - 4, height - 4);
-}
-
-export function createLabelTextureRenderer(gl, providedLabelUrl) {
+export function createLabelTextureRenderer(gl) {
   const canvas = document.createElement("canvas");
-  canvas.width = 1600;
-  canvas.height = 740;
+  canvas.width = EDITOR_TEXTURE_WIDTH;
+  canvas.height = EDITOR_TEXTURE_HEIGHT;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Canvas 2D context is unavailable.");
+  drawBlankLabel(context, canvas);
   const texture = createTextureFromCanvas(gl, canvas);
+  const maxTextureEdge = Math.max(
+    1,
+    Math.min(
+      RENDERED_TEXTURE_EDGE_LIMIT,
+      Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || RENDERED_TEXTURE_EDGE_LIMIT,
+    ),
+  );
   let refreshSequence = 0;
 
   const commit = () => updateTexture(gl, texture, canvas);
@@ -271,40 +215,34 @@ export function createLabelTextureRenderer(gl, providedLabelUrl) {
   async function refresh(state) {
     const sequence = ++refreshSequence;
     if (state.labelMode === "text") {
+      resetEditorTextureSize(canvas);
       drawTextLabel(context, canvas, state);
       commit();
       return;
     }
-    if (state.labelMode === "sku") {
-      drawSkuLabel(context, canvas, state);
+
+    const source = state.labelMode === "rendered"
+      ? state.renderedLabelDataUrl
+      : state.labelMode === "custom"
+        ? state.customLabelImage
+        : "";
+
+    if (!source) {
+      resetEditorTextureSize(canvas);
+      drawBlankLabel(context, canvas);
       commit();
       return;
     }
 
-    const requested = state.labelMode === "custom" && state.customLabelImage
-      ? state.customLabelImage
-      : providedLabelUrl;
-    try {
-      const image = await loadImage(requested);
-      if (sequence !== refreshSequence) return;
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      fitImage(context, image, 12, 12, canvas.width - 24, canvas.height - 24);
-      commit();
-    } catch (error) {
-      if (requested !== providedLabelUrl) {
-        const fallback = await loadImage(providedLabelUrl);
-        if (sequence !== refreshSequence) return;
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.fillStyle = "#ffffff";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        fitImage(context, fallback, 12, 12, canvas.width - 24, canvas.height - 24);
-        commit();
-        return;
-      }
-      throw error;
+    const image = await loadImage(source);
+    if (sequence !== refreshSequence) return;
+    if (state.labelMode === "rendered") {
+      drawRenderedLabel(context, canvas, image, maxTextureEdge);
+    } else {
+      resetEditorTextureSize(canvas);
+      drawImageContained(context, canvas, image);
     }
+    commit();
   }
 
   return {

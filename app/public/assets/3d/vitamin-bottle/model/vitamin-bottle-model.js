@@ -1,4 +1,4 @@
-import { createModelState, PROVIDED_LABEL_URL } from "./config.js";
+import { createModelState } from "./config.js";
 import { createGeometryFactory } from "./geometry.js";
 import { createLabelTextureRenderer, createShadowTexture } from "./label-texture.js";
 import {
@@ -16,6 +16,10 @@ import {
   createCamera,
   resetCamera,
 } from "../shared/camera-controls.js";
+
+const LABEL_RADIUS = 1.258;
+const MIN_LABEL_HEIGHT = 0.35;
+const MAX_LABEL_HEIGHT = 2.25;
 
 const BOTTLE_PROFILE = [
   [0.0, -2.18],
@@ -36,6 +40,8 @@ const BOTTLE_PROFILE = [
 
 const LABEL_FIELDS = new Set([
   "labelMode",
+  "renderedLabelDataUrl",
+  "renderedLabelSourceId",
   "customLabelImage",
   "brand",
   "productName",
@@ -43,9 +49,9 @@ const LABEL_FIELDS = new Set([
   "dose",
   "quantity",
   "accentColor",
-  "koreanLabelLines",
-  "priceStructureLines",
 ]);
+
+const LABEL_MODES = new Set(["blank", "rendered", "text", "custom"]);
 
 const NUMERIC_FIELDS = new Set([
   "labelArc",
@@ -89,11 +95,11 @@ function normalizeStatePatch(patch) {
   if ("pillCount" in normalized) {
     normalized.pillCount = Math.max(0, Math.round(normalized.pillCount));
   }
-  for (const key of ["koreanLabelLines", "priceStructureLines"]) {
-    if (!(key in normalized)) continue;
-    normalized[key] = Array.isArray(normalized[key])
-      ? normalized[key].filter((line) => typeof line === "string")
-      : [];
+  if ("labelMode" in normalized && !LABEL_MODES.has(normalized.labelMode)) {
+    normalized.labelMode = "blank";
+  }
+  for (const key of ["renderedLabelDataUrl", "renderedLabelSourceId", "customLabelImage"]) {
+    if (key in normalized && typeof normalized[key] !== "string") delete normalized[key];
   }
   return normalized;
 }
@@ -104,7 +110,7 @@ export class VitaminBottleModel {
       throw new TypeError("VitaminBottleModel requires an HTMLCanvasElement.");
     }
     this.canvas = canvas;
-    this.state = createModelState(options.state);
+    this.state = createModelState(normalizeStatePatch(options.state || {}));
     this.camera = createCamera(options.camera);
     this.disposed = false;
     this.animationFrame = 0;
@@ -127,10 +133,7 @@ export class VitaminBottleModel {
     this.locations = locations;
     this.gl.useProgram(program);
     this.geometryFactory = createGeometryFactory(this.gl);
-    this.labelRenderer = createLabelTextureRenderer(
-      this.gl,
-      options.providedLabelUrl || PROVIDED_LABEL_URL,
-    );
+    this.labelRenderer = createLabelTextureRenderer(this.gl);
     this.shadowTexture = createShadowTexture(this.gl);
     this.createGeometry();
     this.createMaterials();
@@ -170,7 +173,7 @@ export class VitaminBottleModel {
       floor: geometry.plane(8),
       shadow: geometry.plane(1),
       label: geometry.curvedLabel(
-        1.258,
+        LABEL_RADIUS,
         this.state.labelHeight,
         this.state.labelArc,
         112,
@@ -231,7 +234,7 @@ export class VitaminBottleModel {
   rebuildLabelGeometry() {
     this.geometryFactory.destroy(this.geometries.label);
     this.geometries.label = this.geometryFactory.curvedLabel(
-      1.258,
+      LABEL_RADIUS,
       this.state.labelHeight,
       this.state.labelArc,
       112,
@@ -239,11 +242,35 @@ export class VitaminBottleModel {
   }
 
   getState() {
-    return {
-      ...this.state,
-      koreanLabelLines: [...this.state.koreanLabelLines],
-      priceStructureLines: [...this.state.priceStructureLines],
-    };
+    return { ...this.state };
+  }
+
+  async setRenderedLabel({ dataUrl, sourceId, pixelWidth, pixelHeight }) {
+    const width = Number(pixelWidth);
+    const height = Number(pixelHeight);
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png;base64,")) {
+      throw new Error("렌더링된 라벨 PNG가 유효하지 않습니다.");
+    }
+    if (typeof sourceId !== "string" || !sourceId.trim()) {
+      throw new Error("렌더링된 라벨의 SKU ID가 없습니다.");
+    }
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+      throw new Error("렌더링된 라벨 크기가 유효하지 않습니다.");
+    }
+
+    const aspectRatio = width / height;
+    const wrappedWidth = LABEL_RADIUS * Number(this.state.labelArc) * RAD;
+    const fittedHeight = Math.min(
+      MAX_LABEL_HEIGHT,
+      Math.max(MIN_LABEL_HEIGHT, wrappedWidth / aspectRatio),
+    );
+
+    return this.setState({
+      labelMode: "rendered",
+      renderedLabelDataUrl: dataUrl,
+      renderedLabelSourceId: sourceId,
+      labelHeight: fittedHeight,
+    });
   }
 
   async setState(patch, options = {}) {
@@ -275,7 +302,7 @@ export class VitaminBottleModel {
   }
 
   async reset(stateOverrides = {}) {
-    this.state = createModelState(stateOverrides);
+    this.state = createModelState(normalizeStatePatch(stateOverrides));
     this.rebuildLabelGeometry();
     this.rebuildPills();
     resetCamera(this.camera);

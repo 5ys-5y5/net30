@@ -6,7 +6,7 @@ import "../../docs/design-system/typography.css";
 import "../../docs/design-system/hero.css";
 import "../../docs/design-system/catalog.css";
 import "../../docs/design-system/label-sticker.css";
-import { net30Definition } from "./product-definition";
+import { net30Definition } from "./sku-data";
 
 document.documentElement.lang = net30Definition.system.language;
 document.title = net30Definition.meta.title;

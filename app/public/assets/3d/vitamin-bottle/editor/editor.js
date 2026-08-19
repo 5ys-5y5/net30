@@ -64,6 +64,7 @@ function syncControls(state) {
     else element.value = state[id];
   }
   byId("uploadWrap").classList.toggle("hidden", state.labelMode !== "custom");
+  byId("textLabelFields").classList.toggle("hidden", state.labelMode !== "text");
   updateOutputs(state);
 }
 
@@ -78,7 +79,7 @@ function downloadBlob(filename, contents, type) {
 }
 
 try {
-  const model = new VitaminBottleModel(canvas);
+  const model = new VitaminBottleModel(canvas, { state: { labelMode: "text" } });
   window.__NET30_VITAMIN_MODEL__ = model;
   const detachBridge = attachSkuBridge(model);
 
@@ -120,10 +121,16 @@ try {
   });
 
   byId("savePreset").addEventListener("click", () => {
+    const current = model.getState();
     const preset = {
       version: MODEL_PRESET_VERSION,
       asset: "NET30 vitamin-bottle",
-      settings: model.getState(),
+      settings: {
+        ...current,
+        labelMode: current.labelMode === "rendered" ? "text" : current.labelMode,
+        renderedLabelDataUrl: "",
+        renderedLabelSourceId: "",
+      },
     };
     downloadBlob(
       "net30-vitamin-bottle-settings.json",
@@ -140,7 +147,13 @@ try {
       try {
         const parsed = JSON.parse(String(reader.result));
         const settings = parsed.settings || parsed;
-        model.reset(settings).then(syncControls).catch(showError);
+        const safeSettings = {
+          ...settings,
+          labelMode: settings.labelMode === "rendered" ? "text" : settings.labelMode,
+          renderedLabelDataUrl: "",
+          renderedLabelSourceId: "",
+        };
+        model.reset(safeSettings).then(syncControls).catch(showError);
       } catch {
         showError(new Error("설정 JSON을 읽을 수 없습니다."));
       }
@@ -150,7 +163,7 @@ try {
   });
 
   byId("reset").addEventListener("click", () => {
-    model.reset(DEFAULT_MODEL_STATE).then(syncControls).catch(showError);
+    model.reset({ ...DEFAULT_MODEL_STATE, labelMode: "text" }).then(syncControls).catch(showError);
   });
 
   panelToggle.addEventListener("click", () => {
@@ -167,8 +180,8 @@ try {
   canvas.addEventListener("net30-model-change", (event) => {
     const state = event.detail?.state || model.getState();
     syncControls(state);
-    connectionStatus.textContent = state.labelMode === "sku"
-      ? "SKU 실시간 적용 중"
+    connectionStatus.textContent = state.labelMode === "rendered"
+      ? "Storefront 웹 라벨 적용 중"
       : "로컬 편집 상태";
   });
   canvas.addEventListener("net30-model-error", (event) => showError(event.detail));
