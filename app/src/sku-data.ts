@@ -31,9 +31,9 @@ export type Form = (typeof forms)[number];
  * 기존 3천 개·1만 개·3만 개 배치의 상대적인 단가 차이만 유지했습니다.
  */
 const batchSpecs = [
-  { id: "pilot", code: "V01", name: "일반가", role: "바이럴 직판 · 영업이익 30%", gmpCost: 533 },
-  { id: "growth", code: "V02", name: "회원가", role: "바이럴 직판 · 영업이익 30%", gmpCost: 376 },
-  { id: "scale", code: "V03", name: "정기구독가", role: "바이럴 직판 · 영업이익 30%", gmpCost: 220 },
+  { id: "pilot", code: "V01", name: "일반가", role: "바이럴 직판 · 최종 판매가 대비 이익 30%", gmpCost: 533 },
+  { id: "growth", code: "V02", name: "회원가", role: "바이럴 직판 · 최종 판매가 대비 이익 30%", gmpCost: 376 },
+  { id: "scale", code: "V03", name: "정기구독가", role: "바이럴 직판 · 최종 판매가 대비 이익 30%", gmpCost: 220 },
 ] as const;
 type BatchSpec = (typeof batchSpecs)[number];
 type CostBatch = Batch | BatchSpec;
@@ -294,12 +294,18 @@ const makeLabel = (form: Form, batch: Batch): KoreanSupplementLabelDefinition =>
     ...buildCostLines(batch),
     line(
       "profit",
-      "영업이익",
+      "이익",
       "profit",
-      receipt.operatingProfit,
-      "부가가치세 제외 매출에서 모든 공개 비용을 뺀 목표 영업이익",
+      receipt.profit,
+      "VAT 포함 최종 판매가의 30%를 목표로 배분한 이익",
     ),
-    line("vat", "부가가치세", "tax", receipt.vat, "소비자가에 포함된 부가가치세"),
+    line(
+      "vat",
+      "부가가치세",
+      "tax",
+      receipt.vat,
+      "최종 판매가에 포함된 매출 부가가치세(10/110)",
+    ),
   ];
 
   return {
@@ -432,7 +438,7 @@ export const net30Definition: ProductPageDefinition = {
     ],
     metrics: [],
     economics: {
-      vatRate: DEFAULT_PRICING_POLICY.vatRate,
+      vatRate: 1 + DEFAULT_PRICING_POLICY.vatTaxRate,
       percentageScale: 100,
       platformRate: 0,
     },

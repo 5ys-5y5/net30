@@ -1,9 +1,12 @@
-export const DEFAULT_PRICING_POLICY = {
-  operatingProfitRate: 0.3,
-  vatRate: 1.1,
-} as const;
+export type PricingPolicy = {
+  readonly consumerPriceProfitRate: number;
+  readonly vatTaxRate: number;
+};
 
-export type PricingPolicy = typeof DEFAULT_PRICING_POLICY;
+export const DEFAULT_PRICING_POLICY: PricingPolicy = {
+  consumerPriceProfitRate: 0.3,
+  vatTaxRate: 0.1,
+};
 
 export type CostBreakdownInput = {
   ingredientCost: number;
@@ -15,18 +18,20 @@ export type CostBreakdownInput = {
 
 export type ReceiptPriceResult = {
   nonProfitCost: number;
-  operatingProfitRate: number;
-  vatRate: number;
+  consumerPriceProfitRate: number;
+  vatTaxRate: number;
+  vatMultiplier: number;
+  vatExcludedRevenue: number;
   consumerPrice: number;
-  operatingProfit: number;
+  profit: number;
   vat: number;
 };
 
-const clamp = (value: number): number => (Number.isFinite(value) ? value : 0);
+const finiteOrZero = (value: number): number => (Number.isFinite(value) ? value : 0);
 
-const assertRate = (name: string, value: number) => {
-  if (value <= 0 || value >= 1) {
-    throw new Error(`${name}은 0과 1 사이여야 합니다.`);
+const assertFraction = (name: string, value: number) => {
+  if (value < 0 || value >= 1) {
+    throw new Error(`${name}은 0 이상 1 미만이어야 합니다.`);
   }
 };
 
@@ -34,12 +39,20 @@ export const calculateReceiptPrice = (
   cost: CostBreakdownInput,
   policy: Partial<PricingPolicy> = {},
 ): ReceiptPriceResult => {
-  const operatingProfitRate = clamp(policy.operatingProfitRate ?? DEFAULT_PRICING_POLICY.operatingProfitRate);
-  const vatRate = clamp(policy.vatRate ?? DEFAULT_PRICING_POLICY.vatRate);
+  const consumerPriceProfitRate = finiteOrZero(
+    policy.consumerPriceProfitRate ?? DEFAULT_PRICING_POLICY.consumerPriceProfitRate,
+  );
+  const vatTaxRate = finiteOrZero(policy.vatTaxRate ?? DEFAULT_PRICING_POLICY.vatTaxRate);
 
-  assertRate("영업이익률", operatingProfitRate);
-  if (vatRate < 1) {
-    throw new Error("VAT율은 1 이상이어야 합니다.");
+  assertFraction("최종 판매가 대비 이익률", consumerPriceProfitRate);
+  assertFraction("부가가치세율", vatTaxRate);
+
+  const vatMultiplier = 1 + vatTaxRate;
+  const vatShareOfConsumerPrice = vatTaxRate / vatMultiplier;
+  const costShareOfConsumerPrice = 1 - consumerPriceProfitRate - vatShareOfConsumerPrice;
+
+  if (costShareOfConsumerPrice <= 0) {
+    throw new Error("최종 판매가에서 이익과 부가가치세를 제외한 원가 비중은 0보다 커야 합니다.");
   }
 
   const nonProfitCost = Math.max(
@@ -53,16 +66,30 @@ export const calculateReceiptPrice = (
     ),
   );
 
-  const consumerPrice = Math.round(nonProfitCost / (1 - operatingProfitRate) * vatRate);
-  const vat = Math.max(0, Math.round(consumerPrice - consumerPrice / vatRate));
-  const operatingProfit = Math.max(0, consumerPrice - nonProfitCost - vat);
+  const consumerPrice = nonProfitCost === 0
+    ? 0
+    : Math.round(nonProfitCost / costShareOfConsumerPrice);
+  const vat = Math.max(0, Math.round(consumerPrice * vatShareOfConsumerPrice));
+  const profit = Math.max(0, consumerPrice - nonProfitCost - vat);
+  const vatExcludedRevenue = consumerPrice - vat;
+  const targetProfit = Math.round(consumerPrice * consumerPriceProfitRate);
+
+  if (Math.abs(profit - targetProfit) > 1) {
+    throw new Error("원 단위 반올림 후 이익이 최종 판매가 대비 목표 이익률과 일치하지 않습니다.");
+  }
+
+  if (nonProfitCost + profit + vat !== consumerPrice) {
+    throw new Error("최종 판매가는 원가, 이익, 부가가치세 합계와 일치해야 합니다.");
+  }
 
   return {
     nonProfitCost,
-    operatingProfitRate,
-    vatRate,
+    consumerPriceProfitRate,
+    vatTaxRate,
+    vatMultiplier,
+    vatExcludedRevenue,
     consumerPrice,
-    operatingProfit,
+    profit,
     vat,
   };
 };
