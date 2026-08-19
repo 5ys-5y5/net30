@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <meta name="color-scheme" content="light" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 rx=%2714%27 fill=%27%23111827%27/%3E%3Ctext x=%2732%27 y=%2741%27 text-anchor=%27middle%27 font-size=%2728%27 font-family=%27Arial%27 font-weight=%27700%27 fill=%27white%27%3EN%3C/text%3E%3C/svg%3E" />
+  <title>NET30 비타민 병 3D 모델</title>
+  <link rel="stylesheet" href="./viewer.css" />
+</head>
+<body>
+  <main class="viewer" aria-label="NET30 비타민 병 3D 출력 화면">
+    <canvas id="modelCanvas" aria-label="회전 가능한 NET30 비타민 병 3D 모델"></canvas>
+    <div class="viewer__brand" aria-hidden="true">
+      <strong>NET30</strong>
+      <span id="sourceStatus">SKU 연결 대기</span>
+    </div>
+    <p class="viewer__help">드래그 회전 · 휠/핀치 확대 · 더블클릭 정면</p>
+    <section class="viewer__error" id="errorPanel" hidden>
+      <div>
+        <h1>3D 모델을 표시할 수 없습니다.</h1>
+        <p id="errorMessage"></p>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>

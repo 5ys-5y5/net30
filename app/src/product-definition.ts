@@ -5,10 +5,9 @@ import {
   type Batch,
   costColumns,
   costGroups,
-  Form,
+  type Form,
   buildCostItems,
   buildCostLines,
-  ingredientTotalCost,
   line,
   rawIngredients,
   type RawIngredient,
@@ -26,7 +25,6 @@ const makeIngredients = (ingredients: readonly RawIngredient[]) =>
 
 const makeLabel = (form: Form, batch: Batch): KoreanSupplementLabelDefinition => {
   const ingredients = makeIngredients(rawIngredients);
-
   const costItems = buildCostItems(batch);
   const receipt = calculateReceiptPrice(costItems, DEFAULT_PRICING_POLICY);
 
@@ -120,7 +118,12 @@ const makeLabel = (form: Form, batch: Batch): KoreanSupplementLabelDefinition =>
 };
 
 const batches = buildBatches(DEFAULT_PRICING_POLICY);
-const skus = forms.flatMap((item) => batches.map((batch) => ({ id: `${item.id}-${batch.id}`, label: makeLabel(item, batch) })));
+const skus = forms.flatMap((item) =>
+  batches.map((batch) => ({
+    id: `${item.id}-${batch.id}`,
+    label: makeLabel(item, batch),
+  })),
+);
 const combinations = forms.flatMap((formItem) =>
   batches.map((batch, batchIndex) => ({
     id: `${formItem.id}-${batch.id}`,

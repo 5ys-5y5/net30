@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <meta name="color-scheme" content="light" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 rx=%2714%27 fill=%27%23111827%27/%3E%3Ctext x=%2732%27 y=%2741%27 text-anchor=%27middle%27 font-size=%2728%27 font-family=%27Arial%27 font-weight=%27700%27 fill=%27white%27%3EN%3C/text%3E%3C/svg%3E" />
+  <title>NET30 비타민 병 3D 편집기</title>
+  <link rel="stylesheet" href="./editor.css" />
+</head>
+<body>
+  <div class="app">
+    <main class="stage">
+      <canvas id="modelCanvas" aria-label="회전 가능한 NET30 비타민 병 3D 모델"></canvas>
+      <div class="topbar">
+        <div class="title-card">
+          <strong>NET30 비타민 병 3D 편집기</strong>
+          <span id="connectionStatus">기본 모델 로딩 중</span>
+        </div>
+      </div>
+      <p class="help-chip">드래그 회전 · 휠/핀치 확대 · 더블클릭 정면</p>
+      <button class="panel-toggle" id="panelToggle" type="button" aria-label="편집 패널 열기">☰</button>
+    </main>
+
+    <aside class="panel" id="panel">
+      <header class="panel-head">
+        <div class="panel-head-row">
+          <div>
+            <span class="eyebrow">EDITOR</span>
+            <h1>모델 편집</h1>
+          </div>
+          <label class="switch-row" for="autoRotate">
+            <span>자동 회전</span>
+            <input id="autoRotate" type="checkbox" />
+          </label>
+        </div>
+        <p>모델 코드는 <code>model/</code>, 편집 UI는 <code>editor/</code>, 실제 상품 노출 화면은 <code>output/</code>에 분리되어 있습니다.</p>
+      </header>
+
+      <div class="panel-scroll">
+        <section class="section">
+          <h2>라벨 소스</h2>
+          <div class="control">
+            <label for="labelMode">표시 방식</label>
+            <select id="labelMode">
+              <option value="image">제공된 가격 구조 이미지</option>
+              <option value="sku">현재 SKU 데이터 렌더링</option>
+              <option value="text">편집 가능한 전면 라벨</option>
+              <option value="custom">새 이미지 업로드</option>
+            </select>
+          </div>
+          <div class="control hidden" id="uploadWrap">
+            <label class="file">PNG/JPG/WebP 라벨 선택<input id="labelUpload" type="file" accept="image/png,image/jpeg,image/webp" /></label>
+          </div>
+          <div id="textLabelFields">
+            <div class="grid-2">
+              <div class="control"><label for="brand">브랜드</label><input id="brand" type="text" /></div>
+              <div class="control"><label for="accentColor">포인트 색</label><input id="accentColor" type="color" /></div>
+            </div>
+            <div class="control"><label for="productName">제품명</label><input id="productName" type="text" /></div>
+            <div class="control"><label for="subtitle">설명</label><textarea id="subtitle" rows="3"></textarea></div>
+            <div class="grid-2">
+              <div class="control"><label for="dose">함량·규격</label><input id="dose" type="text" /></div>
+              <div class="control"><label for="quantity">제조번호·수량</label><input id="quantity" type="text" /></div>
+            </div>
+          </div>
+          <p class="note">스토어프런트에서 선택한 SKU는 <code>NET30_LABEL_DATA</code> 메시지로 자동 반영됩니다. 제공된 이미지는 이미지 전체를 교체하는 방식이며, 문구 단위 수정은 SKU 또는 텍스트 모드를 사용합니다.</p>
+        </section>
+
+        <section class="section">
+          <h2>라벨 배치</h2>
+          <div class="control range-control">
+            <div><label for="labelArc">가로 감김 폭</label><output id="labelArcOut"></output></div>
+            <input id="labelArc" type="range" min="90" max="220" step="1" />
+          </div>
+          <div class="control range-control">
+            <div><label for="labelHeight">라벨 높이</label><output id="labelHeightOut"></output></div>
+            <input id="labelHeight" type="range" min="0.7" max="2.25" step="0.01" />
+          </div>
+          <div class="control range-control">
+            <div><label for="labelY">세로 위치</label><output id="labelYOut"></output></div>
+            <input id="labelY" type="range" min="-0.85" max="0.75" step="0.01" />
+          </div>
+          <div class="control range-control">
+            <div><label for="labelRotation">병 둘레 위치</label><output id="labelRotationOut"></output></div>
+            <input id="labelRotation" type="range" min="-180" max="180" step="1" />
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>병과 뚜껑</h2>
+          <div class="grid-2">
+            <div class="control color-control"><label for="capColor">뚜껑</label><input id="capColor" type="color" /></div>
+            <div class="control color-control"><label for="glassColor">유리 색조</label><input id="glassColor" type="color" /></div>
+          </div>
+          <div class="control range-control">
+            <div><label for="glassAlpha">유리 투명도</label><output id="glassAlphaOut"></output></div>
+            <input id="glassAlpha" type="range" min="0.08" max="0.55" step="0.01" />
+          </div>
+          <div class="control color-control horizontal"><label for="background">배경</label><input id="background" type="color" /></div>
+        </section>
+
+        <section class="section">
+          <h2>비타민 내용물</h2>
+          <div class="control range-control">
+            <div><label for="pillCount">수량</label><output id="pillCountOut"></output></div>
+            <input id="pillCount" type="range" min="0" max="70" step="1" />
+          </div>
+          <div class="grid-2">
+            <div class="control color-control"><label for="pillColorA">색상 A</label><input id="pillColorA" type="color" /></div>
+            <div class="control color-control"><label for="pillColorB">색상 B</label><input id="pillColorB" type="color" /></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>내보내기</h2>
+          <div class="actions">
+            <button class="btn btn-primary wide" id="exportPng" type="button">현재 화면 PNG 저장</button>
+            <button class="btn btn-secondary" id="savePreset" type="button">설정 JSON 저장</button>
+            <label class="btn btn-secondary file-button">설정 불러오기<input id="loadPreset" type="file" accept="application/json" /></label>
+            <a class="btn btn-ghost wide" href="../output/index.html" target="_blank" rel="noreferrer">출력 화면 열기</a>
+            <button class="btn btn-ghost wide" id="reset" type="button">기본값으로 초기화</button>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <section class="error-box" id="errorPanel" hidden>
+      <div><h2>3D 편집기를 열 수 없습니다.</h2><p id="errorMessage"></p></div>
+    </section>
+  </div>
+  <script type="module" src="./editor.js"></script>
+</body>
+</html>
