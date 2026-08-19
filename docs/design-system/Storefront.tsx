@@ -6,7 +6,64 @@ import { Atom, Container, Copy, GridCell, KoreanSupplementLabel, Label, LabeledC
 import { SupplyGlobe } from "./SupplyGlobe";
 import { CLASS, ELEMENT, joinClasses, ROLE } from "./tokens";
 import { selectCombination } from "./sku";
-import type { HeroTextDefinition, ProductPageDefinition, TemplateRegion } from "./schema";
+import type { HeroTextDefinition, KoreanSupplementLabelDefinition, ProductPageDefinition, ProductSku, TemplateRegion, ThreeDLabelPayload } from "./schema";
+
+function toSkuPayload(label: KoreanSupplementLabelDefinition, locale: string): ThreeDLabelPayload {
+  const toMoney = (value: number) => value.toLocaleString(locale);
+  const identify = Object.fromEntries(label.identification.map((row) => [row.label, row.value]));
+  const dosage = identify["내용량"] ?? "";
+  const productName = identify["제품명"] || label.title;
+  const quantity = identify["제조번호"] ? `${identify["제조번호"]}` : "";
+  const ingredientLabel = label.ingredients
+    .map((ingredient) => `${ingredient.name} ${ingredient.amount}: ${toMoney(ingredient.cost)}원`)
+    .slice(0, 8);
+  const koreanLabelLines: string[] = [
+    `제품명: ${identify["제품명"] || "-"}`,
+    `식품유형: ${identify["식품유형"] || "-"}`,
+    `내용량: ${identify["내용량"] || "-"}`,
+    `소비기한/보관: ${identify["소비기한"] ? "기재" : "기재"}`,
+    ...(ingredientLabel.length > 0 ? ["", "원료", ...ingredientLabel] : ["", "원료정보 없음"]),
+    "",
+    "영양정보:",
+    ...label.sections
+      .filter((section) => section.id === "function")
+      .flatMap((section) => [
+        ...(section.fields?.map((field) => `${field.label}: ${field.value}`) ?? []),
+      ]),
+  ];
+
+  const groups = label.costGroups.map((group) => {
+    const items = group.id === "ingredient"
+      ? label.ingredients.map((ingredient) => ({ name: ingredient.name, value: ingredient.cost, ratio: ingredient.cost / label.consumerPrice }))
+      : label.costs
+          .filter((item) => item.group === group.id)
+          .map((item) => ({ name: item.label, value: item.amount, ratio: item.amount / label.consumerPrice }));
+
+    const total = items.reduce((acc, item) => acc + item.value, 0);
+    const details = items.map((item) => `${item.name}: ${toMoney(item.value)}원 (${(item.ratio * 100).toFixed(1)}%)`);
+    return `${group.label}: ${toMoney(total)}원 (${((total / label.consumerPrice) * 100).toFixed(1)}%)${details.length > 0 ? `\n${details.join("\n")}` : ""}`;
+  });
+
+  return {
+    brand: "NET30",
+    productName,
+    subtitle: `멀티비타민 · 유통·가격정보 라벨`,
+    dose: dosage,
+    quantity,
+    accentColor: "#111827",
+    koreanLabelLines,
+    priceStructureLines: [
+      `총 소비자가: ${toMoney(label.consumerPrice)}원`,
+      ...groups,
+    ],
+  };
+}
+
+function getSkuForCombination(catalog: ProductPageDefinition["catalog"], primaryId: string, secondaryId: string): ProductSku | undefined {
+  const combo = catalog.combinations.find((item) => item.primaryId === primaryId && item.secondaryId === secondaryId);
+  if (!combo) return undefined;
+  return catalog.skus.find((entry) => entry.id === combo.skuId);
+}
 
 const anchor = (id: string) => `#${id}`;
 
@@ -26,6 +83,7 @@ function HeaderRegion({ definition, bagCount }: { definition: ProductPageDefinit
 
 function HeroRegion({ definition }: { definition: ProductPageDefinition }) {
   const { hero, system } = definition;
+  const fallbackSecondaryId = definition.catalog.secondaryOptions[0]?.id;
   return <Container as={ELEMENT.section} className={CLASS.hero} id={system.topId}>
     <Atom className={CLASS.heroCopy}>
       <Label><HeroTextBlock definition={hero.label} as={ELEMENT.span} /></Label>
@@ -33,7 +91,10 @@ function HeroRegion({ definition }: { definition: ProductPageDefinition }) {
       <Copy><HeroTextBlock definition={hero.copy} as={ELEMENT.span} /></Copy>
       <Link className={CLASS.heroLink} href={anchor(system.catalogId)}><HeroTextBlock definition={hero.link} as={ELEMENT.span} /></Link>
     </Atom>
-    <Surface className={CLASS.heroProduct}><Atom className={CLASS.heroIndex}><Label>{hero.index}</Label><Atom as={ELEMENT.span}>{hero.range}</Atom></Atom><Atom className={CLASS.heroTrio}>{definition.catalog.primaryOptions.map(item => <ProductVisual compact visual={item.visual} key={item.id}/>)}</Atom><Atom className={CLASS.heroFoot}><Atom as={ELEMENT.span}>{hero.left}</Atom><Atom as={ELEMENT.span}>{hero.right}</Atom></Atom></Surface>
+    <Surface className={CLASS.heroProduct}><Atom className={CLASS.heroIndex}><Label>{hero.index}</Label><Atom as={ELEMENT.span}>{hero.range}</Atom></Atom><Atom className={CLASS.heroTrio}>{definition.catalog.primaryOptions.map((item) => {
+      const skuForItem = fallbackSecondaryId ? getSkuForCombination(definition.catalog, item.id, fallbackSecondaryId)?.label : undefined;
+      return <ProductVisual compact visual={item.visual} labelPayload={skuForItem ? toSkuPayload(skuForItem, definition.system.locale) : undefined} key={item.id}/>;
+    })}</Atom><Atom className={CLASS.heroFoot}><Atom as={ELEMENT.span}>{hero.left}</Atom><Atom as={ELEMENT.span}>{hero.right}</Atom></Atom></Surface>
   </Container>;
 }
 
@@ -59,7 +120,19 @@ function CatalogRegion({ definition }: { definition: ProductPageDefinition }) {
 
   return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
     <SectionHeading {...catalogSection}/>
-    <Atom className={CLASS.designShowcase} role={ROLE.tablist} aria-label={labels.primaryChoice}>{catalog.primaryOptions.map((item, index) => <LabeledChoice className={CLASS.designCard} code={item.code} name={item.name} detail={item.detail} selected={primaryIndex === index} onClick={() => setPrimaryIndex(index)} visual={<ProductVisual compact visual={item.visual}/>} key={item.id}/>)}</Atom>
+    <Atom className={CLASS.designShowcase} role={ROLE.tablist} aria-label={labels.primaryChoice}>{catalog.primaryOptions.map((item, index) => {
+      const optionSku = getSkuForCombination(catalog, item.id, secondary.id)?.label;
+      return <LabeledChoice
+        className={CLASS.designCard}
+        code={item.code}
+        name={item.name}
+        detail={item.detail}
+        selected={primaryIndex === index}
+        onClick={() => setPrimaryIndex(index)}
+        visual={<ProductVisual compact visual={item.visual} labelPayload={optionSku ? toSkuPayload(optionSku, system.locale) : undefined}/>}
+        key={item.id}
+      />;
+    })}</Atom>
     <Atom className={CLASS.qualityPrices} role={ROLE.tablist} aria-label={labels.secondaryChoice}>{catalog.secondaryOptions.map((item, index) => <LabeledChoice className={CLASS.qualityPrice} code={item.code} name={item.name} detail={`${(item.price + primary.surcharge).toLocaleString(system.locale)}${labels.currency}${labels.dot}${item.role}`} selected={secondaryIndex === index} onClick={() => setSecondaryIndex(index)} key={item.id}/>)}</Atom>
     {catalog.presentation === "label" ? labelView : metricsView}
     <Atom className={CLASS.trace} id={system.traceId}><Atom className={CLASS.traceGrid}>{catalog.detailPanels.map(panel => <Fragment key={panel}>{detailRegistry[panel]}</Fragment>)}</Atom></Atom>

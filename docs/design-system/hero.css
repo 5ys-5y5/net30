@@ -1,9 +1,86 @@
 /* Central viewport-aware hero atom. */
+.hero {
+  padding-block: clamp(16px, 3vh, 28px) clamp(24px, 5vh, 48px);
+}
+
+.hero-product {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 22px;
+  background: var(--ds-quiet);
+  align-items: stretch;
+  justify-items: stretch;
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.hero-index,
+.hero-foot,
+.hero-trio {
+  width: 100%;
+  position: static;
+  margin: 0;
+}
+
+.hero-index,
+.hero-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  z-index: 1;
+}
+
+.hero-trio {
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  align-items: stretch;
+  justify-items: stretch;
+  gap: 20px;
+  align-self: stretch;
+  overflow: hidden;
+}
+
+.hero-trio > * {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: block;
+}
+
+.hero-trio .ds-product-image,
+.hero-trio iframe.ds-product-image {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0;
+  min-height: 0;
+  display: block;
+  max-width: none !important;
+  border: 0;
+  object-fit: contain;
+}
+
+.hero-trio .ds-product-image {
+  aspect-ratio: 300 / 360;
+}
+
+.hero-trio .ds-product-image[data-compact="true"] {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
+
 @media (min-width: 901px) {
   .hero {
     height: calc(100svh - 84px);
     min-height: 560px;
-    padding-block: clamp(16px, 3vh, 28px) clamp(24px, 5vh, 48px);
   }
 
   .hero-copy {
@@ -16,13 +93,16 @@
     font-size: clamp(44px, min(7.6vw, 6.8vh), 118px);
   }
 
-  .hero-product { min-height: 0; }
+  .hero-product {
+    padding: 22px;
+  }
 }
 
 @media (max-width: 900px) {
   .hero {
     height: calc(100svh - 84px);
     min-height: 0;
+    grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 56fr) minmax(0, 44fr);
     padding-block: clamp(10px, 2vh, 18px) clamp(18px, 3vh, 28px);
   }
@@ -37,11 +117,29 @@
     font-size: clamp(40px, min(11vw, 6.5vh), 60px);
   }
 
-  .hero-product { min-height: 0; }
+  .hero-product {
+    padding: 18px;
+  }
 }
 
 @media (max-width: 600px) {
-  .hero { height: calc(100svh - 94px); }
-  .hero-copy > p { font-size: 12px; line-height: 1.65; }
-  .hero-link { padding-top: 14px; }
+  .hero {
+    height: calc(100svh - 94px);
+  }
+
+  .hero-copy > p {
+    font-size: 12px;
+    line-height: 1.65;
+  }
+
+  .hero-link {
+    padding-top: 14px;
+  }
+
+  .hero-trio {
+    gap: 12px;
+    padding-bottom: 4px;
+    transform: none;
+    grid-template-columns: 1fr;
+  }
 }

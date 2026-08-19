@@ -1,6 +1,22 @@
 export type ProductVisual =
   | { kind: "silhouette"; variant: "crew" | "relaxed" | "pocket" }
-  | { kind: "image"; src: string; alt: string };
+  | { kind: "image"; src: string; alt: string }
+  | {
+      kind: "threeD";
+      src: string;
+      alt: string;
+    };
+
+export type ThreeDLabelPayload = {
+  brand: string;
+  productName: string;
+  subtitle: string;
+  dose: string;
+  quantity: string;
+  accentColor: string;
+  koreanLabelLines: readonly string[];
+  priceStructureLines: readonly string[];
+};
 
 export type PrimaryOption = {
   id: string;

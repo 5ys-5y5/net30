@@ -1,7 +1,38 @@
-import { Fragment, forwardRef } from "react";
+import { Fragment, forwardRef, useEffect, useRef } from "react";
 import type { AnchorHTMLAttributes, CanvasHTMLAttributes, ComponentPropsWithoutRef, CSSProperties, ElementType, HTMLAttributes, ReactNode } from "react";
 import { CLASS, ELEMENT, joinClasses } from "./tokens";
-import type { KoreanSupplementLabelDefinition, ProductVisual as ProductVisualDefinition } from "./schema";
+import type { KoreanSupplementLabelDefinition, ProductVisual as ProductVisualDefinition, ThreeDLabelPayload } from "./schema";
+
+function sendLabelPayloadToFrame(target: HTMLIFrameElement | null, payload: ThreeDLabelPayload | undefined, src: string) {
+  if (!target?.contentWindow || !payload) return;
+  const frameUrl = new URL(src, window.location.href);
+  target.contentWindow.postMessage({ type: "NET30_LABEL_DATA", payload }, frameUrl.origin);
+}
+
+function ThreeDModel({ visual, compact, labelPayload }: { visual: Extract<ProductVisualDefinition, { kind: "threeD" }>; compact: boolean; labelPayload?: ThreeDLabelPayload }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+
+  useEffect(() => {
+    sendLabelPayloadToFrame(frameRef.current, labelPayload, visual.src);
+  }, [labelPayload, visual.src]);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const send = () => sendLabelPayloadToFrame(frame, labelPayload, visual.src);
+    frame.addEventListener("load", send);
+    return () => frame.removeEventListener("load", send);
+  }, [visual.src, labelPayload]);
+
+  return <iframe
+    ref={frameRef}
+    className={CLASS.productImage}
+    data-compact={compact}
+    title={visual.alt}
+    src={visual.src}
+    loading="lazy"
+  />;
+}
 
 export function Atom<T extends ElementType = "div">({ as, ...props }: { as?: T } & Omit<ComponentPropsWithoutRef<T>, "as">) {
   const Tag = as ?? "div";
@@ -138,8 +169,10 @@ export function TeeSilhouette({ compact = false, variant = "crew" }: { compact?:
   return <div className={joinClasses(CLASS.tee, variantClass, compact && CLASS.teeCompact)} aria-hidden="true"><i/>{variant === "pocket" && <b/>}</div>;
 }
 
-export function ProductVisual({ visual, compact = false }: { visual: ProductVisualDefinition; compact?: boolean }) {
-  return visual.kind === "image" ? <Atom as={ELEMENT.image} className={CLASS.productImage} data-compact={compact} src={visual.src} alt={visual.alt}/> : <TeeSilhouette compact={compact} variant={visual.variant}/>;
+export function ProductVisual({ visual, compact = false, labelPayload }: { visual: ProductVisualDefinition; compact?: boolean; labelPayload?: ThreeDLabelPayload }) {
+  if (visual.kind === "image") return <Atom as={ELEMENT.image} className={CLASS.productImage} data-compact={compact} src={visual.src} alt={visual.alt}/>;
+  if (visual.kind === "threeD") return <ThreeDModel visual={visual} compact={compact} labelPayload={labelPayload}/>;
+  return <TeeSilhouette compact={compact} variant={visual.variant}/>;
 }
 
 export function GlobeRoot(props: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.globe} {...props}/>; }
