@@ -280,7 +280,7 @@ export function StickerCostRow({
   const Tag = as;
   return <Tag className={CLASS.labelStickerCostRow}>
     <strong className={CLASS.labelStickerCostName}>{name}</strong>
-    <span className={CLASS.labelStickerCostMeta}>{meta}</span>
+    <span className={CLASS.labelStickerCostMeta} title={meta || undefined}>{meta}</span>
     <i className={CLASS.labelStickerCostGauge}><b style={{ left: `${gaugeStart}%`, width: `${gaugeSize}%` }} /></i>
     <strong className={CLASS.labelStickerCostAmount}>{money}</strong>
     <span>{ratio}</span>
@@ -350,7 +350,7 @@ export function KoreanSupplementLabel({
       ? definition.ingredients.map((item) => ({ id: item.id, name: item.name, meta: item.amount, value: item.cost }))
       : definition.costs
           .filter((item) => item.group === group.id)
-          .map((item) => ({ id: item.id, name: item.label, meta: "", value: item.amount }));
+          .map((item) => ({ id: item.id, name: item.label, meta: item.detail ?? "", value: item.amount }));
     const total = items.reduce((sum, item) => sum + item.value, 0);
     const start = groupOffset;
     const size = total / definition.consumerPrice * 100;
@@ -371,9 +371,12 @@ export function KoreanSupplementLabel({
       return row;
     });
     const hasChildren = items.length > 1;
+    const groupMeta = hasChildren
+      ? `${items.length.toLocaleString(locale)}개 세부 항목`
+      : items[0]?.meta || undefined;
     return <StickerCostGroup
       name={group.label}
-      meta={hasChildren ? `${items.length.toLocaleString(locale)}개 세부 항목` : undefined}
+      meta={groupMeta}
       money={money(total)}
       ratio={ratio(total, group.id === "profit" ? 2 : 1)}
       gaugeStart={start}

@@ -42,7 +42,13 @@ export type SecondaryOption = {
 export type LabelField = { label: string; value: string };
 export type LabelSection = { id: string; title: string; fields?: readonly LabelField[]; copy?: readonly string[] };
 export type IngredientCostLine = { id: string; name: string; amount: string; cost: number };
-export type ProductCostLine = { id: string; label: string; group: "ingredient" | "production" | "distribution" | "growth" | "operation" | "tax" | "profit"; amount: number };
+export type ProductCostLine = {
+  id: string;
+  label: string;
+  detail?: string;
+  group: "ingredient" | "production" | "distribution" | "growth" | "operation" | "tax" | "profit";
+  amount: number;
+};
 export type PriceCostGroup = { id: ProductCostLine["group"]; label: string };
 
 export type HeroTextSegment = {
