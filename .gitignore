@@ -1,5 +1,6 @@
 .DS_Store
 *.log
+*.tsbuildinfo
 node_modules/
 app/node_modules/
 app/dist/
@@ -7,6 +8,3 @@ docs/.DS_Store
 docs/design-system/.DS_Store
 package-lock.json
 tmp/
-
-# local push temp repo
-.push_repo/

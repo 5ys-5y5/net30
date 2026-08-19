@@ -8,6 +8,13 @@
 - 제품 고유 표시사항이 3D 모델 설정 파일에 중복 저장되지 않았는지 확인합니다.
 - 두 라벨 시트를 문자열 배열로 재조립하는 코드가 실제 3D 런타임 경로에 남아 있지 않은지 확인합니다.
 
+## TypeScript 생성 파일 정책
+
+- 타입 검사는 `tsc -p tsconfig.json --noEmit`으로 실행합니다.
+- 빌드 모드의 증분 메타데이터는 저장소에 추적하지 않습니다.
+- `*.tsbuildinfo`는 `.gitignore`에서 제외하고, 빌드 후에도 작업 트리가 깨끗해야 합니다.
+- `paths`는 `tsconfig.json` 기준 상대경로를 직접 사용하며 `baseUrl`은 사용하지 않습니다.
+
 ## DOM 캡처 검사
 
 `render-label-texture.ts`는 다음 조건이 충족되지 않으면 캡처를 중단합니다.
@@ -57,11 +64,23 @@ Chromium에서 다음 흐름을 확인합니다.
   grep -nF 'export const net30Definition' app/src/sku-data.ts
   grep -nF 'const THREE_D_LABEL_SHEETS = ["한글표시사항", "전체 가격 구조"] as const;' docs/design-system/Storefront.tsx
   grep -nF 'const LABEL_SHEET_CLASS = "ds-label-sticker-sheet";' docs/design-system/render-label-texture.ts
+  grep -nF '"typecheck": "tsc -p tsconfig.json --noEmit"' app/package.json
+
+  if grep -nF '"baseUrl"' app/tsconfig.json; then
+    echo '검증 실패: 더 이상 사용하지 않는 baseUrl 설정이 남아 있습니다.' >&2
+    exit 1
+  fi
+
+  if git ls-files '*.tsbuildinfo' | grep -q .; then
+    echo '검증 실패: TypeScript 증분 메타데이터가 Git에 추적되고 있습니다.' >&2
+    git ls-files '*.tsbuildinfo' >&2
+    exit 1
+  fi
 
   if grep -RInE \
     --exclude-dir=node_modules \
     --exclude-dir=dist \
-    'drawSkuLabel|koreanLabelLines|priceStructureLines|vitamin_bottle_3d_editor|price-structure-label|from[[:space:]]+["'"']\.\/product-definition["'"']|\.push_repo\/app\/src' \
+    'drawSkuLabel|koreanLabelLines|priceStructureLines|vitamin_bottle_3d_editor|price-structure-label|from[[:space:]]+["'"']\.\/product-definition["'"']' \
     app/src \
     app/public/assets/3d/vitamin-bottle \
     docs/design-system/Storefront.tsx \
@@ -78,10 +97,15 @@ Chromium에서 다음 흐름을 확인합니다.
 
   npm --prefix app run build
   git diff --check
-  git status --short
+
+  if [ -n "$(git status --porcelain)" ]; then
+    echo '검증 실패: 빌드 후 작업 트리가 변경되었습니다.' >&2
+    git status --short >&2
+    exit 1
+  fi
 
   echo 'NET30 3D 구조 검증 완료'
 )
 ```
 
-`docs/design-system/validation/`과 `template-map.mjs`에는 재사용 가능한 디자인 시스템의 일반 계약 및 테스트 픽스처 명칭으로 `product-definition`이 등장할 수 있습니다. 이는 현재 NET30 제품 정보 파일이나 런타임 import가 아니므로 3D 제품 통합 검사의 금지 대상에 포함하지 않습니다. `.gitignore`의 `.push_repo/` 항목 역시 임시 폴더가 다시 추적되는 것을 막는 보호 규칙이며 런타임 의존성이 아닙니다.
+`docs/design-system/validation/`과 `template-map.mjs`에 등장하는 `product-definition`은 재사용 가능한 디자인 시스템의 일반 계약 및 테스트 픽스처 명칭입니다. 현재 NET30 제품 정보 파일이나 앱 런타임 import가 아니므로 3D 제품 통합 검사의 금지 대상에는 포함하지 않습니다.
