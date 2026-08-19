@@ -1,0 +1,211 @@
+.ds-label-sticker {
+  width: 100%;
+  margin: 8px auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.ds-label-sticker-sheet {
+  min-width: 0;
+  font: var(--ds-type-body);
+  letter-spacing: -.015em;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  min-height: 0;
+}
+
+.ds-label-sticker-head {
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.ds-label-sticker-badge {
+  border: var(--ds-line);
+  padding: 5px 8px;
+  color: var(--ds-ink);
+  font: var(--ds-type-caption);
+  font-weight: var(--ds-font-weight-bold);
+}
+
+.ds-label-sticker-title {
+  margin: 0;
+  color: var(--ds-ink);
+  font: var(--ds-type-title);
+  letter-spacing: -.04em;
+  min-width: 0;
+  flex: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-label-sticker-head > .ds-label-sticker-value {
+  color: var(--ds-ink);
+  text-align: right;
+  font: var(--ds-type-title-mono);
+  letter-spacing: -.04em;
+  white-space: nowrap;
+  margin: 0;
+  padding-right: 0;
+  margin-left: auto;
+}
+
+.ds-label-sticker-section {
+  padding: 14px 18px;
+  border-top: var(--ds-line);
+}
+
+.ds-label-sticker-section-title {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--ds-ink);
+  font: var(--ds-type-section-heading);
+}
+
+details.ds-label-sticker-section > summary.ds-label-sticker-section-title {
+  margin-bottom: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+details.ds-label-sticker-section[open] > summary.ds-label-sticker-section-title { margin-bottom: 9px; }
+details.ds-label-sticker-section > summary.ds-label-sticker-section-title::-webkit-details-marker { display: none; }
+
+.ds-label-sticker-rows {
+  display: grid;
+  gap: 4px;
+}
+
+.ds-label-sticker-row {
+  display: grid;
+  grid-template-columns: minmax(110px, .42fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.ds-label-sticker-field { color: var(--ds-muted); font: var(--ds-type-label); }
+.ds-label-sticker-value { min-width: 0; color: var(--ds-ink); font: var(--ds-type-body-strong); }
+.ds-label-sticker-copy { margin: 5px 0 0; color: var(--ds-ink); font: var(--ds-type-body); word-break: keep-all; }
+.ds-label-sticker-cost-rows { display: grid; min-width: 0; overflow-x: hidden; }
+
+.ds-label-sticker-cost-header,
+.ds-label-sticker-cost-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 120px 120px minmax(0, 1fr) 40px 40px;
+  gap: 8px;
+  align-items: center;
+}
+
+.ds-label-sticker-cost-header {
+  padding: 0 0 8px;
+  color: var(--ds-muted);
+  font: var(--ds-type-caption-mono);
+}
+
+.ds-label-sticker-cost-header strong:last-child { text-align: right; }
+.ds-label-sticker-cost-header strong { font: inherit; }
+
+.ds-label-sticker-cost-row {
+  padding: 7px 0;
+  border-top: var(--ds-line);
+  min-width: 0;
+}
+
+.ds-label-sticker-cost-row:first-child { border-top: 0; }
+.ds-label-sticker-cost-name {
+  min-width: 0;
+  color: var(--ds-ink);
+  font: var(--ds-type-body-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-label-sticker-cost-meta {
+  color: var(--ds-muted);
+  font: var(--ds-type-caption-mono);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-label-sticker-cost-amount { color: var(--ds-ink); text-align: left; font: var(--ds-type-numeric-strong); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-label-sticker-cost-row > span:last-child { color: var(--ds-ink); text-align: right; font: var(--ds-type-numeric-strong); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ds-label-sticker-cost-row > span { min-width: 0; }
+.ds-label-sticker-cost-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ds-label-sticker-cost-gauge { height: 4px; position: relative; overflow: hidden; background: var(--ds-soft); border-radius: var(--ds-pill); }
+.ds-label-sticker-cost-gauge b { height: 100%; position: absolute; top: 0; background: var(--ds-ink); border-radius: var(--ds-pill); }
+
+.ds-label-sticker-cost-detail {
+  min-width: 0;
+  background: transparent;
+}
+
+.ds-label-sticker-cost-detail > .ds-label-sticker-cost-row { border-top: var(--ds-line); border-bottom: 0; font-weight: 700; }
+.ds-label-sticker-cost-detail > .ds-label-sticker-cost-row .ds-label-sticker-cost-name { font: var(--ds-type-group-heading); }
+details.ds-label-sticker-cost-detail > summary.ds-label-sticker-cost-row { cursor: pointer; list-style: none; }
+details.ds-label-sticker-cost-detail > summary.ds-label-sticker-cost-row::-webkit-details-marker { display: none; }
+
+.ds-label-sticker-cost-summary {
+  margin: 0;
+  padding: 0;
+}
+
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-name { padding-left: 24px; }
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-row:first-child { border-top: var(--ds-line); }
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-row {
+  color: var(--ds-muted);
+  border-color: var(--ds-subtle);
+}
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-name { color: var(--ds-muted); font: var(--ds-type-body); }
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-amount { color: var(--ds-muted); }
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-meta,
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-row > span:last-child { color: var(--ds-muted); }
+.ds-label-sticker-cost-summary .ds-label-sticker-cost-gauge b { background: var(--ds-subtle); }
+
+.ds-label-sticker + .trace { margin-top: 8px; }
+.ds-label-sticker + .trace .trace-grid { grid-template-columns: 1fr; }
+.ds-label-sticker + .trace .trace-grid > * { min-height: 420px; }
+
+@media (max-width: 900px) {
+  .ds-label-sticker { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .ds-label-sticker-head,
+  .ds-label-sticker-section { padding-left: 13px; padding-right: 13px; }
+  .ds-label-sticker-row { grid-template-columns: 92px minmax(0, 1fr); gap: 10px; }
+  .ds-label-sticker-cost-summary .ds-label-sticker-cost-name { padding-left: 16px; }
+}
+
+@media (max-width: 1100px) {
+  .ds-label-sticker-cost-header,
+  .ds-label-sticker-cost-row {
+    grid-template-columns: 120px 120px minmax(0, 1fr) 40px 40px;
+  }
+}
+
+@media (max-width: 760px) {
+  .ds-label-sticker-cost-header,
+  .ds-label-sticker-cost-row {
+    grid-template-columns: 120px 120px minmax(0, 1fr) 40px 40px;
+    gap: 6px;
+  }
+}
+
+@media print {
+  .ds-label-sticker { display: block; margin: 0; }
+  .ds-label-sticker-sheet { break-after: page; border-radius: 0; }
+  .ds-label-sticker-sheet:last-child { break-after: auto; }
+  .ds-label-sticker-cost-detail { display: block; }
+}

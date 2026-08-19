@@ -1,0 +1,8 @@
+/* Central responsive catalog-choice atom: one to three items fill the row. */
+.design-showcase {
+  grid-template-columns: repeat(auto-fit, minmax(30%, 1fr));
+}
+
+@media (max-width: 700px) {
+  .design-showcase { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 360">
+  <path d="M74 28h152l-8 46 18 242c1 14-10 24-24 24H88c-14 0-25-10-24-24L82 74z" fill="#fff" stroke="#0a0a0a"/>
+  <path d="M82 74h136" stroke="#0a0a0a"/>
+  <rect x="88" y="126" width="124" height="116" fill="#f8f8f6" stroke="#0a0a0a"/>
+  <text x="102" y="151" font-family="monospace" font-size="10">NET30 / 03</text>
+  <text x="102" y="187" font-family="Arial" font-size="28" font-weight="700">100%</text>
+  <text x="102" y="207" font-family="monospace" font-size="8">REFILL RECEIPT</text>
+  <line x1="102" y1="224" x2="198" y2="224" stroke="#0a0a0a"/>
+  <text x="102" y="239" font-family="monospace" font-size="7">PACKAGING ↓</text>
+</svg>

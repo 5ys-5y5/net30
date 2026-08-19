@@ -1,0 +1,14 @@
+{
+  "name": "@all-o-white/design-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate": "node validation/validate-design-system.mjs",
+    "proof": "node validation/test-architecture-proof.mjs"
+  },
+  "peerDependencies": {
+    "cobe": "^2.0.1",
+    "react": "^19.2.6"
+  }
+}

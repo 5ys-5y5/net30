@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 620" role="img" aria-label="NET30 멀티비타민 미네랄 올인원 단상자와 PTP 포장">
+  <defs><linearGradient id="box" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fffdf7"/><stop offset="1" stop-color="#ece9df"/></linearGradient><filter id="shadow"><feDropShadow dx="0" dy="18" stdDeviation="16" flood-opacity=".18"/></filter></defs>
+  <g filter="url(#shadow)">
+    <path d="M92 70h274l62 46v414H92z" fill="url(#box)" stroke="#191916" stroke-width="3"/>
+    <path d="M366 70v46h62" fill="#ded9ca" stroke="#191916" stroke-width="3"/>
+    <rect x="120" y="98" width="106" height="30" rx="15" fill="#191916"/><text x="173" y="119" fill="#fff" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700">건강기능식품</text>
+    <text x="120" y="182" font-family="Arial,sans-serif" font-size="22" font-weight="700" fill="#191916">NET30</text>
+    <text x="120" y="232" font-family="Arial,sans-serif" font-size="32" font-weight="800" fill="#191916">MULTI</text><text x="120" y="268" font-family="Arial,sans-serif" font-size="32" font-weight="800" fill="#191916">VITAMIN</text>
+    <text x="120" y="301" font-family="Arial,sans-serif" font-size="17" fill="#4a4942">미네랄 올인원 · 30정</text>
+    <line x1="120" y1="334" x2="394" y2="334" stroke="#191916" stroke-width="2"/>
+    <text x="120" y="365" font-family="Arial,sans-serif" font-size="14" fill="#191916">21종 영양·기능성분</text><text x="120" y="389" font-family="Arial,sans-serif" font-size="14" fill="#191916">1,500 mg × 30정 · 총 45 g</text>
+    <circle cx="343" cy="427" r="54" fill="#e8ff45" stroke="#191916" stroke-width="2"/><text x="343" y="420" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="700">PRICE</text><text x="343" y="443" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="800">100%</text>
+  </g>
+  <g transform="translate(26 410) rotate(-9 105 66)" filter="url(#shadow)"><rect x="0" y="0" width="210" height="132" rx="9" fill="#c9c7c0" stroke="#191916" stroke-width="3"/><g fill="#f8f7f2" stroke="#8b8982">
+    <circle cx="32" cy="32" r="18"/><circle cx="73" cy="32" r="18"/><circle cx="114" cy="32" r="18"/><circle cx="155" cy="32" r="18"/><circle cx="32" cy="78" r="18"/><circle cx="73" cy="78" r="18"/><circle cx="114" cy="78" r="18"/><circle cx="155" cy="78" r="18"/>
+  </g><text x="18" y="119" font-family="Arial,sans-serif" font-size="9" fill="#292824">NET30 · VITAMIN</text></g>
+</svg>

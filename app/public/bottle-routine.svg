@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 360">
+  <g transform="translate(-30 34) scale(.8)"><rect x="98" y="24" width="104" height="42" rx="10"/><path d="M88 70h124l20 36v202c0 18-14 32-32 32H100c-18 0-32-14-32-32V106z" fill="#fff" stroke="#0a0a0a"/><rect x="82" y="126" width="136" height="120" fill="#f8f8f6" stroke="#0a0a0a"/><text x="96" y="164" font-family="Arial" font-size="26" font-weight="700">100%</text><text x="96" y="188" font-family="monospace" font-size="8">NET30 / 02</text></g>
+  <g transform="translate(70 8) scale(.8)"><rect x="98" y="24" width="104" height="42" rx="10"/><path d="M88 70h124l20 36v202c0 18-14 32-32 32H100c-18 0-32-14-32-32V106z" fill="#fff" stroke="#0a0a0a"/><rect x="82" y="126" width="136" height="120" fill="#f8f8f6" stroke="#0a0a0a"/><text x="96" y="164" font-family="Arial" font-size="26" font-weight="700">100%</text><text x="96" y="188" font-family="monospace" font-size="8">NET30 / 02</text></g>
+</svg>

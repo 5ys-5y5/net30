@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 360">
+  <rect x="98" y="24" width="104" height="42" rx="10" fill="#0a0a0a"/>
+  <path d="M88 70h124l20 36v202c0 18-14 32-32 32H100c-18 0-32-14-32-32V106z" fill="#fff" stroke="#0a0a0a"/>
+  <rect x="82" y="126" width="136" height="120" fill="#f8f8f6" stroke="#0a0a0a"/>
+  <text x="96" y="151" font-family="monospace" font-size="10">NET30 / 01</text>
+  <text x="96" y="187" font-family="Arial" font-size="28" font-weight="700">100%</text>
+  <text x="96" y="207" font-family="monospace" font-size="8">PRICE RECEIPT</text>
+  <line x1="96" y1="224" x2="202" y2="224" stroke="#0a0a0a"/>
+  <text x="96" y="239" font-family="monospace" font-size="7">UNEXPLAINED ₩0</text>
+</svg>
