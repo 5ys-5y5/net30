@@ -6,7 +6,7 @@
 - `app/src/sku-data.ts` 한 파일에서 제품 데이터와 `net30Definition`을 함께 내보내는지 확인합니다.
 - `app/src/main.tsx`가 `./sku-data`만 가져오는지 확인합니다.
 - 제품 고유 표시사항이 3D 모델 설정 파일에 중복 저장되지 않았는지 확인합니다.
-- 두 라벨 시트를 문자열 배열로 재조립하는 코드가 남아 있지 않은지 확인합니다.
+- 두 라벨 시트를 문자열 배열로 재조립하는 코드가 실제 3D 런타임 경로에 남아 있지 않은지 확인합니다.
 
 ## DOM 캡처 검사
 
@@ -32,9 +32,56 @@ Chromium에서 다음 흐름을 확인합니다.
 
 ## 저장소 전체 검사
 
+아래 검사는 괄호로 감싼 서브셸에서 실행합니다. 따라서 `set -u`와 `exit 1`이 사용자의 대화형 zsh 세션에 남지 않습니다.
+
 ```bash
-cd /Users/gy/Documents/dev/net30
-npm --prefix app run build
+(
+  set -euo pipefail
+  cd /Users/gy/Documents/dev/net30
+
+  removed_paths=(
+    app/public/vitamin_bottle_3d_editor.html
+    docs/vitamin_bottle_3d_editor.html
+    app/src/product-definition.ts
+    app/public/assets/3d/vitamin-bottle/textures/price-structure-label.png
+  )
+
+  for path_to_check in "${removed_paths[@]}"; do
+    if [ -e "$path_to_check" ]; then
+      printf '검증 실패: 삭제 대상이 남아 있습니다: %s\n' "$path_to_check" >&2
+      exit 1
+    fi
+  done
+
+  grep -nF 'from "./sku-data"' app/src/main.tsx
+  grep -nF 'export const net30Definition' app/src/sku-data.ts
+  grep -nF 'const THREE_D_LABEL_SHEETS = ["한글표시사항", "전체 가격 구조"] as const;' docs/design-system/Storefront.tsx
+  grep -nF 'const LABEL_SHEET_CLASS = "ds-label-sticker-sheet";' docs/design-system/render-label-texture.ts
+
+  if grep -RInE \
+    --exclude-dir=node_modules \
+    --exclude-dir=dist \
+    'drawSkuLabel|koreanLabelLines|priceStructureLines|vitamin_bottle_3d_editor|price-structure-label|from[[:space:]]+["'"']\.\/product-definition["'"']|\.push_repo\/app\/src' \
+    app/src \
+    app/public/assets/3d/vitamin-bottle \
+    docs/design-system/Storefront.tsx \
+    docs/design-system/index.tsx \
+    docs/design-system/schema.ts \
+    docs/design-system/render-label-texture.ts; then
+    echo '검증 실패: 실제 런타임 경로에 제거 대상 코드가 남아 있습니다.' >&2
+    exit 1
+  fi
+
+  find app/public/assets/3d/vitamin-bottle \
+    -type f -name '*.js' -print0 \
+    | xargs -0 -n1 node --check
+
+  npm --prefix app run build
+  git diff --check
+  git status --short
+
+  echo 'NET30 3D 구조 검증 완료'
+)
 ```
 
-빌드 성공 후 `git diff --check`와 금지 문자열 검사를 함께 수행합니다.
+`docs/design-system/validation/`과 `template-map.mjs`에는 재사용 가능한 디자인 시스템의 일반 계약 및 테스트 픽스처 명칭으로 `product-definition`이 등장할 수 있습니다. 이는 현재 NET30 제품 정보 파일이나 런타임 import가 아니므로 3D 제품 통합 검사의 금지 대상에 포함하지 않습니다. `.gitignore`의 `.push_repo/` 항목 역시 임시 폴더가 다시 추적되는 것을 막는 보호 규칙이며 런타임 의존성이 아닙니다.
