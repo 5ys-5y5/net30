@@ -44,7 +44,7 @@
 .ds-modeling-library{display:grid;gap:24px;margin-top:24px;padding:24px;background:var(--ds-quiet)}
 .ds-modeling-library-header{display:grid;gap:8px;max-width:640px}
 .ds-modeling-library-header p,.ds-modeling-asset-group-header p{margin:0;color:var(--ds-muted);font:500 11px/1.65 var(--ds-font-mono)}
-.ds-modeling-library-selection{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;padding:18px;border-top:var(--ds-line);border-bottom:var(--ds-line)}
+.ds-modeling-library-selection{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;padding:0;border-top:var(--ds-line);border-bottom:var(--ds-line)}
 .ds-modeling-library-selection p{margin:6px 0 0;color:var(--ds-muted);font:500 10px/1.5 var(--ds-font-mono)}
 .ds-modeling-library-selection-meta{display:grid;gap:4px;align-content:start}
 .ds-modeling-library-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
