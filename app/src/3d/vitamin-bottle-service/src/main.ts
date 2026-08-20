@@ -8,22 +8,18 @@ const root = document.getElementById("app");
 if (!root) throw new Error("3D service root not found");
 
 const query = new URLSearchParams(location.search);
-const serviceBaseUrl = import.meta.env.BASE_URL;
-const qaMode = query.get("qa") === "reference";
 const captureMode = query.get("capture") === "1";
 const contentPreset = CONTENT_PRESETS[query.get("contents") ?? "multivitamin"] ?? DEFAULT_CONTENTS;
 
 root.innerHTML = `
-  <section class="viewer${qaMode ? " viewer--qa" : ""}${captureMode ? " viewer--capture" : ""}">
+  <section class="viewer${captureMode ? " viewer--capture" : ""}">
     <canvas class="viewer__canvas" aria-label="NET30 독립 3D 비타민 병"></canvas>
-    ${qaMode ? `<img class="viewer__reference" src="${serviceBaseUrl}qa/reference-vial.jpg" alt="유리병 기준 사진">` : ""}
     <div class="viewer__status"><strong>NET30 3D</strong><span data-status>독립 서비스 시작 중</span></div>
     <div class="viewer__controls">
       <button type="button" data-zoom-out aria-label="축소">−</button>
       <button type="button" data-reset>1:1</button>
       <button type="button" data-zoom-in aria-label="확대">＋</button>
     </div>
-    ${qaMode ? '<label class="viewer__qa">기준 사진 <input type="range" min="0" max="100" value="50" data-opacity></label>' : ""}
     <p class="viewer__help">좌우 드래그 회전 · 휠 확대 · 더블클릭 정면</p>
     <section class="viewer__error" data-error hidden><h1>3D 서비스를 표시할 수 없습니다.</h1><p data-error-message></p></section>
   </section>
@@ -47,7 +43,6 @@ const numberParam = (name: string) => {
 };
 
 const viewer = new BottleViewer(canvas, {
-  qaMode,
   fit: {
     zoom: numberParam("fitZoom"),
     offsetY: numberParam("fitY"),
@@ -59,23 +54,14 @@ const viewer = new BottleViewer(canvas, {
 
 let activeConfig: ProductConfig = {
   skuId: query.get("sku") ?? "standalone-preview",
-  modelId: "reference-vial",
+  modelId: "showcase-vial",
   capColor: query.get("cap") ?? "#083da9",
-  contents: qaMode ? [] : contentPreset,
+  contents: contentPreset,
 };
 
 root.querySelector<HTMLButtonElement>("[data-zoom-out]")?.addEventListener("click", () => viewer.setView({ zoom: Math.max(0.35, viewer.camera.zoom / 1.18) }));
 root.querySelector<HTMLButtonElement>("[data-zoom-in]")?.addEventListener("click", () => viewer.setView({ zoom: Math.min(3, viewer.camera.zoom * 1.18) }));
 root.querySelector<HTMLButtonElement>("[data-reset]")?.addEventListener("click", () => viewer.setView({ reset: true }));
-
-const reference = root.querySelector<HTMLImageElement>(".viewer__reference");
-const opacity = root.querySelector<HTMLInputElement>("[data-opacity]");
-if (reference && opacity) {
-  const apply = () => { reference.style.opacity = String(Number(opacity.value) / 100); };
-  opacity.addEventListener("input", apply);
-  apply();
-}
-
 
 const allowedHostOrigin = query.get("hostOrigin") ?? window.location.origin;
 const onLegacyMessage = (event: MessageEvent) => {
@@ -113,7 +99,7 @@ const detachBridge = attachBridge({
 (window as Window & { __NET30_3D_SERVICE__?: unknown }).__NET30_3D_SERVICE__ = {
   version: "0.1.1",
   viewer,
-  getState: () => ({ ...activeConfig, qaMode, yaw: viewer.modelRoot.rotation.y, zoom: viewer.camera.zoom }),
+  getState: () => ({ ...activeConfig, yaw: viewer.modelRoot.rotation.y, zoom: viewer.camera.zoom }),
   capturePng: () => viewer.captureDataUrl(),
 };
 

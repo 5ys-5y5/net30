@@ -1,24 +1,6 @@
 {
   "asset": {
-    "name": "NET30 GL45 reference-calibrated vial",
-    "referenceImagePixels": {
-      "canvas": [
-        450,
-        450
-      ],
-      "bottleBounds": [
-        177,
-        133,
-        276,
-        334
-      ],
-      "capBounds": [
-        178,
-        133,
-        272,
-        202
-      ]
-    },
+    "name": "NET30 GL45 showcase vial",
     "diameter_mm": 56,
     "totalHeightWithCap_mm": 112.6,
     "capDiameter_mm": 53.2,

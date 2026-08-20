@@ -54,6 +54,7 @@ export type ModelingOptionDefinition = { id: string; label: string };
 export type ModelingStudioDefinition = {
   endpoint: string;
   previewSrc: string;
+  downloadSrc: string;
   title: string;
   copy: string;
   backLabel: string;
@@ -61,10 +62,11 @@ export type ModelingStudioDefinition = {
   pendingLabel: string;
   previewTitle: string;
   resultTitle: string;
+  downloadLabel: string;
   idleMessage: string;
   unavailableMessage: string;
   fields: {
-    component: string; sku: string; material: string; shape: string;
+    model: string; images: string; component: string; sku: string; material: string; shape: string;
     sizeXmm: string; sizeYmm: string; sizeZmm: string; shellThicknessMm: string;
     distortion: string; tone: string; finish: string; prompt: string;
   };
@@ -72,7 +74,7 @@ export type ModelingStudioDefinition = {
   materials: readonly ModelingOptionDefinition[];
   shapes: readonly ModelingOptionDefinition[];
   defaults: {
-    componentId: string; materialId: string; shapeId: string;
+    modelId: string; componentId: string; materialId: string; shapeId: string;
     sizeXmm: number; sizeYmm: number; sizeZmm: number; shellThicknessMm: number;
     distortion: number; tone: string; finish: string; prompt: string;
   };

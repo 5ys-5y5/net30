@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { modelingSpecSchema } from "./modeling-spec.mjs";
 
 const componentSchema = z.enum(["bottle", "cap", "labelFront", "labelBack", "vitamin", "physicsCollider"]);
 const settingsSchema = z.object({
@@ -28,6 +29,8 @@ export const modelingPayloadSchema = z.object({
   component: componentSchema,
   prompt: z.string().trim().min(1).max(4000),
   settings: settingsSchema,
+  model: z.string().trim().max(160).optional(),
+  imageIds: z.array(z.string().uuid()).max(4).default([]),
 });
 
 function env(name, fallback = "") {
@@ -44,7 +47,7 @@ function pathsFor(assetRoot) {
     renderGlb: env("NET30_RENDER_GLB", path.join(root, "exports", "render", "vitamin-bottle-render.glb")),
     physicsGlb: env("NET30_PHYSICS_GLB", path.join(root, "exports", "physics", "vitamin-bottle-collider.glb")),
     vitaminGlb: env("NET30_VITAMIN_GLB", path.join(root, "exports", "render", "vitamin-shapes.glb")),
-    publishedGlb: path.join(root, "published", "reference-vial.glb"),
+    publishedGlb: path.join(root, "published", "showcase-vial.glb"),
   };
 }
 
@@ -68,8 +71,9 @@ async function run(command, args, { timeoutMs = 12 * 60 * 1000 } = {}) {
   });
 }
 
-export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `job-${Date.now()}` } = {}) {
+export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `job-${Date.now()}`, spec } = {}) {
   const payload = modelingPayloadSchema.parse(rawPayload);
+  const modelingSpec = modelingSpecSchema.parse(spec);
   const paths = pathsFor(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../net30-3d-assets")));
   const jobDir = path.join(paths.jobsRoot, jobId);
   const requestPath = path.join(jobDir, "request.json");
@@ -87,7 +91,7 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
     fs.mkdir(path.dirname(paths.publishedGlb), { recursive: true }),
   ]);
 
-  const request = { payload, paths, jobId };
+  const request = { payload, spec: modelingSpec, paths, jobId };
   await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
   const log = await run(blenderBin, ["--background", "--factory-startup", "--python", workerPath, "--", requestPath]);
   const outputStat = await fs.stat(paths.publishedGlb);
@@ -97,9 +101,9 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   }
 
   const result = {
-    summary: `Blender가 ${payload.component} 요청을 반영하고 런타임 GLB를 갱신했습니다.`,
+    summary: `Blender가 ${payload.component} ModelingSpec을 반영하고 런타임 GLB를 갱신했습니다.`,
     jobId,
-    assetPath: "/assets/reference-vial.glb",
+    assetPath: "/assets/showcase-vial.glb",
     exportPaths: {
       renderGlb: paths.renderGlb,
       physicsGlb: paths.physicsGlb,
@@ -119,7 +123,13 @@ export function createBlenderMcpServer({ assetRoot }) {
     description: "Runs headless Blender to apply a prompt and configuration, then exports the current runtime GLB.",
     inputSchema: modelingPayloadSchema,
   }, async (payload) => {
-    const result = await executeBlenderModeling(payload, { assetRoot });
+    const fallbackSpec = {
+      version: "net30.modeling-spec.v1", summary: "MCP 기본 명세", silhouette: "cylindrical",
+      dimensionsMm: { width: payload.settings.sizeXmm ?? 54, height: payload.settings.sizeZmm ?? 116, depth: payload.settings.sizeYmm ?? 54, wall: payload.settings.shellThicknessMm ?? 2.4 },
+      materials: { body: "glass", cap: "opaque-plastic", bodyColor: "#d7e8f6", capColor: payload.settings.tone ?? "#2d5fc4", labelColor: "#f6f1df", finish: payload.settings.finish ?? "satin" },
+      parts: { neckRatio: 0.66, capRatio: 0.16, labelRatio: 0.38, ribbedCap: payload.settings.shape === "ribbed", shoulder: "rounded", labelText: "NET30" }, camera: { yawDegrees: 0, elevationDegrees: 8 },
+    };
+    const result = await executeBlenderModeling(payload, { assetRoot, spec: fallbackSpec });
     return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
   });
   return server;

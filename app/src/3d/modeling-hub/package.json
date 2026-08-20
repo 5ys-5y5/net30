@@ -10,9 +10,11 @@
   "scripts": {
     "dev": "node src/server.mjs",
     "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/modeling-agent.mjs && node --check src/mission.mjs && node --check src/blender-mcp.mjs"
+    "check": "node --check src/server.mjs && node --check src/modeling-agent.mjs && node --check src/modeling-spec.mjs && node --check src/storage.mjs && node --check src/blender-mcp.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1114.0",
+    "@aws-sdk/s3-request-presigner": "^3.1114.0",
     "@modelcontextprotocol/express": "^2.0.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",

@@ -8,22 +8,14 @@ MCP_ROOT="${BLENDER_MCP_ROOT:-$HOME/.local/share/blender_mcp}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 mkdir -p \
-  "$ASSET_ROOT/reference/$MODEL_ID" \
   "$ASSET_ROOT/blender/$MODEL_ID/source" \
   "$ASSET_ROOT/blender/$MODEL_ID/textures" \
   "$ASSET_ROOT/blender/$MODEL_ID/renders" \
   "$ASSET_ROOT/blender/$MODEL_ID/cache" \
   "$ASSET_ROOT/exports/render" \
   "$ASSET_ROOT/exports/physics" \
-  "$ASSET_ROOT/qa/renders" \
-  "$REPO/scripts/3d/prompts" \
+  "$ASSET_ROOT/jobs" \
   "$MCP_ROOT"
-
-REFERENCE_SOURCE="$REPO/app/src/3d/vitamin-bottle-service/public/qa/reference-vial.jpg"
-REFERENCE_TARGET="$ASSET_ROOT/reference/$MODEL_ID/front.jpg"
-if [ -f "$REFERENCE_SOURCE" ] && [ ! -f "$REFERENCE_TARGET" ]; then
-  cp "$REFERENCE_SOURCE" "$REFERENCE_TARGET"
-fi
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "중단: Python 3 실행 파일을 찾지 못했습니다: $PYTHON_BIN"
@@ -69,11 +61,9 @@ cat > "$REPO/.net30-3d.env" <<ENVEOF
 NET30_REPO="$REPO"
 NET30_3D_ASSET_ROOT="$ASSET_ROOT"
 NET30_BLEND_FILE="$ASSET_ROOT/blender/$MODEL_ID/source/vitamin-bottle.blend"
-NET30_REFERENCE_IMAGE="$REFERENCE_TARGET"
 NET30_RENDER_GLB="$ASSET_ROOT/exports/render/vitamin-bottle-render.glb"
 NET30_PHYSICS_GLB="$ASSET_ROOT/exports/physics/vitamin-bottle-collider.glb"
 NET30_VITAMIN_GLB="$ASSET_ROOT/exports/render/vitamin-shapes.glb"
-NET30_QA_DIR="$ASSET_ROOT/qa/renders"
 BLENDER_MCP_ROOT="$MCP_ROOT"
 NET30_BLENDER_MCP_COMMAND="bash"
 NET30_BLENDER_MCP_ARGS="$REPO/scripts/3d/start-blender-mcp.sh"

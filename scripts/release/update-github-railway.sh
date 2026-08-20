@@ -69,8 +69,8 @@ if [ "${deployed_sha:-}" != "$COMMIT_SHA" ]; then
 fi
 
 curl -fsS "$PUBLIC_URL/model" -o /dev/null
-curl -fsS "$PUBLIC_URL/3d/models/reference-vial.glb" --range 0-3 -o "$TEMP_DIR/canonical.glb"
-curl -fsS "$PUBLIC_URL/models/reference-vial.glb" --range 0-3 -o "$TEMP_DIR/legacy.glb"
+curl -fsS "$PUBLIC_URL/3d/models/showcase-vial.glb" --range 0-3 -o "$TEMP_DIR/canonical.glb"
+curl -fsS "$PUBLIC_URL/models/showcase-vial.glb" --range 0-3 -o "$TEMP_DIR/legacy.glb"
 
 for model in "$TEMP_DIR/canonical.glb" "$TEMP_DIR/legacy.glb"; do
   if [ "$(LC_ALL=C head -c 4 "$model")" != "glTF" ]; then
@@ -83,4 +83,4 @@ echo "NET30_RELEASE_OK"
 echo "commit=$COMMIT_SHA"
 echo "storefront=$PUBLIC_URL/"
 echo "model=$PUBLIC_URL/model"
-echo "model-3d=$PUBLIC_URL/3d/models/reference-vial.glb"
+echo "model-3d=$PUBLIC_URL/3d/models/showcase-vial.glb"

@@ -326,6 +326,9 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const skuIds = catalog.skus.map((item) => item.id);
   const defaults = studio.defaults;
   const [component, setComponent] = useState(defaults.componentId);
+  const [model, setModel] = useState(defaults.modelId);
+  const [models, setModels] = useState<readonly { id: string; label: string }[]>([]);
+  const [images, setImages] = useState<File[]>([]);
   const [material, setMaterial] = useState(defaults.materialId);
   const [shape, setShape] = useState(defaults.shapeId);
   const [skuId, setSkuId] = useState(skuIds[0] ?? "default-sku");
@@ -341,30 +344,72 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
   const [previewRevision, setPreviewRevision] = useState("initial");
+  const [progress, setProgress] = useState("");
+  const [downloadReady, setDownloadReady] = useState(false);
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
   const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}`;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const schemaEndpoint = studio.endpoint.replace(/\/jobs$/, "/schema");
+    void fetch(schemaEndpoint, { signal: controller.signal }).then(async (response) => {
+      if (!response.ok) return;
+      const body = await response.json() as { models?: string[]; defaultModel?: string };
+      const choices = (body.models ?? []).map((id) => ({ id, label: id }));
+      setModels(choices);
+      setModel((current) => current || body.defaultModel || choices[0]?.id || "");
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [studio.endpoint]);
+
+  const uploadImages = async () => {
+    if (images.length > 4) throw new Error("모델링 입력 이미지는 최대 4장입니다.");
+    const ids: string[] = [];
+    for (const file of images) {
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("JPEG, PNG, WebP 이미지만 첨부할 수 있습니다.");
+      if (file.size > 10 * 1024 * 1024) throw new Error("이미지는 파일당 10MB 이하여야 합니다.");
+      const create = await fetch(studio.endpoint.replace(/\/jobs$/, "/uploads"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ filename: file.name, contentType: file.type, size: file.size }) });
+      const created = await create.json() as { ok?: boolean; error?: string; upload?: { id: string; uploadUrl: string; direct: boolean } };
+      if (!create.ok || !created.ok || !created.upload) throw new Error(created.error ?? "이미지 업로드 준비에 실패했습니다.");
+      const sent = await fetch(created.upload.uploadUrl, { method: "PUT", headers: { "content-type": file.type }, body: file });
+      if (!sent.ok) throw new Error("이미지 업로드에 실패했습니다.");
+      if (created.upload.direct) {
+        const complete = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/uploads")}/${created.upload.id}/complete`, { method: "POST" });
+        if (!complete.ok) throw new Error("이미지 업로드 완료 확인에 실패했습니다.");
+      }
+      ids.push(created.upload.id);
+    }
+    return ids;
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setPending(true);
     setResult("");
     setError("");
+    setDownloadReady(false);
+    setProgress(images.length ? "이미지 업로드 중" : "모델링 지시 준비 중");
     try {
+      const imageIds = await uploadImages();
+      setProgress("OpenAI가 모델링 구조를 분석 중");
       const response = await fetch(studio.endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          component,
+          component, model: model || undefined, imageIds,
           prompt,
           settings: { sizeXmm, sizeYmm, sizeZmm, shellThicknessMm, distortion, material, shape, tone, finish, presetSkuId: skuId },
         }),
       });
-      const body = await response.json() as { ok?: boolean; summary?: string; error?: string; exportPaths?: Record<string, string> };
+      setProgress("Blender가 GLB를 생성 중");
+      const body = await response.json() as { ok?: boolean; summary?: string; error?: string; exportPaths?: Record<string, string>; analysis?: { summary?: string; model?: string | null; imageCount?: number } };
       if (!response.ok || !body.ok) throw new Error(body.error ?? `모델링 요청 실패 (${response.status})`);
       const paths = body.exportPaths ? Object.entries(body.exportPaths).map(([key, value]) => `${key}: ${value}`) : [];
-      setResult([body.summary ?? "", ...paths].filter(Boolean).join("\n"));
+      setResult([body.summary ?? "", body.analysis?.summary ?? "", body.analysis?.model ? `OpenAI 모델: ${body.analysis.model}` : "", body.analysis ? `입력 이미지: ${body.analysis.imageCount ?? 0}장` : "", ...paths].filter(Boolean).join("\n"));
       setPreviewRevision(Date.now().toString());
+      setProgress("완료");
+      setDownloadReady(true);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
@@ -393,6 +438,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             <Copy>{studio.copy}</Copy>
           </Atom>
           <Atom className={CLASS.modelingFields}>
+            {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
             {selectField(studio.fields.component, component, setComponent, studio.components)}
             {selectField(studio.fields.sku, skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
             {selectField(studio.fields.material, material, setMaterial, studio.materials)}
@@ -408,18 +454,24 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
               <Label>{studio.fields.prompt}</Label>
               <textarea className={joinClasses(CLASS.modelingControl, CLASS.modelingTextarea)} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
             </label>
+            <label className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}>
+              <Label>{studio.fields.images}</Label>
+              <input className={CLASS.modelingControl} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setImages(Array.from(event.target.files ?? []))} />
+              <Copy className={CLASS.modelingHint}>{images.length ? `${images.length}장 선택됨 · 작업 완료 후 7일 보관` : "선택 사항 · JPEG/PNG/WebP 최대 4장, 각 10MB"}</Copy>
+            </label>
           </Atom>
           <button className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? studio.pendingLabel : studio.submitLabel}</button>
-          <Copy className={CLASS.modelingHint}>{studio.unavailableMessage}</Copy>
+          <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
         </form>
       </Surface>
       <Surface className={CLASS.modelingPreview}>
         <Atom className={CLASS.modelingToolbar}><Label>{studio.previewTitle}</Label><Link href="/">{studio.backLabel}</Link></Atom>
         <iframe className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
-        <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
-          <Label>{studio.resultTitle}</Label>
-          <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
-        </Atom>
+          <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
+            <Label>{studio.resultTitle}</Label>
+            <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
+            {downloadReady && <Link href={studio.downloadSrc} download>{studio.downloadLabel}</Link>}
+          </Atom>
       </Surface>
     </Atom>
   </Container>;

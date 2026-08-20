@@ -7,9 +7,9 @@ import trimesh
 from scipy.interpolate import PchipInterpolator
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "public" / "models" / "reference-vial.glb"
+OUT = ROOT / "public" / "models" / "showcase-vial.glb"
 
-# Units are metres. The profile is calibrated to the supplied 450 x 450 reference.
+# Units are metres. This is a portable showcase asset for the independent viewer.
 # The bottle body diameter is 56 mm; cap outer diameter is 53.6 mm.
 OUTER = np.array([
     [0.0215, 0.0000],
@@ -136,7 +136,7 @@ def create_ribbed_cap() -> trimesh.Trimesh:
             a = 2 * np.pi * i / segments
             wave = np.cos(a * rib_count)
             r = base + 0.00075 * wave * max(0.22, end_blend)
-            # Reference cap has very subtle top and bottom rounding.
+            # The showcase cap has very subtle top and bottom rounding.
             if t < 0.06:
                 r -= 0.00035 * (1.0 - t / 0.06)
             if t > 0.94:

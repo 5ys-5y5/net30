@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "../..");
 const hostDir = resolve(root, "app");
 const serviceDir = resolve(root, "app/src/3d/vitamin-bottle-service");
-const modelFile = resolve(serviceDir, "dist/models/reference-vial.glb");
+const modelFile = resolve(serviceDir, "dist/models/showcase-vial.glb");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -58,19 +58,19 @@ run("npm", ["run", "build"], { cwd: serviceDir });
 console.log("[Railway 4/5] Verify build outputs and static asset base");
 assertDirectory(resolve(hostDir, "dist"), "Host");
 assertDirectory(resolve(serviceDir, "dist"), "3D service");
-if (!existsSync(modelFile)) throw new Error(`3D reference model was not emitted: ${modelFile}`);
+if (!existsSync(modelFile)) throw new Error(`3D showcase model was not emitted: ${modelFile}`);
 if (readFileSync(modelFile).subarray(0, 4).toString("utf8") !== "glTF") {
-  throw new Error(`3D reference model is not GLB v2: ${modelFile}`);
+  throw new Error(`3D showcase model is not GLB v2: ${modelFile}`);
 }
 let hasCanonicalModelUrl = false;
 for (const file of walk(resolve(serviceDir, "dist")).filter((name) => name.endsWith(".js"))) {
   const text = readFileSync(file, "utf8");
-  if (text.includes('"/models/reference-vial.glb"') || text.includes("'/models/reference-vial.glb'")) {
+  if (text.includes('"/models/showcase-vial.glb"') || text.includes("'/models/showcase-vial.glb'")) {
     throw new Error(`Root-relative 3D model URL leaked into production bundle: ${file}`);
   }
-  hasCanonicalModelUrl ||= text.includes('"/3d/models/reference-vial.glb"') || text.includes("'/3d/models/reference-vial.glb'");
+  hasCanonicalModelUrl ||= text.includes('"/3d/models/showcase-vial.glb"') || text.includes("'/3d/models/showcase-vial.glb'");
 }
-if (!hasCanonicalModelUrl) throw new Error("Canonical /3d/models/reference-vial.glb URL is missing from the production bundle");
+if (!hasCanonicalModelUrl) throw new Error("Canonical /3d/models/showcase-vial.glb URL is missing from the production bundle");
 
 console.log("[Railway 5/5] Build complete");
 console.log("NET30_RAILWAY_BUILD_OK");

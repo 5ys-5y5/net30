@@ -28,7 +28,6 @@ import { DEFAULT_CONTENTS } from "../model/presets";
 import { ContentWorld } from "../physics/contentWorld";
 
 export type BottleViewerOptions = {
-  readonly qaMode: boolean;
   readonly onStatus?: (message: string) => void;
   readonly fit?: { readonly zoom?: number; readonly offsetY?: number; readonly scaleX?: number; readonly scaleY?: number };
 };
@@ -53,7 +52,6 @@ export class BottleViewer {
   readonly modelRoot = new Group();
   readonly labelManager: LabelManager;
   private readonly onStatus: (message: string) => void;
-  private readonly qaMode: boolean;
   private readonly fit: NonNullable<BottleViewerOptions["fit"]>;
   private readonly controls: ControlState;
   private readonly resizeObserver: ResizeObserver;
@@ -71,7 +69,6 @@ export class BottleViewer {
   private lastPointerTime = 0;
 
   constructor(readonly canvas: HTMLCanvasElement, options: BottleViewerOptions) {
-    this.qaMode = options.qaMode;
     this.fit = options.fit ?? {};
     this.onStatus = options.onStatus ?? (() => undefined);
     this.renderer = new WebGLRenderer({
@@ -85,19 +82,19 @@ export class BottleViewer {
     });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = this.qaMode ? 0.98 : 1.05;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.setClearColor(0xffffff, 1);
-    this.renderer.transmissionResolutionScale = this.qaMode ? 1 : 0.78;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.qaMode ? 1.5 : 1.75));
+    this.renderer.transmissionResolutionScale = 0.78;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 
     const aspect = Math.max(1, canvas.clientWidth) / Math.max(1, canvas.clientHeight);
     const halfHeight = 0.132 / 2;
     this.camera = new OrthographicCamera(-halfHeight * aspect, halfHeight * aspect, halfHeight, -halfHeight, 0.01, 2);
     this.camera.position.set(0, 0, 0.34);
     this.camera.lookAt(0, 0, 0);
-    this.camera.zoom = this.fit.zoom ?? (this.qaMode ? 0.49 : 0.84);
+    this.camera.zoom = this.fit.zoom ?? 0.84;
     this.camera.updateProjectionMatrix();
 
     this.controls = {
@@ -175,14 +172,10 @@ export class BottleViewer {
     this.bottle.setCapColor(config.capColor ?? "#083da9");
     this.fitCamera(this.bottle.bounds);
     this.installPresentationShell(this.bottle.bounds, config.capColor ?? "#083da9");
-    if (!this.qaMode) {
-      this.onStatus("비타민 중력 엔진 초기화");
-      this.contents = await ContentWorld.create(config.contents ?? DEFAULT_CONTENTS, this.renderer.capabilities.getMaxAnisotropy());
-      this.contents.meshes.forEach((mesh) => this.scene.add(mesh));
-      this.onStatus("PBR·라벨 API·물리 준비 완료");
-    } else {
-      this.onStatus("병 단독 QA 준비 완료");
-    }
+    this.onStatus("비타민 중력 엔진 초기화");
+    this.contents = await ContentWorld.create(config.contents ?? DEFAULT_CONTENTS, this.renderer.capabilities.getMaxAnisotropy());
+    this.contents.meshes.forEach((mesh) => this.scene.add(mesh));
+    this.onStatus("PBR·라벨 API·물리 준비 완료");
     this.resize();
     this.requestRender();
     void this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined);
@@ -191,7 +184,7 @@ export class BottleViewer {
   private fitCamera(bounds: Box3) {
     const size = bounds.getSize(new Vector3());
     const fitHeight = size.y / 0.132;
-    const desiredPixelFraction = this.qaMode ? 0.51 : 0.82;
+    const desiredPixelFraction = 0.82;
     const computed = desiredPixelFraction / fitHeight;
     this.controls.zoom = clamp(this.fit.zoom ?? computed, 0.3, 2.4);
     this.controls.targetZoom = this.controls.zoom;
@@ -241,17 +234,14 @@ export class BottleViewer {
     if (this.presentationCap?.material instanceof MeshBasicMaterial) {
       this.presentationCap.material.color.set(config.capColor ?? "#083da9");
     }
-    if (!this.qaMode) {
-      this.contents?.meshes.forEach((mesh) => this.scene.remove(mesh));
-      this.contents?.dispose();
-      this.contents = await ContentWorld.create(config.contents ?? DEFAULT_CONTENTS, this.renderer.capabilities.getMaxAnisotropy());
-      this.contents.meshes.forEach((mesh) => this.scene.add(mesh));
-    }
+    this.contents?.meshes.forEach((mesh) => this.scene.remove(mesh));
+    this.contents?.dispose();
+    this.contents = await ContentWorld.create(config.contents ?? DEFAULT_CONTENTS, this.renderer.capabilities.getMaxAnisotropy());
+    this.contents.meshes.forEach((mesh) => this.scene.add(mesh));
     this.requestRender();
   }
 
   async applyLabels(front: LabelSurface, back: LabelSurface) {
-    if (this.qaMode) return;
     await this.labelManager.apply(front, back);
     this.requestRender();
   }
@@ -260,7 +250,7 @@ export class BottleViewer {
     if (payload.reset) {
       this.controls.targetYaw = 0;
       this.controls.velocity = 0;
-      this.controls.targetZoom = this.qaMode ? 0.49 : 0.84;
+      this.controls.targetZoom = 0.84;
     }
     if (typeof payload.yaw === "number" && Number.isFinite(payload.yaw)) {
       this.controls.targetYaw = payload.yaw;

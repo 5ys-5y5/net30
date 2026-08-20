@@ -35,7 +35,7 @@ export type VitaminVariantConfig = {
 
 export type ProductConfig = {
   readonly skuId: string;
-  readonly modelId?: "reference-vial";
+  readonly modelId?: "showcase-vial";
   readonly capColor?: string;
   readonly contents?: readonly VitaminVariantConfig[];
 };

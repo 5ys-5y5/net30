@@ -4,7 +4,6 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 body { background: #fff; }
 .viewer { position: relative; width: 100%; height: 100%; overflow: hidden; background: #fff; }
 .viewer__canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: ew-resize; }
-.viewer__reference { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 .viewer__status { position: absolute; left: 16px; top: 16px; display: flex; gap: 10px; align-items: baseline; padding: 10px 14px; border: 1px solid rgba(15,23,42,.08); border-radius: 16px; background: rgba(255,255,255,.86); box-shadow: 0 16px 40px rgba(15,23,42,.08); backdrop-filter: blur(16px); }
 .viewer__status strong { font-size: 14px; }
 .viewer__status span { font-size: 11px; color: #64748b; }
@@ -12,16 +11,10 @@ body { background: #fff; }
 .viewer__controls button { width: 56px; height: 50px; border: 0; border-right: 1px solid rgba(15,23,42,.08); background: transparent; font: inherit; cursor: pointer; }
 .viewer__controls button:last-child { border-right: 0; }
 .viewer__help { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); margin: 0; padding: 8px 13px; border-radius: 999px; background: rgba(255,255,255,.88); box-shadow: 0 12px 32px rgba(15,23,42,.08); color: #475569; font-size: 11px; white-space: nowrap; pointer-events: none; }
-.viewer__qa { position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 12px; background: rgba(255,255,255,.9); font-size: 11px; color: #334155; }
-.viewer__qa input { width: 180px; }
 .viewer__error { position: absolute; inset: 0; display: grid; place-content: center; padding: 24px; background: #fff; color: #0f172a; text-align: center; }
 .viewer__error[hidden] { display: none; }
 .viewer__error h1 { margin: 0 0 8px; font-size: 20px; }
 .viewer__error p { margin: 0; color: #64748b; }
-.viewer--qa .viewer__status { opacity: .15; }
-.viewer--qa .viewer__controls { opacity: .2; }
 .viewer--capture .viewer__status,
 .viewer--capture .viewer__controls,
-.viewer--capture .viewer__help,
-.viewer--capture .viewer__qa,
-.viewer--capture .viewer__reference { display: none !important; }
+.viewer--capture .viewer__help { display: none !important; }

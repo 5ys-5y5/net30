@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const hostDist = resolve(root, "app/dist");
 const threeDist = resolve(root, "app/src/3d/vitamin-bottle-service/dist");
-const referenceModel = resolve(threeDist, "models/reference-vial.glb");
+const showcaseModel = resolve(threeDist, "models/showcase-vial.glb");
 const port = Number(process.env.PORT ?? 3000);
 const modelingHubUrl = (process.env.NET30_MODELING_HUB_URL ?? "").trim().replace(/\/$/, "");
 const modelingHubToken = (process.env.NET30_MODELING_HUB_TOKEN ?? "").trim();
@@ -89,7 +89,7 @@ async function readBody(req) {
   let total = 0;
   for await (const chunk of req) {
     total += chunk.length;
-    if (total > 2 * 1024 * 1024) throw new Error("Request body exceeds 2 MB");
+    if (total > 11 * 1024 * 1024) throw new Error("Request body exceeds 10 MB");
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -126,7 +126,7 @@ async function proxyModeling(req, res, url) {
 
 async function proxyGeneratedModel(req, res) {
   if (!modelingHubUrl) return false;
-  const upstream = await fetch(`${modelingHubUrl}/assets/reference-vial.glb`, {
+  const upstream = await fetch(`${modelingHubUrl}/assets/showcase-vial.glb`, {
     headers: modelingHubToken ? { authorization: `Bearer ${modelingHubToken}` } : undefined,
     redirect: "manual",
   });
@@ -148,13 +148,13 @@ const server = createServer(async (req, res) => {
         commitSha,
         hostBuild: existsSync(resolve(hostDist, "index.html")),
         threeBuild: existsSync(resolve(threeDist, "index.html")),
-        referenceModel: existsSync(referenceModel),
+        showcaseModel: existsSync(showcaseModel),
         modelingProxyConfigured: Boolean(modelingHubUrl),
         uptimeSeconds: Math.round(process.uptime()),
       });
     }
     if (url.pathname.startsWith("/api/modeling")) return await proxyModeling(req, res, url);
-    if (url.pathname === "/3d/models/reference-vial.glb" || url.pathname === "/models/reference-vial.glb") {
+    if (url.pathname === "/3d/models/showcase-vial.glb" || url.pathname === "/models/showcase-vial.glb") {
       if (await proxyGeneratedModel(req, res)) return;
     }
     if (url.pathname === "/3d") {
@@ -165,7 +165,7 @@ const server = createServer(async (req, res) => {
       const filePath = resolveStatic(threeDist, url.pathname.slice(4), true);
       return filePath ? sendFile(req, res, filePath) : sendJson(res, 404, { ok: false, error: "3D asset not found" });
     }
-    for (const legacyPrefix of ["/models/", "/qa/"]) {
+    for (const legacyPrefix of ["/models/"]) {
       if (url.pathname.startsWith(legacyPrefix)) {
         const filePath = resolveStatic(threeDist, url.pathname.slice(1), false);
         return filePath ? sendFile(req, res, filePath) : sendJson(res, 404, { ok: false, error: "Legacy 3D asset not found" });

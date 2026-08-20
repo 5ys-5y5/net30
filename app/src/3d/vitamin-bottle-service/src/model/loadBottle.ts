@@ -22,7 +22,7 @@ function isMesh(node: Object3D): node is Mesh {
 }
 
 export async function loadBottle(
-  url = `${import.meta.env.BASE_URL}models/reference-vial.glb`,
+  url = `${import.meta.env.BASE_URL}models/showcase-vial.glb`,
 ): Promise<LoadedBottle> {
   const root = (await new GLTFLoader().loadAsync(url)).scene;
   root.name = "NET30IndependentBottle";

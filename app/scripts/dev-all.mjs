@@ -90,7 +90,7 @@ try {
   console.log("\nNET30 local services ready");
   console.log("Storefront: http://127.0.0.1:5173/");
   console.log("Modeling:  http://127.0.0.1:5173/model");
-  console.log("3D asset:  http://127.0.0.1:5173/3d/models/reference-vial.glb");
+  console.log("3D asset:  http://127.0.0.1:5173/3d/models/showcase-vial.glb");
   console.log(`Modeling hub: http://127.0.0.1:${modelingHubPort}/health`);
   console.log("Stop: Ctrl+C\n");
 } catch (error) {
