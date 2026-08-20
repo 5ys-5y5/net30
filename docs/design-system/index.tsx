@@ -187,6 +187,15 @@ export function BuildGate({ className = "", ...props }: HTMLAttributes<HTMLDivEl
 export function BuildProgressPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.buildProgressPanel, className)} aria-live="polite" {...props} />; }
 export function ModelResultPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.modelResultPanel, className)} {...props} />; }
 export function DecisionHistoryDisclosure({ label, children }: { label: ReactNode; children: ReactNode }) { return <details className={CLASS.decisionHistoryDisclosure}><summary>{label}</summary><div>{children}</div></details>; }
+/** Keyboard-operable scope navigation for the product/assembly and component approval panels. */
+export function ReviewScopeNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.reviewScopeNavigator} role="tablist" aria-label="승인 범위" {...props}>{children}</div>; }
+export function ReviewScopeControl({ active, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { active: boolean }) { return <ActionButton className={CLASS.reviewScopeControl} role="tab" aria-selected={active} data-active={active} {...props}>{children}</ActionButton>; }
+/** Approves only the still-proposed questions in the currently visible scope. */
+export function ScopedApprovalBar({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.scopedApprovalBar} {...props} />; }
+/** Measured server stages; callers provide counts only when the work has a real count. */
+export function ProcessProgressPanel({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={CLASS.processProgressPanel} aria-live="polite" {...props} />; }
+export function ProgressStageList({ children, ...props }: HTMLAttributes<HTMLOListElement>) { return <ol className={CLASS.progressStageList} {...props} />; }
+export function ProgressStage({ state, children, ...props }: HTMLAttributes<HTMLLIElement> & { state: "queued" | "running" | "complete" | "failed" }) { return <li className={CLASS.progressStage} data-state={state} {...props}>{children}</li>; }
 
 export function SiteHeader({
   label,

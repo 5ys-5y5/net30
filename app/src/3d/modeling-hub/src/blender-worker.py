@@ -73,20 +73,23 @@ def sticker_slot(name, source_id, radius, height, target, values):
     obj["net30_sticker_slot"]={"sourceGraphicId":source_id,"physicalWidthMm":width/MM,"physicalHeightMm":h/MM,"wrapDegrees":math.degrees(sweep),"surfaceOffsetMm":offset/MM}; return obj
 def build_component(component, contract, target):
     d=contract["dimensionsMm"]; kind=component["component"]; material=mat(kind+"Material",component["material"])
-    radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM; wall=d["wallMm"]*MM
+    features=component["features"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM; wall=float(features.get("wallMm",d["wallMm"]))*MM
     if kind=="bottle":
         obj=lathe("BottleGlass",component["profile"],radius,height,target,material,wall); obj["net30_component"]="bottle"
         # Visible neck rings separated from the wall rather than a painted cylinder.
-        for i in range(component["features"]["neckRings"]): cylinder(f"NeckRing_{i+1}",radius*.665+(i*.0001),.0012,height*.82+i*.0022,target,material)
+        for i in range(features["neckRings"]): cylinder(f"NeckRing_{i+1}",radius*.665+(i*.0001),.0012,height*.82+i*.0022,target,material)
     elif kind=="cap":
-        h=25*MM if height>.03 else height*.24; z=height-h; obj=lathe("CapClosure",component["profile"],radius*.965,h,target,material,0,True); obj.location.z=z; obj["net30_component"]="cap"; cap_ribs(radius*.965,h,z,component["features"]["ribCount"],component["features"]["ribDepthMm"]*MM,target,material)
+        h=float(features.get("heightMm",25))*MM; cap_radius=float(features.get("outerDiameterMm",d["widthMm"]*.965))*MM/2; z=0; obj=lathe("CapClosure",component["profile"],cap_radius,h,target,material,0,True); obj.location.z=z; obj["net30_component"]="cap"; cap_ribs(cap_radius,h,z,features["ribCount"],features["ribDepthMm"]*MM,target,material)
     elif kind=="pouringRing":
-        h=.007; cylinder("PouringRing",radius*.67,h,height-.032,target,material)
+        h=float(features.get("heightMm",7))*MM; cylinder("PouringRing",float(features.get("outerDiameterMm",d["widthMm"]*.67))*MM/2,h,0,target,material)
     elif kind.startswith("decoration"):
         decal(component,radius,target,material)
-    elif kind=="liner": cylinder("ClosureLiner",radius*.59,.0016,height-.028,target,material)
+    elif kind=="liner": cylinder("ClosureLiner",float(features.get("outerDiameterMm",d["widthMm"]*.59))*MM/2,float(features.get("heightMm",1.6))*MM,0,target,material)
     elif kind=="contents":
         bpy.ops.mesh.primitive_uv_sphere_add(segments=32,ring_count=16,location=(0,0,height*.38)); obj=bpy.context.object; obj.name="SelectedContents"; obj.scale=(radius*.24,radius*.24,height*.06); link(obj,target); obj.data.materials.append(material); smooth(obj)
+    offset=component.get("transform",{});
+    for obj in target.objects:
+        obj.location.x += float(offset.get("xMm",0))*MM; obj.location.y += float(offset.get("yMm",0))*MM; obj.location.z += float(offset.get("zMm",0))*MM
 def export(objects,destination):
     import addon_utils; addon_utils.enable("io_scene_gltf2",default_set=False,persistent=False)
     bpy.ops.object.select_all(action="DESELECT")
@@ -115,8 +118,8 @@ def main():
     if request.get("mode")=="assemble-library": return assemble_library(request)
     paths=request["paths"]; clear(); assembly=col("ASSEMBLY")
     for component in request["spec"]["components"]:
-        part=col("PART_"+component["component"]); build_component(component,request["spec"]["contract"],part)
-        export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(component["component"]+".glb"))
+        instance_id=component.get("componentInstanceId",component["component"]); part=col("PART_"+instance_id); build_component(component,request["spec"]["contract"],part)
+        export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(instance_id+".glb"))
         for obj in list(part.objects): link(obj,assembly)
     approved=request.get("payload",{}).get("approvedDraft") or {}
     if approved.get("stickerSlots"):

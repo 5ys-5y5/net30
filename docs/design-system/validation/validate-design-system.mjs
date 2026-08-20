@@ -48,7 +48,7 @@ export async function validateDesignSystem(root = repositoryRoot) {
   if (!/function ModelingCatalogRegion\b/.test(storefront) || !/catalog\.presentation\s*===\s*"modeling"/.test(storefront)) {
     failures.push("Storefront.tsx must centrally compose the modeling presentation");
   }
-  for (const atom of ["ReviewWorkspace", "ReviewWorkspaceHeader", "WorkflowStep", "ParameterGroup", "ParameterQuestionCard", "ParameterValue", "BuildGate", "BuildProgressPanel", "ModelResultPanel", "DecisionHistoryDisclosure"]) {
+  for (const atom of ["ReviewWorkspace", "ReviewWorkspaceHeader", "WorkflowStep", "ParameterGroup", "ParameterQuestionCard", "ParameterValue", "BuildGate", "BuildProgressPanel", "ModelResultPanel", "DecisionHistoryDisclosure", "ReviewScopeNavigator", "ReviewScopeControl", "ScopedApprovalBar", "ProcessProgressPanel", "ProgressStageList", "ProgressStage"]) {
     if (!new RegExp(`<${atom}\\b`).test(storefront)) failures.push(`Storefront.tsx must compose modeling review UI with ${atom}`);
   }
   if (/CLASS\.modeling(?:Review|ReviewHead|Proposal|QuestionList|Question|DecisionActions|BuildGate)\b/.test(storefront)) {

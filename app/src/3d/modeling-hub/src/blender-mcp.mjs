@@ -8,9 +8,9 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { COMPONENTS, fallbackComponent, fallbackContract, modelingSpecSchema } from "./modeling-spec.mjs";
 
-const componentSchema = z.enum(COMPONENTS);
+const componentSchema = z.string().trim().min(1).max(100);
 const settingsSchema = z.object({ sizeXmm: z.coerce.number().positive().max(500).optional(), sizeYmm: z.coerce.number().positive().max(800).optional(), sizeZmm: z.coerce.number().positive().max(500).optional(), shellThicknessMm: z.coerce.number().positive().max(30).optional(), widthMm: z.coerce.number().positive().max(500).optional(), heightMm: z.coerce.number().positive().max(800).optional(), depthMm: z.coerce.number().positive().max(500).optional(), wallMm: z.coerce.number().positive().max(30).optional() }).passthrough();
-export const modelingPayloadSchema = z.object({ version: z.literal("net30.modeling-job.v2").optional(), component: componentSchema.optional(), components: z.array(componentSchema).min(1).max(COMPONENTS.length).optional(), componentPrompts: z.record(z.string(), z.string().trim().max(2000)).default({}), parentVersionId: z.record(z.string(), z.string().min(1).max(160)).default({}), prompt: z.string().trim().min(1).max(4000), settings: settingsSchema.default({}), dimensionOverrides: settingsSchema.default({}), model: z.string().trim().max(160).optional(), imageIds: z.array(z.string().uuid()).max(4).default([]), specFileIds: z.array(z.string().uuid()).max(8).default([]), approvedDraft: z.unknown().optional(), quality: z.enum(["standard", "high"]).default("high") }).transform((value) => ({ ...value, version: "net30.modeling-job.v2", components: [...new Set(value.components ?? (value.component ? [value.component] : ["bottle"]))] }));
+export const modelingPayloadSchema = z.object({ version: z.literal("net30.modeling-job.v2").optional(), component: componentSchema.optional(), components: z.array(componentSchema).min(1).max(30).optional(), componentPrompts: z.record(z.string(), z.string().trim().max(2000)).default({}), parentVersionId: z.record(z.string(), z.string().min(1).max(160)).default({}), prompt: z.string().trim().min(1).max(4000), settings: settingsSchema.default({}), dimensionOverrides: settingsSchema.default({}), model: z.string().trim().max(160).optional(), imageIds: z.array(z.string().uuid()).max(4).default([]), specFileIds: z.array(z.string().uuid()).max(8).default([]), compiledSpec: z.unknown().optional(), approvedDraft: z.unknown().optional(), quality: z.enum(["standard", "high"]).default("high") }).transform((value) => ({ ...value, version: "net30.modeling-job.v2", components: [...new Set(value.components ?? (value.component ? [value.component] : []))] }));
 
 function env(name, fallback = "") { const value = process.env[name]; return value && value.trim().length ? value.trim() : fallback; }
 function run(command, args, timeoutMs = 12 * 60 * 1000) { return new Promise((resolve, reject) => { const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }); let output = ""; const capture = (chunk) => { output = `${output}${chunk}`.slice(-16000); }; child.stdout.on("data", capture); child.stderr.on("data", capture); const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs); child.once("error", (error) => { clearTimeout(timer); reject(error); }); child.once("close", (code, signal) => { clearTimeout(timer); if (code === 0 && !/Traceback|RuntimeError:/i.test(output)) resolve(output); else reject(new Error(`Blender 작업이 실패했습니다 (code=${code ?? "unknown"}, signal=${signal ?? "none"}). ${output}`)); }); }); }
@@ -46,7 +46,7 @@ async function cadExports(spec, requestPath, cadDir) {
   const failures = [];
   for (let index = 0; index < cadComponents.length; index += 2) {
     await Promise.all(cadComponents.slice(index, index + 2).map(async (component) => {
-      const file = path.join(cadDir, `${component.component}.request.json`); const output = path.join(cadDir, `${component.component}.step`);
+      const file = path.join(cadDir, `${component.componentInstanceId}.request.json`); const output = path.join(cadDir, `${component.componentInstanceId}.step`);
       await fs.writeFile(file, JSON.stringify({ component, contract: spec.contract, output }));
       try { await run(python, [worker, file], 4 * 60 * 1000); } catch (error) { failures.push(`${component.component}: ${error.message}`); }
     }));
@@ -73,8 +73,7 @@ export function createBlenderMcpServer({ assetRoot }) {
   const server = new McpServer({ name: "net30-manufacturing-modeling-mcp", version: "2.0.0" });
   server.registerTool("model_container_assembly", { title: "Model selected container components", description: "Compiles a validated declarative assembly spec into component and assembly GLB assets.", inputSchema: modelingPayloadSchema }, async (payload) => {
     if (!payload.approvedDraft || typeof payload.approvedDraft !== "object" || !("approvalHash" in payload.approvedDraft)) throw new Error("approval_required: MCP도 승인된 초안의 approvalHash 없이는 Blender를 실행할 수 없습니다.");
-    const contract = fallbackContract(payload); const spec = { version: "net30.modeling-spec.v2", summary: contract.product.name, contract, components: payload.components.map((component) => ({ ...fallbackComponent(contract, component), contractHash: "0".repeat(64) })) };
-    const result = await executeBlenderModeling(payload, { assetRoot, spec }); return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+    throw new Error("approval_required: MCP 실행은 서버에 저장된 draftId·revision·approvalHash를 검증하는 API를 통해서만 허용됩니다.");
   });
   return server;
 }

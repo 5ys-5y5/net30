@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 
 const modelingHubPort = Number(process.env.NET30_MODELING_HUB_PORT ?? 8788);
 const deployedServiceUrl = "https://net30-production.up.railway.app";
-const modelingHubTarget = process.env.NET30_MODELING_PROXY_URL ?? deployedServiceUrl;
 
 export default defineConfig(({ command }) => {
 const threeServiceTarget = process.env.NET30_3D_PROXY_URL ?? (command === "serve" ? "http://127.0.0.1:5174" : deployedServiceUrl);
+const modelingHubTarget = process.env.NET30_MODELING_PROXY_URL ?? (command === "serve" ? `http://127.0.0.1:${modelingHubPort}` : deployedServiceUrl);
 return {
   plugins: [react()],
   resolve: {

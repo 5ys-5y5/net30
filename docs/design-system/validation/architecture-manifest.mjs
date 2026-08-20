@@ -39,6 +39,12 @@ export const ARCHITECTURE = Object.freeze({
     "buildProgressPanel",
     "modelResultPanel",
     "decisionHistoryDisclosure",
+    "reviewScopeNavigator",
+    "reviewScopeControl",
+    "scopedApprovalBar",
+    "processProgressPanel",
+    "progressStageList",
+    "progressStage",
   ]),
   modelingClassKeys: Object.freeze([
     "modelingWorkspace",

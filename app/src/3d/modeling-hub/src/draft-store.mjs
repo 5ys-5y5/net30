@@ -18,11 +18,12 @@ export function createDraftStore(assetRoot) {
   async function create(input) {
     const id = `draft-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
-    const value = { id, version: "net30.modeling-draft.v3", revision: 1, state: "analyzing_product", message: "제품과 입력 이미지를 분석 중입니다.", input, product: null, components: [], questions: [], stickerSlots: [], events: [], createdAt: now, updatedAt: now };
+    const value = { id, version: "net30.modeling-draft.v4", revision: 1, state: "analyzing_product", message: "제품과 입력 이미지를 분석 중입니다.", input, product: null, components: [], questions: [], stickerSlots: [], progress: [], nextProgressEventId: 1, jobId: null, events: [], createdAt: now, updatedAt: now };
     await write(id, value); return value;
   }
   async function get(id) { if (!existsSync(file(id))) return null; return JSON.parse(await fs.readFile(file(id), "utf8")); }
   async function save(value) { value.updatedAt = new Date().toISOString(); await write(value.id, value); return value; }
   async function appendDecision(id, decision) { await fs.mkdir(path.dirname(log(id)), { recursive: true }); await fs.appendFile(log(id), `${JSON.stringify({ at: new Date().toISOString(), ...decision })}\n`); }
-  return { initialise: () => fs.mkdir(root, { recursive: true }), create, get, save, appendDecision };
+  async function appendProgress(value, progress) { const event = { eventId: value.nextProgressEventId ?? 1, at: new Date().toISOString(), ...progress }; value.nextProgressEventId = event.eventId + 1; value.progress = [...(value.progress ?? []), event].slice(-240); await save(value); return event; }
+  return { initialise: () => fs.mkdir(root, { recursive: true }), create, get, save, appendDecision, appendProgress };
 }
