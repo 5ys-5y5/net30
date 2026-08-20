@@ -1,64 +1,31 @@
 export type ProductVisual =
   | { kind: "silhouette"; variant: "crew" | "relaxed" | "pocket" }
   | { kind: "image"; src: string; alt: string }
-  | {
-      kind: "threeD";
-      src: string;
-      alt: string;
-    };
+  | { kind: "threeD"; src: string; alt: string };
 
-export type RenderedLabelTexture = {
+export type RenderedLabelSurface = {
   dataUrl: string;
   pixelWidth: number;
   pixelHeight: number;
-  sourceLabels: readonly [string, string];
+  sourceLabel: "한글표시사항" | "전체 가격 구조";
 };
 
-export type ThreeDLabelPayload = {
-  skuId: string;
-  renderedLabel: RenderedLabelTexture;
+export type RenderedLabelTexture = {
+  front: RenderedLabelSurface;
+  back: RenderedLabelSurface;
+  sourceLabels: readonly ["한글표시사항", "전체 가격 구조"];
 };
 
-export type PrimaryOption = {
-  id: string;
-  code: string;
-  name: string;
-  detail: string;
-  surcharge: number;
-  visual: ProductVisual;
-};
-
-export type SecondaryOption = {
-  id: string;
-  code: string;
-  name: string;
-  role: string;
-  price: number;
-  landedCost: number;
-  score: number;
-  values: Readonly<Record<string, string>>;
-};
-
+export type ThreeDLabelPayload = { skuId: string; renderedLabel: RenderedLabelTexture };
+export type PrimaryOption = { id: string; code: string; name: string; detail: string; surcharge: number; visual: ProductVisual };
+export type SecondaryOption = { id: string; code: string; name: string; role: string; price: number; landedCost: number; score: number; values: Readonly<Record<string, string>> };
 export type LabelField = { label: string; value: string };
 export type LabelSection = { id: string; title: string; fields?: readonly LabelField[]; copy?: readonly string[] };
 export type IngredientCostLine = { id: string; name: string; amount: string; cost: number };
-export type ProductCostLine = {
-  id: string;
-  label: string;
-  detail?: string;
-  group: "ingredient" | "production" | "distribution" | "growth" | "operation" | "tax" | "profit";
-  amount: number;
-};
+export type ProductCostLine = { id: string; label: string; detail?: string; group: "ingredient" | "production" | "distribution" | "growth" | "operation" | "tax" | "profit"; amount: number };
 export type PriceCostGroup = { id: ProductCostLine["group"]; label: string };
-
-export type HeroTextSegment = {
-  text: string;
-  emphasis?: boolean;
-};
-
-export type HeroTextDefinition = {
-  lines: readonly HeroTextSegment[];
-};
+export type HeroTextSegment = { text: string; emphasis?: boolean };
+export type HeroTextDefinition = { lines: readonly HeroTextSegment[] };
 
 export type KoreanSupplementLabelDefinition = {
   id: string;
@@ -109,16 +76,7 @@ export type ProductPageDefinition = {
     score: string; scoreSuffix: string; scoreNote: string; routeAria: string; routeHint: string; distance: string;
     economicsNote: string; vat: string; platform: string; landed: string; contribution: string; contributionSuffix: string;
   };
-  hero: {
-    label: HeroTextDefinition;
-    heading: HeroTextDefinition;
-    copy: HeroTextDefinition;
-    link: HeroTextDefinition;
-    index: string;
-    range: string;
-    left: string;
-    right: string;
-  };
+  hero: { label: HeroTextDefinition; heading: HeroTextDefinition; copy: HeroTextDefinition; link: HeroTextDefinition; index: string; range: string; left: string; right: string };
   catalogSection: { label: string; title: readonly string[]; copy: readonly string[] };
   principlesSection: { label: string; title: readonly string[]; copy: readonly string[] };
   principles: readonly { code: string; title: string; copy: string }[];

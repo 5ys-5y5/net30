@@ -1,0 +1,49 @@
+{
+  "asset": {
+    "name": "NET30 GL45 reference-calibrated vial",
+    "referenceImagePixels": {
+      "canvas": [
+        450,
+        450
+      ],
+      "bottleBounds": [
+        177,
+        133,
+        276,
+        334
+      ],
+      "capBounds": [
+        178,
+        133,
+        272,
+        202
+      ]
+    },
+    "diameter_mm": 56,
+    "totalHeightWithCap_mm": 112.6,
+    "capDiameter_mm": 53.2,
+    "capHeight_mm": 39.1,
+    "thread": "GL45",
+    "coordinate_system": "Y-up, meters"
+  },
+  "nodes": [
+    "BottleGlass",
+    "ThreadLower",
+    "ThreadMiddle",
+    "ThreadUpper",
+    "PouringRing",
+    "CapBluePP",
+    "CapTamperRing"
+  ],
+  "renderBoundsMeters": {
+    "width": 0.056,
+    "height": 0.1126,
+    "bottomY": -0.05,
+    "topY": 0.0626
+  },
+  "physicsInteriorMeters": {
+    "radius": 0.0252,
+    "bottomY": -0.0458,
+    "topY": 0.0195
+  }
+}

@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -13,15 +17,30 @@
     "moduleResolution": "Bundler",
     "rootDir": "..",
     "paths": {
-      "react": ["./node_modules/@types/react/index.d.ts"],
-      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"],
-      "react/jsx-dev-runtime": ["./node_modules/@types/react/jsx-dev-runtime.d.ts"],
-      "cobe": ["./node_modules/cobe/dist/index.d.ts"]
+      "react": [
+        "./node_modules/@types/react/index.d.ts"
+      ],
+      "react/jsx-runtime": [
+        "./node_modules/@types/react/jsx-runtime.d.ts"
+      ],
+      "react/jsx-dev-runtime": [
+        "./node_modules/@types/react/jsx-dev-runtime.d.ts"
+      ],
+      "cobe": [
+        "./node_modules/cobe/dist/index.d.ts"
+      ]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src", "../docs/design-system/**/*.ts", "../docs/design-system/**/*.tsx"]
+  "include": [
+    "src",
+    "../docs/design-system/**/*.ts",
+    "../docs/design-system/**/*.tsx"
+  ],
+  "exclude": [
+    "src/3d/**"
+  ]
 }

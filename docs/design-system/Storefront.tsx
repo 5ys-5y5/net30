@@ -76,7 +76,11 @@ function useRenderedLabelTexture(
         const texture = await renderLabelStickerToTexture(root, expectedLabels);
         if (disposed || sequence !== captureSequence) return;
         setCaptured((current) => {
-          if (current?.sourceKey === sourceKey && current.texture.dataUrl === texture.dataUrl) return current;
+          if (
+            current?.sourceKey === sourceKey
+            && current.texture.front.dataUrl === texture.front.dataUrl
+            && current.texture.back.dataUrl === texture.back.dataUrl
+          ) return current;
           return { sourceKey, texture };
         });
       } catch (error) {

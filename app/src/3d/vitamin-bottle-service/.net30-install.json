@@ -1,0 +1,7 @@
+{
+  "baseBranch": "preview/three-rapier-vial-20260820-101608",
+  "baseCommit": "0944446c6a37a9a0c04879497cf2c8660a380cb6",
+  "installedAt": "2026-08-20T02:17:56Z",
+  "servicePort": 5174,
+  "hostPort": 5173
+}
