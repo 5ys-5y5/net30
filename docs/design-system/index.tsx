@@ -190,6 +190,35 @@ export function AssetIdentity({ children, className = "", ...props }: HTMLAttrib
   return <div className={joinClasses(CLASS.assetIdentity, className)} {...props}>{children}</div>;
 }
 
+/** Recursive product assets remain a semantic list rather than a fake ARIA tree. */
+export function AssetHierarchy({ className = "", ...props }: HTMLAttributes<HTMLUListElement>) {
+  return <ul className={joinClasses(CLASS.assetHierarchy, className)} {...props} />;
+}
+
+export function AssetHierarchyItem({ className = "", ...props }: HTMLAttributes<HTMLLIElement>) {
+  return <li className={joinClasses(CLASS.assetHierarchyItem, className)} {...props} />;
+}
+
+export function AssetNodeActions({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.assetNodeActions, className)} role="group" {...props} />;
+}
+
+export function AssetEditContext({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <Surface className={joinClasses(CLASS.assetEditContext, className)} {...props} />;
+}
+
+export function InlineAssetEditor({ className = "", ...props }: HTMLAttributes<HTMLFormElement>) {
+  return <form className={joinClasses(CLASS.inlineAssetEditor, className)} {...props} />;
+}
+
+export function DestructiveActionGate({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <Surface className={joinClasses(CLASS.destructiveActionGate, className)} role="alert" {...props} />;
+}
+
+export function AssetEmptyState({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <Surface className={joinClasses(CLASS.assetEmptyState, className)} {...props} />;
+}
+
 export function WorkflowStepper({ children }: { children: ReactNode }) { return <div className={CLASS.workflowStepper}>{children}</div>; }
 export function ProposalCard({ children }: { children: ReactNode }) { return <Surface className={CLASS.proposalCard}>{children}</Surface>; }
 export function ParameterEditor({ children }: { children: ReactNode }) { return <div className={CLASS.parameterEditor}>{children}</div>; }

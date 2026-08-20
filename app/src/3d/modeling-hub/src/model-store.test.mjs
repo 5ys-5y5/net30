@@ -23,4 +23,41 @@ assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "empty");
 const published = await store.publish(first.id, attached.revision.id, attached.model.revision);
 assert.ok(published.publication.id);
 assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "ready");
+
+// A parent revision must pin the child revision it was assembled with.
+const beforeRefine = await store.getTree(first.id, attached.revision.id);
+const childId = beforeRefine.children[0].model.id;
+const childRevisionBefore = beforeRefine.children[0].revisionId;
+const refined = await store.attachBuild({
+  parentModelId: first.id,
+  jobId: "refine-child",
+  componentVersions: [{ component: "cap-refined", versionId: "cap-v2", sourcePath: glb, name: "캡" }],
+  assemblyPath: glb,
+  status: "complete",
+  target: { mode: "refine-node", targetModelId: childId },
+  expectedRevision: published.model.revision,
+  baseRevisionId: published.model.currentRevision.id,
+});
+const pinned = await store.getTree(first.id, attached.revision.id);
+const latest = await store.getTree(first.id);
+assert.equal(pinned.children[0].revisionId, childRevisionBefore);
+assert.equal(latest.children[0].modelId, childId);
+assert.notEqual(latest.children[0].revisionId, childRevisionBefore);
+assert.equal(refined.model.status, "unpublished");
+
+// A linked parent cannot be deleted; it can be unbound, archived, and restored.
+await assert.rejects(() => store.archiveRoot(first.id, refined.model.revision), (error) => error instanceof ModelStoreError && error.code === "model_bound");
+const unbound = await store.bindSku(first.id, null, refined.model.revision);
+const archived = await store.archiveRoot(first.id, unbound.revision);
+assert.equal(archived.status, "archived");
+assert.equal((await store.listRoots()).some((item) => item.id === first.id), false);
+const restored = await store.restoreRoot(first.id, archived.revision);
+assert.notEqual(restored.status, "archived");
+
+// Child removal produces a new parent revision without rewriting old history.
+const current = await store.getRoot(first.id);
+const remove = await store.removeChild({ parentModelId: first.id, childRefId: latest.children[0].id, expectedRevision: current.revision, baseRevisionId: current.currentRevision.id, assemblyPath: null });
+assert.equal((await store.getTree(first.id)).children.length, 0);
+assert.equal((await store.getTree(first.id, latest.selectedRevision.id)).children.length, 1);
+assert.equal(remove.model.status, "unpublished");
 console.log("model-store tests passed");
