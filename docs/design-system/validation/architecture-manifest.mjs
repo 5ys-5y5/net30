@@ -22,6 +22,9 @@ export const ARCHITECTURE = Object.freeze({
   atomClassKeys: Object.freeze([
     "modelPreviewFrame",
     "selectionCardControl",
+    "associationList",
+    "associationRow",
+    "assetIdentity",
     "workflowStepper",
     "proposalCard",
     "parameterEditor",

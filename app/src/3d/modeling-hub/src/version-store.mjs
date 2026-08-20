@@ -65,5 +65,5 @@ export function createVersionStore(assetRoot) {
   function artifactPath(component, versionId) { return path.join(root, component, cleanId(versionId), "model.glb"); }
   function assemblyPath(assemblyId) { return path.join(root, "assemblies", `${cleanId(assemblyId)}.glb`); }
   function showcaseArtifactPath() { return path.join(root, "showcase", "current.glb"); }
-  return { list, register, importLegacyJobs, showcase, setShowcase, initialiseShowcase, find, remove, artifactPath, assemblyPath, showcaseArtifactPath };
+  return { list, manifest: load, register, importLegacyJobs, showcase, setShowcase, initialiseShowcase, find, remove, artifactPath, assemblyPath, showcaseArtifactPath };
 }

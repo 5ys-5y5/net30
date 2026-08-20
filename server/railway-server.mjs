@@ -124,21 +124,6 @@ async function proxyModeling(req, res, url) {
   return Readable.fromWeb(upstream.body).pipe(res);
 }
 
-async function proxyGeneratedModel(req, res) {
-  if (!modelingHubUrl) return false;
-  const upstream = await fetch(`${modelingHubUrl}/api/modeling/showcase/artifact`, {
-    headers: modelingHubToken ? { authorization: `Bearer ${modelingHubToken}` } : undefined,
-    redirect: "manual",
-  });
-  if (!upstream.ok || !upstream.body) return false;
-  res.statusCode = upstream.status;
-  res.setHeader("content-type", upstream.headers.get("content-type") ?? "model/gltf-binary");
-  res.setHeader("cache-control", "no-store");
-  res.setHeader("cross-origin-resource-policy", "cross-origin");
-  Readable.fromWeb(upstream.body).pipe(res);
-  return true;
-}
-
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -157,9 +142,6 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/favicon.ico") {
       const icon = resolve(hostDist, "favicon.svg");
       return existsSync(icon) ? sendFile(req, res, icon) : sendJson(res, 404, { ok: false, error: "Favicon not found" });
-    }
-    if (url.pathname === "/3d/models/showcase-vial.glb" || url.pathname === "/models/showcase-vial.glb") {
-      if (await proxyGeneratedModel(req, res)) return;
     }
     if (url.pathname === "/3d") {
       res.writeHead(308, { location: `/3d/${url.search}` });

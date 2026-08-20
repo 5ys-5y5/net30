@@ -1,0 +1,26 @@
+import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { createModelStore, ModelStoreError } from "./model-store.mjs";
+
+const root = await mkdtemp(path.join(os.tmpdir(), "net30-model-store-"));
+const glb = path.join(root, "fixture.glb");
+await writeFile(glb, Buffer.concat([Buffer.from("glTF"), Buffer.alloc(32)]));
+const store = createModelStore(root, { skuIds: new Set(["all-in-one-pilot", "all-in-one-growth"]) });
+await store.initialise();
+const first = await store.createParent({ name: "빈 부모" });
+assert.equal(first.status, "empty");
+assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "unassigned");
+const bound = await store.bindSku(first.id, "all-in-one-pilot", first.revision);
+assert.equal(bound.linkedSkuId, "all-in-one-pilot");
+assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "empty");
+const second = await store.createParent({ name: "다른 부모" });
+await assert.rejects(() => store.bindSku(second.id, "all-in-one-pilot", second.revision), (error) => error instanceof ModelStoreError && error.code === "sku_already_bound");
+const attached = await store.attachLibraryAssembly({ parentModelId: first.id, expectedRevision: bound.revision, assemblyPath: glb, componentVersions: [{ component: "cap", versionId: "cap-v1", sourcePath: glb }] });
+assert.equal(attached.model.directChildren, 1);
+assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "empty");
+const published = await store.publish(first.id, attached.revision.id, attached.model.revision);
+assert.ok(published.publication.id);
+assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "ready");
+console.log("model-store tests passed");

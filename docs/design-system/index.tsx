@@ -33,31 +33,38 @@ function ThreeDModel({
   visual,
   compact,
   labelPayload,
+  modelAssetPath,
+  runtimeState,
 }: {
   visual: Extract<ProductVisualDefinition, { kind: "threeD" }>;
   compact: boolean;
   labelPayload?: ThreeDLabelPayload;
+  modelAssetPath?: string | null;
+  runtimeState?: "loading" | "unassigned" | "empty" | "ready";
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const frameSrc = modelAssetPath ? (() => { const url = new URL(visual.src, window.location.href); url.searchParams.set("model", modelAssetPath); if (labelPayload?.skuId) url.searchParams.set("sku", labelPayload.skuId); return url.toString(); })() : "";
 
   useEffect(() => {
-    sendLabelPayloadToFrame(frameRef.current, labelPayload, visual.src);
-  }, [labelPayload, visual.src]);
+    sendLabelPayloadToFrame(frameRef.current, labelPayload, frameSrc);
+  }, [frameSrc, labelPayload]);
 
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame) return;
-    const send = () => sendLabelPayloadToFrame(frame, labelPayload, visual.src);
+    const send = () => sendLabelPayloadToFrame(frame, labelPayload, frameSrc);
     frame.addEventListener("load", send);
     return () => frame.removeEventListener("load", send);
-  }, [visual.src, labelPayload]);
+  }, [frameSrc, labelPayload]);
+
+  if (!frameSrc) return <Surface className={CLASS.productImage} data-compact={compact} data-model-state={runtimeState ?? "loading"}><Copy>{runtimeState === "empty" ? "모델 구성 전" : runtimeState === "unassigned" ? "연결된 3D 모델 없음" : "3D 모델 연결 확인 중"}</Copy></Surface>;
 
   return <iframe
     ref={frameRef}
     className={CLASS.productImage}
     data-compact={compact}
     title={visual.alt}
-    src={visual.src}
+    src={frameSrc}
     loading="lazy"
   />;
 }
@@ -168,6 +175,19 @@ export function ModelPreviewFrame({ className = "", loading = "lazy", labelPaylo
 /** The selectable portion of a card stays keyboard-operable without nesting action buttons. */
 export function SelectionCardControl({ className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return <ActionButton className={joinClasses(CLASS.selectionCardControl, className)} {...props} />;
+}
+
+/** A relationship list keeps model-to-SKU associations readable without previewing every asset. */
+export function AssociationList({ className = "", ...props }: HTMLAttributes<HTMLUListElement>) {
+  return <ul className={joinClasses(CLASS.associationList, className)} {...props} />;
+}
+
+export function AssociationRow({ selected = false, className = "", ...props }: HTMLAttributes<HTMLLIElement> & { selected?: boolean }) {
+  return <li className={joinClasses(CLASS.associationRow, className)} data-selected={selected} {...props} />;
+}
+
+export function AssetIdentity({ children, className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.assetIdentity, className)} {...props}>{children}</div>;
 }
 
 export function WorkflowStepper({ children }: { children: ReactNode }) { return <div className={CLASS.workflowStepper}>{children}</div>; }
@@ -506,16 +526,20 @@ export function ProductVisual({
   visual,
   compact = false,
   labelPayload,
+  modelAssetPath,
+  runtimeState,
 }: {
   visual: ProductVisualDefinition;
   compact?: boolean;
   labelPayload?: ThreeDLabelPayload;
+  modelAssetPath?: string | null;
+  runtimeState?: "loading" | "unassigned" | "empty" | "ready";
 }) {
   if (visual.kind === "image") {
     return <Atom as={ELEMENT.image} className={CLASS.productImage} data-compact={compact} src={visual.src} alt={visual.alt} />;
   }
   if (visual.kind === "threeD") {
-    return <ThreeDModel visual={visual} compact={compact} labelPayload={labelPayload} />;
+    return <ThreeDModel visual={visual} compact={compact} labelPayload={labelPayload} modelAssetPath={modelAssetPath} runtimeState={runtimeState} />;
   }
   return <TeeSilhouette compact={compact} variant={visual.variant} />;
 }

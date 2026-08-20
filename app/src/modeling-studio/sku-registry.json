@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "skus": [
+    { "id": "all-in-one-pilot", "label": "30일분 · 일반가" },
+    { "id": "all-in-one-growth", "label": "30일분 · 회원가" },
+    { "id": "all-in-one-scale", "label": "30일분 · 정기구독가" }
+  ]
+}

@@ -49,10 +49,10 @@ const viewer = new BottleViewer(canvas, {
     scaleX: numberParam("fitScaleX"),
     scaleY: numberParam("fitScaleY"),
   },
-  // The storefront always uses the explicitly published assembly when one is
-  // available; loadBottle falls back to the bundled showcase for standalone
-  // service development or an empty asset library.
-  modelUrl: query.get("model") ?? "/api/modeling/showcase/artifact",
+  // Storefront embeds always provide a published immutable asset. Standalone
+  // development may still use BottleViewer's bundled asset, but no SKU can
+  // fall back to another SKU's global showcase.
+  modelUrl: query.get("model") ?? undefined,
   onStatus: (message) => { status.textContent = message; },
 });
 

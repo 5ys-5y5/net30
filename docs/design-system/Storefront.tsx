@@ -23,6 +23,9 @@ import {
   LabeledChoice,
   Link,
   ModelPreviewFrame,
+  AssociationList,
+  AssociationRow,
+  AssetIdentity,
   Metric,
   Panel,
   PanelBody,
@@ -79,7 +82,9 @@ import type {
 
 type ActiveRenderedLabel = {
   primaryId: string;
-  payload: ThreeDLabelPayload;
+  payload?: ThreeDLabelPayload;
+  modelAssetPath: string | null;
+  runtimeState: "loading" | "unassigned" | "empty" | "ready";
 };
 
 type CapturedTexture = {
@@ -97,7 +102,8 @@ type ModelingLibraryVersion = {
 
 type ModelingDraftQuestion = { id: string; scope: string; componentInstanceId?: string; appliesToComponentIds?: readonly string[]; path: string; category: string; valueType: string; unit?: string; recommendedValue: unknown; rationale: string; evidence?: readonly { kind: string; label: string }[]; dependencies?: readonly string[]; criticality: string; required: boolean; status: string; userValue?: unknown };
 type ModelingProgress = { eventId: number; operation: "analysis" | "approval" | "build"; stage: string; state: "queued" | "running" | "complete" | "failed"; completed?: number; total?: number; unit?: "files" | "components" | "questions"; componentInstanceId?: string; message: string };
-type ModelingDraft = { id: string; revision: number; state: string; message: string; input: { skuId: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean } } };
+type ModelingDraft = { id: string; revision: number; state: string; message: string; parentModelId?: string; input: { parentModelId?: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean } } };
+type ProductModel = { id: string; name: string; revision: number; linkedSkuId: string | null; currentRevision: { id: string; ordinal: number; state: string; childCount: number } | null; publishedRevision: { id: string; ordinal: number } | null; directChildren: number; descendantCount: number; status: "empty" | "ready" | "unpublished" | "published" | "failed" | string; updatedAt: string };
 
 const MODELING_WORKFLOW_STEPS = ["제품 확인", "구성 부품", "기준값", "Blender 생성"] as const;
 const PARAMETER_LABELS: Readonly<Record<string, string>> = {
@@ -293,6 +299,8 @@ function HeroRegion({
         compact
         visual={item.visual}
         labelPayload={activeRenderedLabel?.primaryId === item.id ? activeRenderedLabel.payload : undefined}
+        modelAssetPath={activeRenderedLabel?.primaryId === item.id ? activeRenderedLabel.modelAssetPath : null}
+        runtimeState={activeRenderedLabel?.primaryId === item.id ? activeRenderedLabel.runtimeState : "unassigned"}
         key={item.id}
       />)}</Atom>
       <Atom className={CLASS.heroFoot}><Atom as={ELEMENT.span}>{hero.left}</Atom><Atom as={ELEMENT.span}>{hero.right}</Atom></Atom>
@@ -317,10 +325,22 @@ function ProductCatalogRegion({
     () => renderedLabel ? { skuId: sku.id, renderedLabel } : undefined,
     [renderedLabel, sku.id],
   );
+  const [runtimeModel, setRuntimeModel] = useState<{ assetPath: string | null; state: "unassigned" | "empty" | "ready" } | null>(null);
 
   useEffect(() => {
-    onRenderedLabel(labelPayload ? { primaryId: primary.id, payload: labelPayload } : null);
-  }, [labelPayload, onRenderedLabel, primary.id]);
+    const controller = new AbortController();
+    setRuntimeModel(null);
+    void fetch(`/api/modeling/runtime/skus/${encodeURIComponent(sku.id)}/model`, { signal: controller.signal }).then(async (response) => {
+      const body = await response.json() as { ok?: boolean; assetPath?: string | null; state?: "unassigned" | "empty" | "ready" };
+      if (response.ok && body.ok && body.state) setRuntimeModel({ assetPath: body.assetPath ?? null, state: body.state });
+      else setRuntimeModel({ assetPath: null, state: "unassigned" });
+    }).catch(() => { if (!controller.signal.aborted) setRuntimeModel({ assetPath: null, state: "unassigned" }); });
+    return () => controller.abort();
+  }, [sku.id]);
+
+  useEffect(() => {
+    onRenderedLabel({ primaryId: primary.id, payload: labelPayload, modelAssetPath: runtimeModel?.assetPath ?? null, runtimeState: runtimeModel?.state ?? "loading" });
+  }, [labelPayload, onRenderedLabel, primary.id, runtimeModel]);
 
   useEffect(() => () => onRenderedLabel(null), [onRenderedLabel]);
 
@@ -402,6 +422,8 @@ function ProductCatalogRegion({
           compact
           visual={item.visual}
           labelPayload={primaryIndex === index ? labelPayload : undefined}
+          modelAssetPath={primaryIndex === index ? runtimeModel?.assetPath ?? null : null}
+          runtimeState={primaryIndex === index ? runtimeModel?.state ?? "loading" : "unassigned"}
         />}
         key={item.id}
       />)}
@@ -430,7 +452,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const studio = catalog.modeling;
   if (!studio) throw new Error("Modeling presentation requires catalog.modeling");
 
-  const skuIds = catalog.skus.map((item) => item.id);
   const defaults = studio.defaults;
   const [components, setComponents] = useState<readonly string[]>(defaults.componentIds);
   const [componentInput, setComponentInput] = useState(defaults.componentIds.map((id) => studio.components.find((component) => component.id === id)?.label ?? id).join(", "));
@@ -440,7 +461,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [images, setImages] = useState<File[]>([]);
   const [material, setMaterial] = useState(defaults.materialId);
   const [shape, setShape] = useState(defaults.shapeId);
-  const [skuId, setSkuId] = useState(skuIds[0] ?? "default-sku");
+  const [productModels, setProductModels] = useState<readonly ProductModel[]>([]);
+  const [activeParentModelId, setActiveParentModelId] = useState<string | null>(null);
+  const [modelListError, setModelListError] = useState("");
+  const [bindingPendingId, setBindingPendingId] = useState<string | null>(null);
   const [sizeXmm, setSizeXmm] = useState(defaults.sizeXmm);
   const [sizeYmm, setSizeYmm] = useState(defaults.sizeYmm);
   const [sizeZmm, setSizeZmm] = useState(defaults.sizeZmm);
@@ -471,6 +495,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [libraryPreviewPending, setLibraryPreviewPending] = useState(false);
   const [libraryError, setLibraryError] = useState("");
   const libraryPreviewRequest = useRef(0);
+  const modelEndpoint = studio.endpoint.replace(/\/jobs$/, "/models");
+  const skuOptions = useMemo(() => catalog.skus.map((sku) => ({ id: sku.id, label: ({ "all-in-one-pilot": "30일분 · 일반가", "all-in-one-growth": "30일분 · 회원가", "all-in-one-scale": "30일분 · 정기구독가" }[sku.id] ?? sku.id) + ` (${sku.id})` })), [catalog.skus]);
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
   const modelPreviewSrc = (assetPath: string, revision: string) => `${studio.previewSrc}${previewJoin}refresh=${revision}&model=${encodeURIComponent(assetPath)}`;
@@ -489,6 +515,16 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     }).catch(() => undefined);
     return () => controller.abort();
   }, [studio.endpoint]);
+
+  const refreshProductModels = useCallback(async () => {
+    const response = await fetch(`${modelEndpoint}?scope=product`);
+    const body = await response.json() as { ok?: boolean; models?: readonly ProductModel[]; error?: string };
+    if (!response.ok || !body.ok) throw new Error(body.error ?? "제품 모델 목록을 불러오지 못했습니다.");
+    setProductModels(body.models ?? []);
+    setActiveParentModelId((current) => current && (body.models ?? []).some((item) => item.id === current) ? current : body.models?.[0]?.id ?? null);
+  }, [modelEndpoint]);
+
+  useEffect(() => { void refreshProductModels().catch((requestError) => setModelListError(requestError instanceof Error ? requestError.message : String(requestError))); }, [refreshProductModels]);
 
   useEffect(() => {
     if (!draft?.id || ["complete", "review_required", "failed", "analysis_incomplete", "needs_custom_recipe"].includes(draft.state)) return;
@@ -522,19 +558,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     void refreshVersions(studio.components.map((component) => component.id)).catch((requestError) => {
       setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
     });
-  }, [studio.endpoint]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, { signal: controller.signal }).then(async (response) => {
-      const body = await response.json() as { ok?: boolean; showcase?: { assetPath?: string; component?: string; versionId?: string; selections?: readonly { component: string; versionId: string }[] } | null };
-      const selections = body.showcase?.selections ?? (body.showcase?.component && body.showcase?.versionId ? [{ component: body.showcase.component, versionId: body.showcase.versionId }] : []);
-      if (response.ok && body.ok && body.showcase?.assetPath && selections.length) {
-        setSelectedVersions(Object.fromEntries(selections.map((item) => [item.component, item.versionId])));
-        setLibraryPreviewModel(body.showcase.assetPath); setLibraryPreviewRevision(Date.now().toString());
-      }
-    }).catch(() => undefined);
-    return () => controller.abort();
   }, [studio.endpoint]);
 
   const selectedAssembly = (selection = selectedVersions) => Object.entries(selection).map(([component, versionId]) => ({ component, versionId }));
@@ -614,19 +637,38 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     try {
       const selections = selectedAssembly();
       if (!selections.length) throw new Error(studio.assetLibrary.selectionEmptyMessage);
-      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, {
+      const parent = productModels.find((item) => item.id === activeParentModelId);
+      if (!parent) throw new Error("먼저 제품 모델 목록에서 게시할 부모 모델을 선택하세요.");
+      if (!parent.linkedSkuId) throw new Error("홈에 표시하려면 부모 모델에 SKU를 먼저 연결하세요.");
+      const response = await fetch(`${modelEndpoint}/${parent.id}/revisions/library`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ selections }),
+        body: JSON.stringify({ selections, expectedRevision: parent.revision }),
       });
-      const body = await response.json() as { ok?: boolean; error?: string; showcase?: { assetPath?: string } };
-      if (!response.ok || !body.ok || !body.showcase?.assetPath) throw new Error(body.error ?? "홈 표시 자산을 설정하지 못했습니다.");
-      setLibraryPreviewModel(body.showcase.assetPath);
+      const body = await response.json() as { ok?: boolean; error?: string; model?: ProductModel; revision?: { id: string } };
+      if (!response.ok || !body.ok || !body.model || !body.revision) throw new Error(body.error ?? "선택한 자산을 부모 모델 리비전으로 저장하지 못했습니다.");
+      const publish = await fetch(`${modelEndpoint}/${parent.id}/revisions/${body.revision.id}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: body.model.revision }) });
+      const published = await publish.json() as { ok?: boolean; error?: string; publication?: { assetPath?: string }; model?: ProductModel };
+      if (!publish.ok || !published.ok || !published.publication?.assetPath) throw new Error(published.error ?? "부모 모델 리비전을 게시하지 못했습니다.");
+      setLibraryPreviewModel(published.publication.assetPath);
       setLibraryPreviewRevision(Date.now().toString());
-      setProgress("선택한 컴포넌트 버전만 홈페이지 3D 뷰어에 표시하도록 설정했습니다.");
+      setProgress("선택한 항목을 현재 부모 모델의 새 리비전으로 게시했습니다. 연결된 SKU의 홈에만 표시됩니다.");
+      await refreshProductModels();
     } catch (requestError) {
       setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
     }
+  };
+
+  const bindSku = async (productModel: ProductModel, skuId: string | null) => {
+    setBindingPendingId(productModel.id); setModelListError("");
+    try {
+      const response = await fetch(`${modelEndpoint}/${productModel.id}/sku`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ skuId, expectedRevision: productModel.revision }) });
+      const body = await response.json() as { ok?: boolean; error?: string; model?: ProductModel };
+      if (!response.ok || !body.ok || !body.model) throw new Error(body.error ?? "SKU 연결을 저장하지 못했습니다.");
+      setProductModels((current) => current.map((item) => item.id === body.model?.id ? body.model : item));
+      setProgress(`${body.model.name}과 SKU 연결을 저장했습니다.`);
+    } catch (requestError) { setModelListError(requestError instanceof Error ? requestError.message : String(requestError)); await refreshProductModels().catch(() => undefined); }
+    finally { setBindingPendingId(null); }
   };
 
   const deleteVersion = async (component: string, version: { id: string }) => {
@@ -687,15 +729,15 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "net30.modeling-draft.v4", model: model || undefined, imageIds, prompt, skuId, componentInput,
+          version: "net30.modeling-draft.v5", model: model || undefined, imageIds, prompt, componentInput, parentModelId: activeParentModelId ?? undefined,
           revisionBaseRefs: Object.fromEntries(Object.entries(parentVersionId).map(([component, versionId]) => [component, { versionId }])),
           assemblyAssetRefs: selectedAssembly().map((item) => ({ versionId: item.versionId })),
           product: { source: "new", name: productName },
         }),
       });
-      const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft; statusUrl?: string };
+      const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft; parentModel?: ProductModel; statusUrl?: string };
       if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? `초안 요청 실패 (${response.status})`);
-      setDraft(body.draft); setActiveReviewScope("assembly"); setProgress(body.draft.message);
+      setDraft(body.draft); setActiveParentModelId(body.parentModel?.id ?? body.draft.parentModelId ?? activeParentModelId); setActiveReviewScope("assembly"); setProgress(body.draft.message); void refreshProductModels();
       const statusUrl = body.statusUrl ?? `${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${body.draft.id}`;
       for (;;) {
         await new Promise((resolve) => window.setTimeout(resolve, 1200));
@@ -753,7 +795,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       if (!response.ok || !body.ok || !body.job) throw new Error(body.error ?? "Blender 작업을 시작하지 못했습니다.");
       setProgress(body.job.message ?? "승인된 Blender 작업을 시작했습니다.");
       const statusUrl = body.statusUrl ?? `${studio.endpoint}/${body.job.id}`;
-      for (;;) { await new Promise((resolve) => window.setTimeout(resolve, 1200)); const responseStatus = await fetch(statusUrl); const current = await responseStatus.json() as { ok?: boolean; job?: { state: string; message: string; components?: Record<string, { state: string; message: string; version?: string | null }>; result?: { artifact?: { assemblyGlb?: string; report?: string }; versions?: Record<string, { component?: string }> } }; error?: string }; if (!responseStatus.ok || !current.ok || !current.job) throw new Error(current.error ?? "작업 상태를 불러오지 못했습니다."); setProgress(current.job.message); setComponentProgress(current.job.components ?? {}); if (["complete", "review_required", "failed"].includes(current.job.state)) { if (current.job.state === "failed") throw new Error(current.job.message); const artifact=current.job.result?.artifact; setPreviewModel(artifact?.assemblyGlb ?? ""); setPreviewRevision(Date.now().toString()); setResultArtifacts(artifact ?? {}); setDownloadReady(Boolean(artifact?.assemblyGlb)); setResult(current.job.message); await refreshVersions(Object.keys(current.job.result?.versions ?? {})); break; } }
+      for (;;) { await new Promise((resolve) => window.setTimeout(resolve, 1200)); const responseStatus = await fetch(statusUrl); const current = await responseStatus.json() as { ok?: boolean; job?: { state: string; message: string; components?: Record<string, { state: string; message: string; version?: string | null }>; result?: { artifact?: { assemblyGlb?: string; report?: string }; versions?: Record<string, { component?: string }>; productModel?: { model?: ProductModel } } }; error?: string }; if (!responseStatus.ok || !current.ok || !current.job) throw new Error(current.error ?? "작업 상태를 불러오지 못했습니다."); setProgress(current.job.message); setComponentProgress(current.job.components ?? {}); if (["complete", "review_required", "failed"].includes(current.job.state)) { if (current.job.state === "failed") throw new Error(current.job.message); const artifact=current.job.result?.artifact; setPreviewModel(artifact?.assemblyGlb ?? ""); setPreviewRevision(Date.now().toString()); setResultArtifacts(artifact ?? {}); setDownloadReady(Boolean(artifact?.assemblyGlb)); setResult(current.job.message); setActiveParentModelId(current.job.result?.productModel?.model?.id ?? activeParentModelId); await Promise.all([refreshVersions(Object.keys(current.job.result?.versions ?? {})), refreshProductModels()]); break; } }
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
     finally { setPending(false); setBuildInProgress(false); }
   };
@@ -774,10 +816,20 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     <SectionHeading {...catalogSection} />
     <Atom className={CLASS.modelingWorkspace}>
       <Atom className={CLASS.modelingWorkspaceMeta}>
-        <Label>{studio.workspace.productLabel}</Label>
-        <Atom as={ELEMENT.span} className={CLASS.modelingWorkspaceName}>{studio.workspace.productName}</Atom>
+        <Label>제품 모델 · SKU 연결</Label>
+        <Atom as={ELEMENT.span} className={CLASS.modelingWorkspaceName}>저장된 부모 모델</Atom>
+        <Copy>부모 모델 하나는 SKU 하나에만 연결됩니다. 모델을 선택하면 아래 승인 워크플로와 자산 라이브러리의 활성 제품이 됩니다.</Copy>
       </Atom>
-      <Copy>{studio.workspace.productDescription}</Copy>
+      <AssociationList aria-label="제품 모델과 SKU 연결 목록">
+        {productModels.length === 0 ? <AssociationRow><AssetIdentity><strong>저장된 부모 모델이 없습니다.</strong><small>새 제품·부품 분석을 시작하면 빈 부모 모델이 자동으로 생성됩니다.</small></AssetIdentity></AssociationRow> : productModels.map((productModel) => <AssociationRow key={productModel.id} selected={productModel.id === activeParentModelId}>
+          <SelectionCardControl aria-pressed={productModel.id === activeParentModelId} onClick={() => setActiveParentModelId(productModel.id)}>
+            <AssetIdentity><strong>{productModel.name}</strong><small>최신 r{productModel.currentRevision?.ordinal ?? 0} · 게시 {productModel.publishedRevision ? `r${productModel.publishedRevision.ordinal}` : "없음"} · 직계 {productModel.directChildren} · 전체 {productModel.descendantCount} · {productModel.status}</small></AssetIdentity>
+          </SelectionCardControl>
+          <FormField label="판매 SKU" className={CLASS.modelingField}><select className={CLASS.modelingControl} disabled={bindingPendingId === productModel.id} value={productModel.linkedSkuId ?? ""} onChange={(event) => void bindSku(productModel, event.target.value || null)}><option value="">연결 없음</option>{skuOptions.map((sku) => { const linked = productModels.find((item) => item.linkedSkuId === sku.id && item.id !== productModel.id); return <option value={sku.id} disabled={Boolean(linked)} key={sku.id}>{sku.label}{linked ? ` · ${linked.name}에 연결됨` : ""}</option>; })}</select></FormField>
+          <ReviewStatus>{bindingPendingId === productModel.id ? "저장 중" : productModel.status}</ReviewStatus>
+        </AssociationRow>)}
+      </AssociationList>
+      {modelListError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{modelListError}</Atom> : null}
     </Atom>
     <Atom className={CLASS.modelingStudio} data-workspace={hasDecisionWorkspace}>
       <Surface className={CLASS.modelingForm}>
@@ -789,7 +841,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
             <FormField className={CLASS.modelingField} label="제품명"><input className={CLASS.modelingControl} value={productName} onChange={(event) => setProductName(event.target.value)} /></FormField>
-            {selectField("고정 HTML 그래픽 SKU", skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
             <FormField className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)} label="모델링할 컴포넌트">
               <input className={CLASS.modelingControl} required value={componentInput} onChange={(event) => setComponentInput(event.target.value)} placeholder="예: 유리병, 뚜껑, 밀봉 라이너" />
               <Copy className={CLASS.modelingHint}>쉼표로 구분합니다. 입력한 항목만 분석·승인·생성하며, 뚜껑만 입력하면 뚜껑만 새 버전으로 생성합니다.</Copy>
@@ -840,11 +891,11 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       <Atom className={CLASS.modelingLibrarySelection}>
         <Atom className={CLASS.modelingLibrarySelectionMeta}>
           <Label>{studio.assetLibrary.selectionTitle}</Label>
-          <Copy>{Object.keys(selectedVersions).length ? studio.assetLibrary.selectionSummary(Object.keys(selectedVersions).length) : studio.assetLibrary.selectionEmptyMessage}</Copy>
+          <Copy>{Object.keys(selectedVersions).length ? `${studio.assetLibrary.selectionSummary(Object.keys(selectedVersions).length)} · 활성 부모: ${productModels.find((item) => item.id === activeParentModelId)?.name ?? "선택 필요"}` : studio.assetLibrary.selectionEmptyMessage}</Copy>
         </Atom>
         <Atom className={CLASS.modelingLibraryActions} role="group" aria-label="선택한 자산 작업">
           <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0} onClick={() => void previewSelectedVersions()}>{studio.assetLibrary.previewLabel}</ActionButton>
-          <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0} onClick={() => void publishSelectedVersions()}>{studio.assetLibrary.homeLabel}</ActionButton>
+          <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0 || !productModels.find((item) => item.id === activeParentModelId)?.linkedSkuId} onClick={() => void publishSelectedVersions()}>{studio.assetLibrary.homeLabel}</ActionButton>
         </Atom>
         {libraryPreviewModel
           ? <ModelPreviewFrame className={CLASS.modelingLibraryPreview} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
