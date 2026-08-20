@@ -33,12 +33,12 @@ const COMPONENT_INSTRUCTIONS = {
 
 export function buildMission({ component, prompt, settings, paths }) {
   const componentInstructions = COMPONENT_INSTRUCTIONS[component] ?? [];
-  const dims = `width=${settings.widthMm}mm, height=${settings.heightMm}mm, depth=${settings.depthMm}mm, thickness=${settings.thicknessMm}mm`;
+  const dims = `width=${settings.sizeXmm ?? settings.widthMm}mm, height=${settings.sizeZmm ?? settings.heightMm}mm, depth=${settings.sizeYmm ?? settings.depthMm}mm, thickness=${settings.shellThicknessMm ?? settings.thicknessMm}mm`;
   return [
     "You are controlling Blender through the official Blender MCP server.",
     "Use the existing .blend file as the source of truth and modify only what is required.",
     `Target component: ${component}`,
-    `Reference image path: ${paths.referenceImage}`,
+    `Reference image path: ${paths.referenceImage ?? "not supplied"}`,
     `Blend source path: ${paths.blendFile}`,
     `Render export path: ${paths.renderGlb}`,
     `Physics export path: ${paths.physicsGlb}`,
@@ -51,7 +51,7 @@ export function buildMission({ component, prompt, settings, paths }) {
     `Requested material: ${settings.material}`,
     `Requested shape: ${settings.shape}`,
     `Requested finish: ${settings.finish}`,
-    `Representative color: ${settings.color}`,
+    `Representative color: ${settings.tone ?? settings.color}`,
     `Distortion intensity target: ${settings.distortion}`,
     "After editing, save the blend file, export render/physics/vitamin GLBs, render QA images, and report the exact output paths and a concise change summary.",
     "Prefer exact reference matching over stylistic freedom.",

@@ -124,6 +124,21 @@ async function proxyModeling(req, res, url) {
   return Readable.fromWeb(upstream.body).pipe(res);
 }
 
+async function proxyGeneratedModel(req, res) {
+  if (!modelingHubUrl) return false;
+  const upstream = await fetch(`${modelingHubUrl}/assets/reference-vial.glb`, {
+    headers: modelingHubToken ? { authorization: `Bearer ${modelingHubToken}` } : undefined,
+    redirect: "manual",
+  });
+  if (!upstream.ok || !upstream.body) return false;
+  res.statusCode = upstream.status;
+  res.setHeader("content-type", upstream.headers.get("content-type") ?? "model/gltf-binary");
+  res.setHeader("cache-control", "no-store");
+  res.setHeader("cross-origin-resource-policy", "cross-origin");
+  Readable.fromWeb(upstream.body).pipe(res);
+  return true;
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -139,6 +154,9 @@ const server = createServer(async (req, res) => {
       });
     }
     if (url.pathname.startsWith("/api/modeling")) return await proxyModeling(req, res, url);
+    if (url.pathname === "/3d/models/reference-vial.glb" || url.pathname === "/models/reference-vial.glb") {
+      if (await proxyGeneratedModel(req, res)) return;
+    }
     if (url.pathname === "/3d") {
       res.writeHead(308, { location: `/3d/${url.search}` });
       return res.end();

@@ -7,6 +7,7 @@ app/dist/
 docs/.DS_Store
 docs/design-system/.DS_Store
 package-lock.json
+!app/src/3d/modeling-hub/package-lock.json
 tmp/
 .net30-3d.env
 dist/

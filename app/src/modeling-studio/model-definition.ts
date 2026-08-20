@@ -8,7 +8,7 @@ export const modelPageDefinition: ProductPageDefinition = {
   regions: ["header", "catalog", "footer"],
   meta: {
     title: "NET30 — 3D 모델링 스튜디오",
-    description: "OpenAI와 Blender MCP를 사용해 NET30 제품 3D 자산을 컴포넌트별로 관리합니다.",
+    description: "Blender MCP를 사용해 NET30 제품 3D 자산을 컴포넌트별로 관리합니다.",
   },
   system: {
     ...net30Definition.system,
@@ -32,15 +32,15 @@ export const modelPageDefinition: ProductPageDefinition = {
     modeling: {
       endpoint: "/api/modeling/jobs",
       previewSrc: `${serviceOrigin}/?qa=reference`,
-      title: "OpenAI + Blender MCP",
-      copy: "모델링 값은 LLM 지시와 함께 Blender MCP로 전달되며, 저장된 GLB는 Blender 없이도 Storefront에서 실행됩니다.",
+      title: "Blender MCP",
+      copy: "모델링 프롬프트와 값은 headless Blender MCP로 전달되며, 생성된 GLB는 Blender 없이도 Storefront에서 실행됩니다.",
       backLabel: "Storefront로 돌아가기",
       submitLabel: "모델링 실행",
       pendingLabel: "Blender 작업 실행 중",
       previewTitle: "3D 미리보기",
       resultTitle: "최근 실행 결과",
       idleMessage: "아직 실행한 모델링 작업이 없습니다.",
-      unavailableMessage: "원격 Blender MCP가 연결되지 않은 배포 환경에서는 저장된 3D 자산만 표시됩니다.",
+      unavailableMessage: "모델링 서비스가 일시적으로 준비되지 않아도, 저장된 3D 자산 미리보기는 계속 표시됩니다.",
       fields: {
         component: "컴포넌트",
         sku: "SKU",
