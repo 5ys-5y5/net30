@@ -31,7 +31,19 @@ const repoRoot = env("NET30_REPO", path.resolve(process.cwd(), "../../../.."));
 const assetRoot = env("NET30_3D_ASSET_ROOT", path.resolve(repoRoot, "../net30-3d-assets"));
 const jobsRoot = path.join(assetRoot, "jobs");
 const publishedGlb = path.join(assetRoot, "published", "reference-vial.glb");
+const fallbackGlb = env("NET30_REFERENCE_GLB", path.join(repoRoot, "app", "src", "3d", "vitamin-bottle-service", "public", "models", "reference-vial.glb"));
 await fs.mkdir(jobsRoot, { recursive: true });
+
+async function ensurePublishedGlb() {
+  if (existsSync(publishedGlb)) return;
+  if (!existsSync(fallbackGlb)) {
+    throw new Error(`초기 GLB를 찾을 수 없습니다: ${fallbackGlb}`);
+  }
+  await fs.mkdir(path.dirname(publishedGlb), { recursive: true });
+  await fs.copyFile(fallbackGlb, publishedGlb);
+}
+
+await ensurePublishedGlb();
 
 app.use(cors({
   origin(origin, callback) {
@@ -48,6 +60,7 @@ app.get("/health", (_req, res) => {
     transport: "POST /mcp",
     repoRoot,
     assetRoot,
+    fallbackGlb,
     hasPublishedModel: existsSync(publishedGlb),
     authRequired: Boolean(token),
   });

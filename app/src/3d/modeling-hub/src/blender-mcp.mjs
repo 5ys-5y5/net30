@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
@@ -61,7 +62,7 @@ async function run(command, args, { timeoutMs = 12 * 60 * 1000 } = {}) {
     });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
-      if (code === 0) return resolve(output);
+      if (code === 0 && !/Traceback \(most recent call last\)|Error: Python|RuntimeError:/i.test(output)) return resolve(output);
       reject(new Error(`Blender 작업이 실패했습니다 (code=${code ?? "unknown"}, signal=${signal ?? "none"}). ${output}`));
     });
   });
@@ -73,7 +74,7 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   const jobDir = path.join(paths.jobsRoot, jobId);
   const requestPath = path.join(jobDir, "request.json");
   const resultPath = path.join(jobDir, "result.json");
-  const workerPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), "blender-worker.py");
+  const workerPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "blender-worker.py");
   const macBlender = "/Applications/Blender.app/Contents/MacOS/Blender";
   const blenderBin = env("BLENDER_BIN", existsSync(macBlender) ? macBlender : "blender");
 
@@ -90,7 +91,10 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
   const log = await run(blenderBin, ["--background", "--factory-startup", "--python", workerPath, "--", requestPath]);
   const outputStat = await fs.stat(paths.publishedGlb);
-  if (outputStat.size < 20) throw new Error("Blender가 유효한 GLB 파일을 생성하지 못했습니다.");
+  const glbHeader = await fs.readFile(paths.publishedGlb, { encoding: null, flag: "r" });
+  if (outputStat.size < 20 || glbHeader.subarray(0, 4).toString("ascii") !== "glTF") {
+    throw new Error("Blender가 유효한 GLB 파일을 생성하지 못했습니다.");
+  }
 
   const result = {
     summary: `Blender가 ${payload.component} 요청을 반영하고 런타임 GLB를 갱신했습니다.`,

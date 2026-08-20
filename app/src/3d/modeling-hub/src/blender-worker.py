@@ -2,6 +2,7 @@
 import json
 import pathlib
 import sys
+import traceback
 
 import bpy
 
@@ -56,6 +57,11 @@ def add_cylinder(name, radius, depth, z, target, mat, bevel=0.0):
 
 
 def export_collection(name, destination):
+    try:
+        import addon_utils
+        addon_utils.enable("io_scene_gltf2", default_set=False, persistent=False)
+    except Exception as error:
+        raise RuntimeError(f"glTF exporter를 활성화할 수 없습니다: {error}") from error
     target = bpy.data.collections.get(name)
     if target is None:
         raise RuntimeError(f"Missing collection: {name}")
@@ -145,4 +151,8 @@ def main():
     print(f"PUBLISHED_GLB={paths['publishedGlb']}")
 
 
-main()
+try:
+    main()
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
