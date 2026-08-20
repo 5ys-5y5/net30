@@ -177,6 +177,16 @@ export function EvidencePreview({ children }: { children: ReactNode }) { return 
 export function ReviewStatus({ children }: { children: ReactNode }) { return <span className={CLASS.reviewStatus}>{children}</span>; }
 export function ReviewProgress({ children }: { children: ReactNode }) { return <div className={CLASS.reviewProgress}>{children}</div>; }
 export function DecisionActions({ children }: { children: ReactNode }) { return <div className={CLASS.decisionActions}>{children}</div>; }
+export function ReviewWorkspace({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.reviewWorkspace, className)} {...props} />; }
+export function ReviewWorkspaceHeader({ className = "", ...props }: HTMLAttributes<HTMLElement>) { return <header className={joinClasses(CLASS.reviewWorkspaceHeader, className)} {...props} />; }
+export function WorkflowStep({ status, className = "", ...props }: HTMLAttributes<HTMLDivElement> & { status: "completed" | "current" | "upcoming" }) { return <div className={joinClasses(CLASS.workflowStep, className)} data-status={status} {...props} />; }
+export function ParameterGroup({ label, children }: { label: ReactNode; children: ReactNode }) { return <section className={CLASS.parameterGroup}><Label>{label}</Label><div>{children}</div></section>; }
+export function ParameterQuestionCard({ status, className = "", ...props }: HTMLAttributes<HTMLElement> & { status: string }) { return <article className={joinClasses(CLASS.parameterQuestionCard, className)} data-status={status} {...props} />; }
+export function ParameterValue({ children }: { children: ReactNode }) { return <div className={CLASS.parameterValue}>{children}</div>; }
+export function BuildGate({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={joinClasses(CLASS.buildGate, className)} {...props} />; }
+export function BuildProgressPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.buildProgressPanel, className)} aria-live="polite" {...props} />; }
+export function ModelResultPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.modelResultPanel, className)} {...props} />; }
+export function DecisionHistoryDisclosure({ label, children }: { label: ReactNode; children: ReactNode }) { return <details className={CLASS.decisionHistoryDisclosure}><summary>{label}</summary><div>{children}</div></details>; }
 
 export function SiteHeader({
   label,

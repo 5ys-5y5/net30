@@ -43,6 +43,16 @@ import {
   ReviewStatus,
   ReviewProgress,
   DecisionActions,
+  ReviewWorkspace,
+  ReviewWorkspaceHeader,
+  WorkflowStep,
+  ParameterGroup,
+  ParameterQuestionCard,
+  ParameterValue,
+  BuildGate,
+  BuildProgressPanel,
+  ModelResultPanel,
+  DecisionHistoryDisclosure,
 } from "./index";
 import {
   mergeComponentVersions,
@@ -81,6 +91,65 @@ type ModelingLibraryVersion = {
 
 type ModelingDraftQuestion = { id: string; scope: string; componentInstanceId?: string; path: string; category: string; valueType: string; unit?: string; recommendedValue: unknown; rationale: string; evidence?: readonly { kind: string; label: string }[]; dependencies?: readonly string[]; criticality: string; required: boolean; status: string; userValue?: unknown };
 type ModelingDraft = { id: string; revision: number; state: string; message: string; input: { skuId: string }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string } };
+
+const MODELING_WORKFLOW_STEPS = ["제품 확인", "구성 부품", "기준값", "Blender 생성"] as const;
+const PARAMETER_LABELS: Readonly<Record<string, string>> = {
+  name: "제품명", widthMm: "전체 폭", heightMm: "전체 높이", depthMm: "전체 깊이", wallMm: "벽 두께", bottomMm: "바닥 두께",
+  profile: "회전 단면", material: "재질", transform: "조립 위치", outerDiameterMm: "외경", innerDiameterMm: "내경", ribCount: "리브 수",
+  ribDepthMm: "리브 깊이", interfaceId: "결합 인터페이스", hostComponentId: "부착 대상", physicalWidthMm: "그래픽 폭", physicalHeightMm: "그래픽 높이",
+  wrapDegrees: "감김 각도", surfaceOffsetMm: "표면 간격", quantity: "수량", distribution: "배치 방식", dimensionsMm: "치수",
+};
+
+function workflowIndex(state: string, complete: boolean) {
+  if (complete) return MODELING_WORKFLOW_STEPS.length;
+  if (["building", "validating"].includes(state)) return 3;
+  if (state === "ready_to_build") return 3;
+  if (["analyzing_parameters", "awaiting_parameter_review"].includes(state)) return 2;
+  if (["analyzing_components", "awaiting_component_review"].includes(state)) return 1;
+  return 0;
+}
+
+function parameterLabel(question: ModelingDraftQuestion) {
+  const leaf = question.path.split(".").at(-1) ?? question.path;
+  return PARAMETER_LABELS[leaf] ?? leaf.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function parameterValue(question: ModelingDraftQuestion) {
+  const value = question.userValue ?? question.recommendedValue;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return `${String(value)}${question.unit ? ` ${question.unit}` : ""}`;
+  if (value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${key === "name" ? "재질명" : PARAMETER_LABELS[key] ?? key}: ${typeof item === "object" ? JSON.stringify(item) : String(item)}`).join("\n");
+  return `${JSON.stringify(value, null, 2)}${question.unit ? ` ${question.unit}` : ""}`;
+}
+
+function groupDraftQuestions(draft: ModelingDraft) {
+  const componentNames = new Map(draft.components.map((component) => [component.id, component.displayName]));
+  const groups = new Map<string, { label: string; questions: ModelingDraftQuestion[] }>();
+  for (const question of draft.questions) {
+    const scopeLabel = question.componentInstanceId ? componentNames.get(question.componentInstanceId) ?? "구성 부품" : question.scope === "sticker-slot" ? "고정 HTML 그래픽 슬롯" : "제품·조립 기준";
+    const key = `${scopeLabel}:${question.category}`;
+    const group = groups.get(key) ?? { label: `${scopeLabel} · ${question.category}`, questions: [] };
+    group.questions.push(question); groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+function DraftQuestionGroups({ draft, readOnly = false, decisionPending = false, onDecision }: { draft: ModelingDraft; readOnly?: boolean; decisionPending?: boolean; onDecision?: (question: ModelingDraftQuestion, action: "accept" | "override" | "needs_evidence") => void }) {
+  return <ParameterEditor>{groupDraftQuestions(draft).map((group) => <ParameterGroup label={group.label} key={group.label}>{group.questions.map((question) => <ParameterQuestionCard status={question.status} key={question.id}>
+    <div>
+      <Label>{question.criticality} · {question.status}</Label>
+      <h3>{parameterLabel(question)}</h3>
+      <Copy>{question.rationale}</Copy>
+      <ParameterValue>{parameterValue(question)}</ParameterValue>
+      {question.evidence?.length ? <EvidencePreview>{question.evidence.map((item) => <Copy key={`${question.id}-${item.kind}-${item.label}`}>{item.kind} · {item.label}</Copy>)}</EvidencePreview> : null}
+      <code>{question.path}</code>
+    </div>
+    {!readOnly && onDecision ? <DecisionActions>
+      <ActionButton className={CLASS.modelingAction} disabled={decisionPending || ["accepted", "overridden"].includes(question.status)} onClick={() => onDecision(question, "accept")}>승인</ActionButton>
+      <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => onDecision(question, "override")}>수정</ActionButton>
+      <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => onDecision(question, "needs_evidence")}>근거 요청</ActionButton>
+    </DecisionActions> : null}
+  </ParameterQuestionCard>)}</ParameterGroup>)}</ParameterEditor>;
+}
 
 const THREE_D_LABEL_SHEETS = ["한글표시사항", "전체 가격 구조"] as const;
 
@@ -373,6 +442,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [productName, setProductName] = useState(studio.workspace.productName);
   const [draft, setDraft] = useState<ModelingDraft | null>(null);
   const [draftDecisionPending, setDraftDecisionPending] = useState(false);
+  const [buildInProgress, setBuildInProgress] = useState(false);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
@@ -567,6 +637,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setPending(true);
+    setDraft(null);
+    setPreviewModel("");
+    setPreviewRevision("initial");
+    setBuildInProgress(false);
     setResult("");
     setError("");
     setResultArtifacts({});
@@ -617,7 +691,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   };
   const buildDraft = async () => {
     if (!draft?.approval?.ready) return;
-    setPending(true); setError("");
+    setPending(true); setBuildInProgress(true); setError("");
     try {
       const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/build`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, approvalHash: draft.approval.approvalHash }) });
       const body = await response.json() as { ok?: boolean; error?: string; job?: { id: string; message: string }; statusUrl?: string };
@@ -626,7 +700,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       const statusUrl = body.statusUrl ?? `${studio.endpoint}/${body.job.id}`;
       for (;;) { await new Promise((resolve) => window.setTimeout(resolve, 1200)); const responseStatus = await fetch(statusUrl); const current = await responseStatus.json() as { ok?: boolean; job?: { state: string; message: string; result?: { artifact?: { assemblyGlb?: string; report?: string } } }; error?: string }; if (!responseStatus.ok || !current.ok || !current.job) throw new Error(current.error ?? "작업 상태를 불러오지 못했습니다."); setProgress(current.job.message); if (["complete", "review_required", "failed"].includes(current.job.state)) { if (current.job.state === "failed") throw new Error(current.job.message); const artifact=current.job.result?.artifact; setPreviewModel(artifact?.assemblyGlb ?? ""); setPreviewRevision(Date.now().toString()); setResultArtifacts(artifact ?? {}); setDownloadReady(Boolean(artifact?.assemblyGlb)); setResult(current.job.message); break; } }
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
-    finally { setPending(false); }
+    finally { setPending(false); setBuildInProgress(false); }
   };
 
   const selectField = (label: string, value: string, onChange: (value: string) => void, options: readonly { id: string; label: string }[]) => <FormField label={label} className={CLASS.modelingField}>
@@ -637,6 +711,9 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const numberField = (label: string, value: number, onChange: (value: number) => void, step = "1") => <FormField label={label} className={CLASS.modelingField}>
     <input className={CLASS.modelingControl} type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
   </FormField>;
+  const analysisInProgress = pending && !draft && !buildInProgress;
+  const hasDecisionWorkspace = Boolean(draft || previewModel || buildInProgress || analysisInProgress);
+  const activeWorkflowIndex = draft ? workflowIndex(draft.state, Boolean(previewModel)) : 0;
 
   return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
     <SectionHeading {...catalogSection} />
@@ -647,7 +724,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </Atom>
       <Copy>{studio.workspace.productDescription}</Copy>
     </Atom>
-    <Atom className={CLASS.modelingStudio}>
+    <Atom className={CLASS.modelingStudio} data-workspace={hasDecisionWorkspace}>
       <Surface className={CLASS.modelingForm}>
         <form onSubmit={submit}>
           <Atom>
@@ -668,30 +745,26 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           </Atom>
           {!draft && <ActionButton className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? "제품 분석 중" : "제품·부품 분석 시작"}</ActionButton>}
           <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
-          {draft && <Atom className={CLASS.modelingReview}>
-            <Atom className={CLASS.modelingReviewHead}><Label>승인 워크플로</Label><ReviewStatus>{draft.state}</ReviewStatus><Copy>{draft.message}</Copy></Atom>
-            <WorkflowStepper><ReviewProgress>{draft.approval?.ready ? "모든 값 승인됨" : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</ReviewProgress></WorkflowStepper>
-            {draft.product && <ProposalCard><Atom className={CLASS.modelingProposal}><Label>제품·조립 기준</Label><Copy>{draft.product.name} · {draft.product.intendedUse ?? "제품 용도 확인 필요"}</Copy></Atom></ProposalCard>}
-            {draft.components.length > 0 && <ProposalCard><Atom className={CLASS.modelingProposal}><Label>LLM이 제안한 구성 부품</Label>{draft.components.map((component) => <Copy key={component.id}>{component.displayName} · {component.semanticRole} · {component.recipe} · {component.quantity}개</Copy>)}</Atom></ProposalCard>}
-            <ParameterEditor><Atom className={CLASS.modelingQuestionList}>{draft.questions.map((question) => <Atom className={CLASS.modelingQuestion} key={question.id} data-status={question.status}>
-              <Atom><Label>{question.category} · {question.criticality}</Label><Atom as={ELEMENT.strong}>{question.path}</Atom><Copy>{question.rationale}</Copy><EvidencePreview><Copy className={CLASS.modelingHint}>권장값: {typeof question.recommendedValue === "string" || typeof question.recommendedValue === "number" ? String(question.recommendedValue) : JSON.stringify(question.recommendedValue)} {question.unit ?? ""}</Copy></EvidencePreview></Atom>
-              <DecisionActions><Atom className={CLASS.modelingDecisionActions}><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || ["accepted", "overridden"].includes(question.status)} onClick={() => void decideDraftQuestion(question, "accept")}>승인</ActionButton><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending} onClick={() => void decideDraftQuestion(question, "override")}>수정</ActionButton><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending} onClick={() => void decideDraftQuestion(question, "needs_evidence")}>근거 요청</ActionButton></Atom></DecisionActions>
-            </Atom>)}</Atom></ParameterEditor>
-            <Atom className={CLASS.modelingBuildGate}><Copy>{draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : "승인된 Blender 생성 실행"}</ActionButton></Atom>
-          </Atom>}
         </form>
       </Surface>
-      <Surface className={CLASS.modelingPreview}>
+      {buildInProgress ? <BuildProgressPanel>
+        <div><Label>Blender 생성·검증</Label><ReviewStatus>진행 중</ReviewStatus><Copy>{progress || studio.pendingLabel}</Copy></div>
+      </BuildProgressPanel> : analysisInProgress ? <BuildProgressPanel>
+        <div><Label>제품·부품 분석</Label><ReviewStatus>분석 중</ReviewStatus><Copy>{progress || "제품과 구성 부품을 분석하고 있습니다."}</Copy></div>
+      </BuildProgressPanel> : previewModel ? <ModelResultPanel>
         <Atom className={CLASS.modelingToolbar}><Atom><Label>{studio.workspace.assemblyLabel}</Label><Copy className={CLASS.modelingHint}>{studio.workspace.assemblyDescription}</Copy></Atom><Link href="/">{studio.backLabel}</Link></Atom>
-        {previewModel
-          ? <ModelPreviewFrame className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
-          : <Atom className={CLASS.modelingPreviewEmpty}><Copy>{studio.idleMessage}</Copy></Atom>}
-          <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
-            <Label>{studio.resultTitle}</Label>
-            <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
-            {downloadReady && previewModel && <Link href={previewModel} download>{studio.downloadLabel}</Link>}
-          </Atom>
-      </Surface>
+        <ModelPreviewFrame className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
+        <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}><Label>{studio.resultTitle}</Label><Atom as={ELEMENT.span}>{error || result}</Atom>{downloadReady && <Link href={previewModel} download>{studio.downloadLabel}</Link>}</Atom>
+        {draft ? <DecisionHistoryDisclosure label="승인 결정 내역 보기"><ReviewProgress>생성 당시 승인값 {draft.questions.length}개</ReviewProgress><DraftQuestionGroups draft={draft} readOnly /></DecisionHistoryDisclosure> : null}
+      </ModelResultPanel> : draft ? <ReviewWorkspace>
+        <ReviewWorkspaceHeader><Label>승인 워크플로</Label><ReviewStatus>{draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
+        <WorkflowStepper>{MODELING_WORKFLOW_STEPS.map((step, index) => <WorkflowStep status={index < activeWorkflowIndex ? "completed" : index === activeWorkflowIndex ? "current" : "upcoming"} key={step}>{index + 1}. {step}</WorkflowStep>)}</WorkflowStepper>
+        <ReviewProgress>{draft.approval?.ready ? "모든 값 승인됨" : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</ReviewProgress>
+        {draft.product ? <ProposalCard><Label>제품·조립 기준</Label><Copy>{draft.product.name} · {draft.product.intendedUse ?? "제품 용도 확인 필요"}</Copy></ProposalCard> : null}
+        {draft.components.length > 0 ? <ProposalCard><Label>LLM이 제안한 구성 부품</Label>{draft.components.map((component) => <Copy key={component.id}>{component.displayName} · {component.semanticRole} · {component.recipe} · {component.quantity}개</Copy>)}</ProposalCard> : null}
+        <DraftQuestionGroups draft={draft} decisionPending={draftDecisionPending} onDecision={(question, action) => void decideDraftQuestion(question, action)} />
+        <BuildGate><Copy>{draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
+      </ReviewWorkspace> : null}
     </Atom>
     <Surface className={CLASS.modelingLibrary}>
       <Atom className={CLASS.modelingLibraryHeader}>

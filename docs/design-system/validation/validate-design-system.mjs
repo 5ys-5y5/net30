@@ -48,6 +48,16 @@ export async function validateDesignSystem(root = repositoryRoot) {
   if (!/function ModelingCatalogRegion\b/.test(storefront) || !/catalog\.presentation\s*===\s*"modeling"/.test(storefront)) {
     failures.push("Storefront.tsx must centrally compose the modeling presentation");
   }
+  for (const atom of ["ReviewWorkspace", "ReviewWorkspaceHeader", "WorkflowStep", "ParameterGroup", "ParameterQuestionCard", "ParameterValue", "BuildGate", "BuildProgressPanel", "ModelResultPanel", "DecisionHistoryDisclosure"]) {
+    if (!new RegExp(`<${atom}\\b`).test(storefront)) failures.push(`Storefront.tsx must compose modeling review UI with ${atom}`);
+  }
+  if (/CLASS\.modeling(?:Review|ReviewHead|Proposal|QuestionList|Question|DecisionActions|BuildGate)\b/.test(storefront)) {
+    failures.push("Storefront.tsx must not rebuild review atoms from modeling-specific class fragments");
+  }
+  if (/CLASS\.modelingPreviewEmpty\b/.test(storefront)) failures.push("Storefront.tsx must not reserve an empty model preview before generation");
+  if (!/previewModel\s*\?\s*<ModelResultPanel\b/.test(storefront) || !/draft\s*\?\s*<ReviewWorkspace\b/.test(storefront)) {
+    failures.push("Storefront.tsx must switch one workspace from review decisions to the generated model");
+  }
   if (!/region:\s*"catalog"/.test(templateMap) || !/composition:\s*"CatalogRegion"/.test(templateMap)) {
     failures.push("template-map.mjs must keep the catalog composition in the central registry");
   }
