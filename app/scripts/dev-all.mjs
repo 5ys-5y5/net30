@@ -7,7 +7,10 @@ const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serviceDir = resolve(appDir, "src/3d/vitamin-bottle-service");
 const hubDir = resolve(appDir, "src/3d/modeling-hub");
 const modelingHubPort = Number(process.env.NET30_MODELING_HUB_PORT ?? 8788);
-const useLocalBlender = process.env.NET30_USE_LOCAL_BLENDER === "1";
+// Local development should exercise the same OpenAI → Blender path as
+// production by default. Set NET30_USE_LOCAL_BLENDER=0 only when deliberately
+// working on the storefront without the modeling service.
+const useLocalBlender = process.env.NET30_USE_LOCAL_BLENDER !== "0";
 const children = new Set();
 let stopping = false;
 

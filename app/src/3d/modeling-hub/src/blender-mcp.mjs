@@ -79,8 +79,16 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   const requestPath = path.join(jobDir, "request.json");
   const resultPath = path.join(jobDir, "result.json");
   const workerPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "blender-worker.py");
-  const macBlender = "/Applications/Blender.app/Contents/MacOS/Blender";
-  const blenderBin = env("BLENDER_BIN", existsSync(macBlender) ? macBlender : "blender");
+  // Blender 5.2 currently crashes during Metal probing on this Apple Silicon
+  // workstation. Keep an explicit BLENDER_BIN override, then prefer the
+  // separately-installed, verified 4.5 LTS bundle for local headless jobs.
+  // Linux/Railway continues to use its Docker-provided `blender` binary.
+  const macBlenderCandidates = [
+    "/Applications/Blender 4.5 LTS.app/Contents/MacOS/Blender",
+    "/Applications/Blender.app/Contents/MacOS/Blender",
+  ];
+  const macBlender = macBlenderCandidates.find((candidate) => existsSync(candidate));
+  const blenderBin = env("BLENDER_BIN", macBlender ?? "blender");
 
   await Promise.all([
     fs.mkdir(jobDir, { recursive: true }),
