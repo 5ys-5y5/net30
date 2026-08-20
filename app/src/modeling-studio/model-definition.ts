@@ -2,6 +2,7 @@ import type { ProductPageDefinition } from "../../../docs/design-system/entry";
 import { net30Definition } from "../sku-data";
 
 const serviceOrigin = import.meta.env.VITE_NET30_3D_SERVICE_URL ?? "/3d";
+const embeddedHostOrigin = typeof window === "undefined" ? "" : `&hostOrigin=${encodeURIComponent(window.location.origin)}`;
 
 export const modelPageDefinition: ProductPageDefinition = {
   ...net30Definition,
@@ -31,7 +32,7 @@ export const modelPageDefinition: ProductPageDefinition = {
     presentation: "modeling",
     modeling: {
       endpoint: "/api/modeling/jobs",
-      previewSrc: `${serviceOrigin}/?qa=reference`,
+      previewSrc: `${serviceOrigin}/?qa=reference${embeddedHostOrigin}`,
       title: "Blender MCP",
       copy: "모델링 프롬프트와 값은 headless Blender MCP로 전달되며, 생성된 GLB는 Blender 없이도 Storefront에서 실행됩니다.",
       backLabel: "Storefront로 돌아가기",
