@@ -45,9 +45,6 @@ if ! railway variable list --service "$HUB_SERVICE" --environment "$ENVIRONMENT_
 fi
 railway service source connect --repo "$REPO_SLUG" --branch main \
   --service "$HUB_SERVICE" --environment "$ENVIRONMENT_ID" --project "$PROJECT_ID" >/dev/null
-railway environment edit --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" \
-  --service-config "$HUB_SERVICE" rootDirectory "app/src/3d/modeling-hub" \
-  --message "Configure headless Blender MCP service" >/dev/null
 
 # A volume is required because Railway deployments have ephemeral filesystems.
 railway service link "$HUB_SERVICE" >/dev/null
@@ -61,6 +58,7 @@ printf '%s' "$NET30_MODELING_HUB_TOKEN" | railway variable set NET30_MODELING_HU
 railway variable set \
   HOST=0.0.0.0 \
   PORT=8788 \
+  RAILWAY_DOCKERFILE_PATH=app/src/3d/modeling-hub/Dockerfile \
   NET30_REPO=/app \
   NET30_3D_ASSET_ROOT=/data \
   "NET30_MODELING_ALLOWED_ORIGINS=$PUBLIC_URL" \
