@@ -50,6 +50,7 @@ export const modelPageDefinition: ProductPageDefinition = {
         emptyMessage: "저장된 버전이 없습니다.",
         previewLabel: "미리보기",
         editLabel: "수정 시작",
+        homeLabel: "홈에 표시",
         deleteLabel: "삭제",
       },
       fields: {

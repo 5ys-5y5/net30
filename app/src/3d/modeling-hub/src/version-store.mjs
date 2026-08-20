@@ -9,8 +9,8 @@ function cleanId(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, ""); }
 export function createVersionStore(assetRoot) {
   const root = path.join(assetRoot, "component-library");
   const manifestPath = path.join(root, "index.json");
-  const empty = { version: 1, components: Object.fromEntries(COMPONENTS.map((component) => [component, []])) };
-  async function load() { if (!existsSync(manifestPath)) return structuredClone(empty); return JSON.parse(await fs.readFile(manifestPath, "utf8")); }
+  const empty = { version: 1, showcase: null, components: Object.fromEntries(COMPONENTS.map((component) => [component, []])) };
+  async function load() { if (!existsSync(manifestPath)) return structuredClone(empty); const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")); return { ...empty, ...manifest, components: { ...empty.components, ...manifest.components } }; }
   async function save(value) { await fs.mkdir(root, { recursive: true }); await fs.writeFile(manifestPath, `${JSON.stringify(value, null, 2)}\n`); }
   async function list(component) { if (!COMPONENTS.includes(component)) throw new Error("지원하지 않는 컴포넌트입니다."); const manifest = await load(); return manifest.components[component] ?? []; }
   async function register({ component, sourcePath, jobId, contractHash, summary, parentVersionId = null }) {
@@ -37,8 +37,21 @@ export function createVersionStore(assetRoot) {
     }
     if (changed) await save(manifest);
   }
+  async function showcase() { return (await load()).showcase; }
+  async function setShowcase({ component, versionId, sourcePath }) {
+    const version = await find(component, versionId); if (!version) throw new Error("버전을 찾을 수 없습니다.");
+    if (!existsSync(sourcePath)) throw new Error("조립 GLB를 찾을 수 없습니다.");
+    const manifest = await load(); const target = path.join(root, "showcase", "current.glb"); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.copyFile(sourcePath, target);
+    manifest.showcase = { component, versionId: version.id, jobId: version.jobId, assetPath: "/api/modeling/showcase/artifact", updatedAt: new Date().toISOString() }; await save(manifest); return manifest.showcase;
+  }
+  async function initialiseShowcase(jobsRoot) {
+    if (await showcase()) return;
+    const all = (await Promise.all(COMPONENTS.map((component) => list(component)))).flat().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    for (const version of all) { const sourcePath = path.join(jobsRoot, version.jobId, "render", "assembly.glb"); if (existsSync(sourcePath)) { await setShowcase({ component: version.component, versionId: version.id, sourcePath }); return; } }
+  }
   async function find(component, versionId) { return (await list(component)).find((item) => item.id === versionId) ?? null; }
   async function remove(component, versionId) { const manifest = await load(); const history = manifest.components[component] ?? []; const entry = history.find((item) => item.id === versionId); if (!entry) return null; manifest.components[component] = history.filter((item) => item.id !== versionId); await fs.rm(path.join(root, component, cleanId(versionId)), { recursive: true, force: true }); await save(manifest); return entry; }
   function artifactPath(component, versionId) { return path.join(root, component, cleanId(versionId), "model.glb"); }
-  return { list, register, importLegacyJobs, find, remove, artifactPath };
+  function showcaseArtifactPath() { return path.join(root, "showcase", "current.glb"); }
+  return { list, register, importLegacyJobs, showcase, setShowcase, initialiseShowcase, find, remove, artifactPath, showcaseArtifactPath };
 }

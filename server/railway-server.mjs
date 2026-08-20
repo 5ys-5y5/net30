@@ -126,7 +126,7 @@ async function proxyModeling(req, res, url) {
 
 async function proxyGeneratedModel(req, res) {
   if (!modelingHubUrl) return false;
-  const upstream = await fetch(`${modelingHubUrl}/assets/showcase-vial.glb`, {
+  const upstream = await fetch(`${modelingHubUrl}/api/modeling/showcase/artifact`, {
     headers: modelingHubToken ? { authorization: `Bearer ${modelingHubToken}` } : undefined,
     redirect: "manual",
   });

@@ -380,6 +380,15 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
 
   useEffect(() => { void refreshVersions(studio.components.map((component) => component.id)); }, [studio.endpoint]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, { signal: controller.signal }).then(async (response) => {
+      const body = await response.json() as { ok?: boolean; showcase?: { assetPath?: string } | null };
+      if (response.ok && body.ok && body.showcase?.assetPath) { setPreviewModel(body.showcase.assetPath); setPreviewRevision(Date.now().toString()); }
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [studio.endpoint]);
+
   const previewVersion = (version: { id: string; assetPath: string }) => {
     setSelectedVersionId(version.id);
     setPreviewModel(version.assetPath);
@@ -535,6 +544,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             <Atom className={CLASS.modelingActions}>
               <button className={CLASS.modelingAction} type="button" onClick={() => previewVersion(version)}>{studio.assetLibrary.previewLabel}</button>
               <button className={CLASS.modelingAction} type="button" onClick={() => editVersion(component.id, version)}>{studio.assetLibrary.editLabel}</button>
+              <button className={CLASS.modelingAction} type="button" onClick={async () => { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ component: component.id, versionId: version.id }) }); const body = await response.json() as { ok?: boolean; error?: string }; if (!response.ok || !body.ok) { setError(body.error ?? "홈 표시 자산을 설정하지 못했습니다."); return; } setSelectedVersionId(version.id); setPreviewModel("/api/modeling/showcase/artifact"); setPreviewRevision(Date.now().toString()); setProgress("선택한 조립 모델을 홈페이지 3D 뷰어에 표시하도록 설정했습니다."); }}>{studio.assetLibrary.homeLabel}</button>
               <button className={CLASS.modelingAction} type="button" onClick={async () => { await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component.id}/versions/${version.id}`, { method: "DELETE" }); if (selectedVersionId === version.id) setSelectedVersionId(""); await refreshVersions([component.id]); }}>{studio.assetLibrary.deleteLabel}</button>
             </Atom>
           </Atom>)}
