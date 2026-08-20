@@ -9,3 +9,8 @@ docs/design-system/.DS_Store
 package-lock.json
 tmp/
 .net30-3d.env
+dist/
+app/src/3d/*/node_modules/
+app/src/3d/*/dist/
+app/src/3d/*/.env
+.net30-railway-smoke.log

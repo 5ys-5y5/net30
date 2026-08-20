@@ -8,6 +8,7 @@ const root = document.getElementById("app");
 if (!root) throw new Error("3D service root not found");
 
 const query = new URLSearchParams(location.search);
+const serviceBaseUrl = import.meta.env.BASE_URL;
 const qaMode = query.get("qa") === "reference";
 const captureMode = query.get("capture") === "1";
 const contentPreset = CONTENT_PRESETS[query.get("contents") ?? "multivitamin"] ?? DEFAULT_CONTENTS;
@@ -15,7 +16,7 @@ const contentPreset = CONTENT_PRESETS[query.get("contents") ?? "multivitamin"] ?
 root.innerHTML = `
   <section class="viewer${qaMode ? " viewer--qa" : ""}${captureMode ? " viewer--capture" : ""}">
     <canvas class="viewer__canvas" aria-label="NET30 독립 3D 비타민 병"></canvas>
-    ${qaMode ? '<img class="viewer__reference" src="/qa/reference-vial.jpg" alt="유리병 기준 사진">' : ""}
+    ${qaMode ? `<img class="viewer__reference" src="${serviceBaseUrl}qa/reference-vial.jpg" alt="유리병 기준 사진">` : ""}
     <div class="viewer__status"><strong>NET30 3D</strong><span data-status>독립 서비스 시작 중</span></div>
     <div class="viewer__controls">
       <button type="button" data-zoom-out aria-label="축소">−</button>

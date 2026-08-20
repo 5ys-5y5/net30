@@ -4,5 +4,3 @@ qa-output/
 *.log
 .DS_Store
 !package-lock.json
-.qa/
-coverage/

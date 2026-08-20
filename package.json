@@ -1,11 +1,13 @@
 {
-  "name": "net30",
-  "version": "0.1.0",
+  "name": "net30-monorepo",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.2",
+  "engines": { "node": ">=22 <23" },
   "scripts": {
-    "dev": "npm run dev --prefix app",
-    "build": "npm run build --prefix app",
-    "preview": "npm run preview --prefix app"
+    "build": "node scripts/railway/build.mjs",
+    "start": "node server/railway-server.mjs",
+    "check:railway": "node --check server/railway-server.mjs && node --check scripts/railway/build.mjs"
   }
 }

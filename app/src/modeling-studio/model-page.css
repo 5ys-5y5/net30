@@ -1,0 +1,111 @@
+.net30-model-page {
+  min-height: 100vh;
+  background: #f3f5f8;
+  color: #142036;
+  padding: 32px;
+  box-sizing: border-box;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.net30-model-page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+.net30-model-page__eyebrow {
+  margin: 0 0 8px;
+  color: #4b6aaf;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.net30-model-page__header h1 { margin: 0 0 10px; font-size: 30px; }
+.net30-model-page__header p { margin: 0; max-width: 820px; line-height: 1.6; }
+.net30-model-page__back {
+  background: #ffffff;
+  border: 1px solid #d7dfea;
+  border-radius: 999px;
+  padding: 10px 16px;
+  text-decoration: none;
+  color: #17306e;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.net30-model-page__grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 560px) minmax(420px, 1fr);
+  gap: 24px;
+}
+.net30-model-card {
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: 0 18px 60px rgba(17, 36, 77, 0.08);
+}
+.net30-model-card h2,
+.net30-model-card h3 { margin-top: 0; }
+.net30-model-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.net30-model-card input,
+.net30-model-card textarea,
+.net30-model-card select,
+.net30-model-card button {
+  font: inherit;
+}
+.net30-model-card input,
+.net30-model-card textarea,
+.net30-model-card select {
+  border: 1px solid #c6d2e5;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fbfcfe;
+}
+.net30-model-card textarea {
+  resize: vertical;
+  min-height: 180px;
+}
+.net30-model-card button {
+  width: 100%;
+  border: 0;
+  border-radius: 14px;
+  background: #17306e;
+  color: #fff;
+  padding: 14px 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.net30-model-card button:disabled { opacity: 0.6; cursor: wait; }
+.net30-model-page__two-up {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.net30-model-page__preview {
+  width: 100%;
+  height: 520px;
+  border: 1px solid #d8dfec;
+  border-radius: 18px;
+  background: #fff;
+}
+.net30-model-page__result pre {
+  white-space: pre-wrap;
+  background: #f7f9fc;
+  border: 1px solid #e1e6ef;
+  border-radius: 14px;
+  padding: 14px;
+  overflow: auto;
+}
+.net30-model-page__error { color: #8f102f; }
+.net30-model-page__hint { color: #63728f; font-size: 12px; line-height: 1.5; }
+@media (max-width: 1080px) {
+  .net30-model-page__grid { grid-template-columns: 1fr; }
+  .net30-model-page__header { flex-direction: column; }
+}
