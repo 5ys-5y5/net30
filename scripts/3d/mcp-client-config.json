@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "blender": {
+      "command": "bash",
+      "args": [
+        "/Users/gy/Documents/dev/net30/scripts/3d/start-blender-mcp.sh"
+      ]
+    }
+  }
+}
