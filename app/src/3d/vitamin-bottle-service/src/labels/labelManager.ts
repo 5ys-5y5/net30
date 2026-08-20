@@ -1,6 +1,5 @@
 import {
   ClampToEdgeWrapping,
-  CylinderGeometry,
   FrontSide,
   Group,
   LinearFilter,
@@ -13,23 +12,6 @@ import {
 } from "three";
 import type { LabelSurface } from "../api/contracts";
 
-const LABEL_RADIUS = 0.02815;
-const LABEL_ARC = 102 * Math.PI / 180;
-const LABEL_CENTER_Y = -0.001;
-const MIN_HEIGHT = 0.020;
-const MAX_HEIGHT = 0.050;
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function geometry(surface: LabelSurface, side: "front" | "back") {
-  const aspect = surface.pixelWidth / surface.pixelHeight;
-  const arcWidth = LABEL_RADIUS * LABEL_ARC;
-  const height = clamp(arcWidth / Math.max(0.25, aspect), MIN_HEIGHT, MAX_HEIGHT);
-  const start = side === "front" ? -LABEL_ARC / 2 : Math.PI - LABEL_ARC / 2;
-  return new CylinderGeometry(LABEL_RADIUS, LABEL_RADIUS, height, 128, 1, true, start, LABEL_ARC);
-}
 
 function material(texture: Texture) {
   return new MeshPhysicalMaterial({
@@ -68,7 +50,7 @@ export class LabelManager {
     this.group.name = "NET30IndependentLabels";
   }
 
-  async apply(frontSurface: LabelSurface, backSurface: LabelSurface) {
+  async apply(frontSurface: LabelSurface, backSurface: LabelSurface, slots: Readonly<Record<string, Mesh>>) {
     if (frontSurface.sourceLabel !== "한글표시사항") {
       throw new Error("전면 라벨은 실제 한글표시사항 UI 캡처여야 합니다.");
     }
@@ -86,15 +68,18 @@ export class LabelManager {
       backTexture.dispose();
       return;
     }
+    const frontSlot = slots["korean-product-information"];
+    const backSlot = slots["full-price-structure"];
+    if (!frontSlot || !backSlot) throw new Error("이 GLB에는 승인된 HTML 스티커 슬롯이 없습니다. 하드코딩된 원통 라벨을 덧씌우지 않았습니다.");
     this.clear();
     prepare(frontTexture, this.maxAnisotropy);
     prepare(backTexture, this.maxAnisotropy);
-    this.front = new Mesh(geometry(frontSurface, "front"), material(frontTexture));
-    this.back = new Mesh(geometry(backSurface, "back"), material(backTexture));
+    this.front = new Mesh(frontSlot.geometry.clone(), material(frontTexture));
+    this.back = new Mesh(backSlot.geometry.clone(), material(backTexture));
     this.front.name = "LabelFront";
     this.back.name = "LabelBack";
-    for (const mesh of [this.front, this.back]) {
-      mesh.position.y = LABEL_CENTER_Y;
+    for (const [mesh, slot] of [[this.front, frontSlot], [this.back, backSlot]] as const) {
+      mesh.position.copy(slot.position); mesh.quaternion.copy(slot.quaternion); mesh.scale.copy(slot.scale);
       mesh.renderOrder = 8;
       mesh.receiveShadow = true;
     }

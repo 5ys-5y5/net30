@@ -158,15 +158,25 @@ export function SelectionCard({
   return <Surface className={joinClasses(CLASS.selectionCard, className)} data-selected={selected} {...props} />;
 }
 
-/** A shared iframe atom for persisted product-model assets. */
-export function ModelPreviewFrame({ className = "", loading = "lazy", ...props }: IframeHTMLAttributes<HTMLIFrameElement>) {
-  return <iframe className={joinClasses(CLASS.modelPreviewFrame, className)} loading={loading} {...props} />;
+/** A shared iframe atom for persisted product-model assets and their fixed web-only graphics. */
+export function ModelPreviewFrame({ className = "", loading = "lazy", labelPayload, src = "", ...props }: IframeHTMLAttributes<HTMLIFrameElement> & { labelPayload?: ThreeDLabelPayload }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  useEffect(() => { sendLabelPayloadToFrame(frameRef.current, labelPayload, src); }, [labelPayload, src]);
+  return <iframe ref={frameRef} onLoad={() => sendLabelPayloadToFrame(frameRef.current, labelPayload, src)} className={joinClasses(CLASS.modelPreviewFrame, className)} loading={loading} src={src} {...props} />;
 }
 
 /** The selectable portion of a card stays keyboard-operable without nesting action buttons. */
 export function SelectionCardControl({ className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return <ActionButton className={joinClasses(CLASS.selectionCardControl, className)} {...props} />;
 }
+
+export function WorkflowStepper({ children }: { children: ReactNode }) { return <div className={CLASS.workflowStepper}>{children}</div>; }
+export function ProposalCard({ children }: { children: ReactNode }) { return <Surface className={CLASS.proposalCard}>{children}</Surface>; }
+export function ParameterEditor({ children }: { children: ReactNode }) { return <div className={CLASS.parameterEditor}>{children}</div>; }
+export function EvidencePreview({ children }: { children: ReactNode }) { return <div className={CLASS.evidencePreview}>{children}</div>; }
+export function ReviewStatus({ children }: { children: ReactNode }) { return <span className={CLASS.reviewStatus}>{children}</span>; }
+export function ReviewProgress({ children }: { children: ReactNode }) { return <div className={CLASS.reviewProgress}>{children}</div>; }
+export function DecisionActions({ children }: { children: ReactNode }) { return <div className={CLASS.decisionActions}>{children}</div>; }
 
 export function SiteHeader({
   label,

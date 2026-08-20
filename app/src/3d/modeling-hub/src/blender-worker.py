@@ -61,6 +61,16 @@ def decal(component,radius,target,material):
     for i in range(segments): fs.append((i,i+1,segments+2+i,segments+1+i))
     mesh=bpy.data.meshes.new(component["component"]+"DecalMesh"); mesh.from_pydata(vs,[],fs); mesh.update(); obj=bpy.data.objects.new(component["component"].title()+"Decal",mesh); target.objects.link(obj); obj.data.materials.append(material)
     obj["net30_label_text"]=component["features"]["labelText"]; obj["net30_material_role"]="printed-decal"
+def sticker_slot(name, source_id, radius, height, target, values):
+    width=float(values.get("physicalWidthMm",38))*MM; h=float(values.get("physicalHeightMm",52))*MM; sweep=math.radians(float(values.get("wrapDegrees",105))); z=(height-h)/2; offset=float(values.get("surfaceOffsetMm",.15))*MM
+    segments=48; vs=[]; fs=[]
+    for j in range(2):
+        for i in range(segments+1):
+            a=-sweep/2+sweep*i/segments; vs.append(((radius+offset)*math.sin(a),-(radius+offset)*math.cos(a),z+j*h))
+    for i in range(segments): fs.append((i,i+1,segments+2+i,segments+1+i))
+    mesh=bpy.data.meshes.new(name+"Mesh"); mesh.from_pydata(vs,[],fs); mesh.update(); obj=bpy.data.objects.new(name,mesh); target.objects.link(obj)
+    material=bpy.data.materials.new(name+"Material"); material.use_nodes=True; material.node_tree.nodes.get("Principled BSDF").inputs["Alpha"].default_value=0; material.surface_render_method='DITHERED'; obj.data.materials.append(material)
+    obj["net30_sticker_slot"]={"sourceGraphicId":source_id,"physicalWidthMm":width/MM,"physicalHeightMm":h/MM,"wrapDegrees":math.degrees(sweep),"surfaceOffsetMm":offset/MM}; return obj
 def build_component(component, contract, target):
     d=contract["dimensionsMm"]; kind=component["component"]; material=mat(kind+"Material",component["material"])
     radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM; wall=d["wallMm"]*MM
@@ -84,7 +94,7 @@ def export(objects,destination):
     if not meshes: return False
     for obj in meshes: obj.select_set(True)
     bpy.context.view_layer.objects.active=meshes[0]; destination.parent.mkdir(parents=True,exist_ok=True)
-    bpy.ops.export_scene.gltf(filepath=str(destination),export_format="GLB",use_selection=True,export_yup=True,export_apply=True,export_materials="EXPORT",export_cameras=False,export_lights=False)
+    bpy.ops.export_scene.gltf(filepath=str(destination),export_format="GLB",use_selection=True,export_yup=True,export_apply=True,export_materials="EXPORT",export_cameras=False,export_lights=False,export_extras=True)
     return True
 def assemble_library(request):
     clear(); assembly=col("LIBRARY_ASSEMBLY")
@@ -108,6 +118,14 @@ def main():
         part=col("PART_"+component["component"]); build_component(component,request["spec"]["contract"],part)
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(component["component"]+".glb"))
         for obj in list(part.objects): link(obj,assembly)
+    approved=request.get("payload",{}).get("approvedDraft") or {}
+    if approved.get("stickerSlots"):
+        values={}
+        for item in approved.get("questions",[]):
+            if str(item.get("path","")).startswith("stickerSlots."):
+                pieces=item["path"].split("."); values.setdefault(pieces[1],{})[pieces[2]]=item.get("userValue",item.get("recommendedValue"))
+        radius=max(request["spec"]["contract"]["dimensionsMm"]["widthMm"],request["spec"]["contract"]["dimensionsMm"]["depthMm"])*MM/2
+        for source_id in ["korean-product-information","full-price-structure"]: sticker_slot("NET30_STICKER_SLOT_"+source_id.upper().replace("-","_"),source_id,radius,request["spec"]["contract"]["dimensionsMm"]["heightMm"]*MM,assembly,values.get(source_id,{}))
     if not export(list(assembly.all_objects),pathlib.Path(paths["assemblyGlb"])): raise RuntimeError("No selected component created a mesh")
     print("ASSEMBLY_GLB="+paths["assemblyGlb"])
 try: main()

@@ -22,9 +22,9 @@ export const modelPageDefinition: ProductPageDefinition = {
   navigation: [],
   catalogSection: {
     label: "3D MODELING STUDIO",
-    title: ["프롬프트와 이미지로", "3D 자산을 생성합니다."],
+    title: ["프롬프트와 이미지로", "기준값부터 검증합니다."],
     copy: [
-      "텍스트 지시와 선택적 이미지 입력을 OpenAI가 구조화하고, 검증된 Blender 파이프라인이 런타임 GLB로 내보냅니다.",
+      "OpenAI가 제품과 구성 부품을 제안하고, 사용자가 각 기준값을 검증한 뒤에만 Blender가 GLB를 생성합니다.",
     ],
   },
   catalog: {
@@ -35,9 +35,9 @@ export const modelPageDefinition: ProductPageDefinition = {
       previewSrc: `${serviceOrigin}/?${embeddedHostOrigin.slice(1)}`,
       downloadSrc: "",
       title: "OpenAI × Blender",
-      copy: "이미지는 선택적 모델링 입력입니다. OpenAI가 안전한 구조 명세를 만들고 headless Blender가 GLB를 생성합니다.",
+      copy: "이미지는 모델링 의도 분석에만 사용됩니다. OpenAI는 구조화된 권장값을 제안하며, 모든 필수값을 승인하기 전에는 Blender를 실행하지 않습니다.",
       backLabel: "Storefront로 돌아가기",
-      submitLabel: "모델링 실행",
+      submitLabel: "제품·부품 분석 시작",
       pendingLabel: "모델링 작업 진행 중",
       previewTitle: "3D 미리보기",
       resultTitle: "최근 실행 결과",

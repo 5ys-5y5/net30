@@ -1,13 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { executeBlenderModeling } from "./blender-mcp.mjs";
-import { contractHash, createAssemblyContract, createComponentSpec } from "./modeling-spec.mjs";
+import { contractHash, createAssemblyContract, createComponentSpec, fallbackContract } from "./modeling-spec.mjs";
 
 function assetRoot() { const value = process.env.NET30_3D_ASSET_ROOT?.trim(); if (!value) throw new Error("필수 환경변수가 없습니다: NET30_3D_ASSET_ROOT"); return value; }
 export async function runModelingJob(payload, { jobId, imageInputs = [], onProgress = () => undefined } = {}) {
   const root = assetRoot(); const jobDir = path.join(root, "jobs", jobId); await fs.mkdir(path.join(jobDir, "reports"), { recursive: true });
   onProgress("researching", "제품 규격과 조립 계약을 분석 중입니다.", Object.fromEntries(payload.components.map((component) => [component, { state: "researching", message: "공통 기준을 분석 중" }])));
-  const analysis = await createAssemblyContract(payload, imageInputs); const hash = contractHash(analysis.contract);
+  // A build initiated from a draft must never re-run an unreviewed AI planner.
+  // It uses the approved dimensions and only the deterministic compiler path.
+  const analysis = payload.approvedDraft ? { contract: fallbackContract(payload), source: "approved-draft", model: null } : await createAssemblyContract(payload, imageInputs); const hash = contractHash(analysis.contract);
   await fs.writeFile(path.join(jobDir, "reports", "assembly-contract.json"), `${JSON.stringify({ ...analysis.contract, contractHash: hash }, null, 2)}\n`);
   const needsThreadEvidence = analysis.contract.unresolved.some((item) => /thread|pitch|tolerance|나사|공차/i.test(item));
   onProgress("planning", "공통 조립 계약을 고정하고 컴포넌트 명세를 병렬 생성 중입니다.", Object.fromEntries(payload.components.map((component) => [component, { state: "planning", message: "공통 계약으로 명세 생성 중" }])));

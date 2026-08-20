@@ -4,6 +4,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 export type LoadedBottle = {
   readonly group: Group;
   readonly bounds: Box3;
+  readonly stickerSlots: Readonly<Record<string, Mesh>>;
   setCapColor: (color: string) => void;
   dispose: () => void;
 };
@@ -71,6 +72,7 @@ export async function loadBottle(
   // silently skipped by WebGL. Re-instancing the same geometry, transforms,
   // and compatible PBR materials removes that state without replacing the asset.
   const root = new Group();
+  const stickerSlots: Record<string, Mesh> = {};
   root.name = sourceRoot.name;
   root.position.copy(sourceRoot.position);
 
@@ -90,6 +92,11 @@ export async function loadBottle(
     displayMesh.frustumCulled = false;
     displayMesh.castShadow = true;
     displayMesh.receiveShadow = true;
+    const slot = node.userData?.net30_sticker_slot as { sourceGraphicId?: unknown } | undefined;
+    if (typeof slot?.sourceGraphicId === "string") {
+      stickerSlots[slot.sourceGraphicId] = displayMesh;
+      return;
+    }
     root.add(displayMesh);
   });
 
@@ -98,6 +105,7 @@ export async function loadBottle(
   return {
     group: root,
     bounds,
+    stickerSlots,
     setCapColor(color: string) {
       root.traverse((node) => {
         if (!isMesh(node) || !/cap|closure/i.test(node.name)) return;

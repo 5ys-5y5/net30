@@ -20,6 +20,7 @@ import {
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { LabelSurface, ProductConfig } from "../api/contracts";
 import { loadBottle, type LoadedBottle } from "../model/loadBottle";
+import { LabelManager } from "../labels/labelManager";
 
 export type BottleViewerOptions = {
   readonly onStatus?: (message: string) => void;
@@ -51,6 +52,7 @@ export class BottleViewer {
   private readonly controls: ControlState;
   private readonly resizeObserver: ResizeObserver;
   private bottle: LoadedBottle | null = null;
+  private labels: LabelManager | null = null;
   private environment: WebGLRenderTarget | null = null;
   private frame = 0;
   private lastTime = performance.now();
@@ -164,6 +166,8 @@ export class BottleViewer {
     this.bottle.group.position.y += this.fit.offsetY ?? 0;
     this.bottle.group.updateMatrixWorld(true);
     this.modelRoot.add(this.bottle.group);
+    this.labels = new LabelManager(this.renderer.capabilities.getMaxAnisotropy());
+    this.bottle.group.add(this.labels.group);
     this.bottle.setCapColor(config.capColor ?? "#083da9");
     this.fitCamera(this.bottle.bounds);
     this.onStatus("GLB의 실제 PBR 재질과 메시를 표시 중");
@@ -194,7 +198,8 @@ export class BottleViewer {
   }
 
   async applyLabels(front: LabelSurface, back: LabelSurface) {
-    void front; void back;
+    if (!this.bottle || !this.labels) throw new Error("모델이 로드되기 전에 HTML 스티커를 적용할 수 없습니다.");
+    await this.labels.apply(front, back, this.bottle.stickerSlots);
     this.requestRender();
   }
 
@@ -330,6 +335,7 @@ export class BottleViewer {
     this.resizeObserver.disconnect();
     this.detachControls();
     this.bottle?.dispose();
+    this.labels?.dispose();
     this.environment?.dispose();
     this.scene.traverse((node) => {
       if (node instanceof Mesh && node.name === "StudioFloor") {
