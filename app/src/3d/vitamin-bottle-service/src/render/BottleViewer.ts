@@ -78,7 +78,11 @@ export class BottleViewer {
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
-    this.renderer.setClearColor(0xffffff, 1);
+    // A white, transmissive GLB on a pure-white canvas can be technically
+    // rendered yet visually indistinguishable. Keep the product materials
+    // intact and give them a neutral studio backdrop to refract and contrast
+    // against.
+    this.renderer.setClearColor(0xe7edf4, 1);
     this.renderer.transmissionResolutionScale = 0.78;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 
@@ -99,7 +103,7 @@ export class BottleViewer {
       dragging: false,
     };
 
-    this.scene.background = new Color(0xffffff);
+    this.scene.background = new Color(0xe7edf4);
     this.scene.add(this.modelRoot);
     this.createStudio();
     this.attachControls();
@@ -137,7 +141,7 @@ export class BottleViewer {
 
     const floor = new Mesh(
       new PlaneGeometry(0.42, 0.42),
-      new MeshStandardMaterial({ color: 0xffffff, roughness: 0.97, metalness: 0 }),
+      new MeshStandardMaterial({ color: 0xdce4ee, roughness: 0.97, metalness: 0 }),
     );
     floor.name = "StudioFloor";
     floor.rotation.x = -Math.PI / 2;
@@ -164,8 +168,13 @@ export class BottleViewer {
     this.fitCamera(this.bottle.bounds);
     this.onStatus("GLB의 실제 PBR 재질과 메시를 표시 중");
     this.resize();
+    // Do not depend solely on a future animation frame for a static iframe.
+    // A preview must have a completed framebuffer as soon as its GLB loads.
+    this.renderer.render(this.scene, this.camera);
     this.requestRender();
-    void this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined);
+    void this.renderer.compileAsync(this.scene, this.camera)
+      .catch(() => undefined)
+      .finally(() => this.requestRender());
   }
 
   private fitCamera(bounds: Box3) {

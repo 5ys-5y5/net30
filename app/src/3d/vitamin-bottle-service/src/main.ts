@@ -36,7 +36,9 @@ const showError = (error: unknown) => {
 };
 
 const numberParam = (name: string) => {
-  const value = Number(query.get(name));
+  const raw = query.get(name);
+  if (raw === null || raw.trim() === "") return undefined;
+  const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
 };
 
@@ -47,7 +49,10 @@ const viewer = new BottleViewer(canvas, {
     scaleX: numberParam("fitScaleX"),
     scaleY: numberParam("fitScaleY"),
   },
-  modelUrl: query.get("model") ?? undefined,
+  // The storefront always uses the explicitly published assembly when one is
+  // available; loadBottle falls back to the bundled showcase for standalone
+  // service development or an empty asset library.
+  modelUrl: query.get("model") ?? "/api/modeling/showcase/artifact",
   onStatus: (message) => { status.textContent = message; },
 });
 
