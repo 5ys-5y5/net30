@@ -325,7 +325,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
 
   const skuIds = catalog.skus.map((item) => item.id);
   const defaults = studio.defaults;
-  const [component, setComponent] = useState(defaults.componentId);
+  const [components, setComponents] = useState<readonly string[]>(defaults.componentIds);
+  const [componentPrompts, setComponentPrompts] = useState<Record<string, string>>({});
   const [model, setModel] = useState(defaults.modelId);
   const [models, setModels] = useState<readonly { id: string; label: string }[]>([]);
   const [images, setImages] = useState<File[]>([]);
@@ -344,11 +345,12 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
   const [previewRevision, setPreviewRevision] = useState("initial");
+  const [previewModel, setPreviewModel] = useState("");
   const [progress, setProgress] = useState("");
   const [downloadReady, setDownloadReady] = useState(false);
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
-  const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}`;
+  const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}${previewModel ? `&model=${encodeURIComponent(previewModel)}` : ""}`;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -397,19 +399,28 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          component, model: model || undefined, imageIds,
+          version: "net30.modeling-job.v2", components, componentPrompts, model: model || undefined, imageIds,
           prompt,
-          settings: { sizeXmm, sizeYmm, sizeZmm, shellThicknessMm, distortion, material, shape, tone, finish, presetSkuId: skuId },
+          dimensionOverrides: { widthMm: sizeXmm, heightMm: sizeYmm, depthMm: sizeZmm, wallMm: shellThicknessMm },
+          settings: { material, shape, tone, finish, presetSkuId: skuId }, quality: "high",
         }),
       });
-      setProgress("Blender가 GLB를 생성 중");
-      const body = await response.json() as { ok?: boolean; summary?: string; error?: string; exportPaths?: Record<string, string>; analysis?: { summary?: string; model?: string | null; imageCount?: number } };
+      setProgress("조립 계약과 Blender 작업을 시작했습니다.");
+      const body = await response.json() as { ok?: boolean; error?: string; job?: { id: string; state: string; message: string }; statusUrl?: string };
       if (!response.ok || !body.ok) throw new Error(body.error ?? `모델링 요청 실패 (${response.status})`);
-      const paths = body.exportPaths ? Object.entries(body.exportPaths).map(([key, value]) => `${key}: ${value}`) : [];
-      setResult([body.summary ?? "", body.analysis?.summary ?? "", body.analysis?.model ? `OpenAI 모델: ${body.analysis.model}` : "", body.analysis ? `입력 이미지: ${body.analysis.imageCount ?? 0}장` : "", ...paths].filter(Boolean).join("\n"));
-      setPreviewRevision(Date.now().toString());
-      setProgress("완료");
-      setDownloadReady(true);
+      const statusUrl = body.statusUrl ?? `${studio.endpoint}/${body.job?.id}`;
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+        const statusResponse = await fetch(statusUrl); const statusBody = await statusResponse.json() as { ok?: boolean; job?: { state: string; message: string; result?: { artifact?: { assemblyGlb?: string }; report?: { requiredReview?: string[] } } }; error?: string };
+        if (!statusResponse.ok || !statusBody.ok || !statusBody.job) throw new Error(statusBody.error ?? "작업 상태를 불러오지 못했습니다.");
+        setProgress(statusBody.job.message);
+        if (["complete", "review_required", "failed"].includes(statusBody.job.state)) {
+          if (statusBody.job.state === "failed") throw new Error(statusBody.job.message);
+          const asset = statusBody.job.result?.artifact?.assemblyGlb ?? "";
+          setPreviewModel(asset); setPreviewRevision(Date.now().toString()); setDownloadReady(Boolean(asset));
+          setResult([statusBody.job.message, statusBody.job.state === "review_required" ? "제조용 STEP은 나사·공차의 공식 도면 확인 후 엔지니어 검토가 필요합니다." : "엔지니어 검토용 제조 후보를 생성했습니다.", asset].filter(Boolean).join("\n")); break;
+        }
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
@@ -439,7 +450,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           </Atom>
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
-            {selectField(studio.fields.component, component, setComponent, studio.components)}
+            <fieldset className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}><Label>{studio.fields.component}</Label>
+              {studio.components.map((option) => <label key={option.id}><input type="checkbox" checked={components.includes(option.id)} onChange={(event) => setComponents((current) => event.target.checked ? [...current, option.id] : current.filter((id) => id !== option.id))} /> {option.label}</label>)}
+              {components.map((id) => <input className={CLASS.modelingControl} key={id} aria-label={`${id} 추가 지시`} placeholder={`${studio.components.find((item) => item.id === id)?.label ?? id} 추가 지시 (선택)`} value={componentPrompts[id] ?? ""} onChange={(event) => setComponentPrompts((current) => ({ ...current, [id]: event.target.value }))} />)}
+            </fieldset>
             {selectField(studio.fields.sku, skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
             {selectField(studio.fields.material, material, setMaterial, studio.materials)}
             {selectField(studio.fields.shape, shape, setShape, studio.shapes)}
@@ -470,7 +484,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
             <Label>{studio.resultTitle}</Label>
             <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
-            {downloadReady && <Link href={studio.downloadSrc} download>{studio.downloadLabel}</Link>}
+            {downloadReady && previewModel && <Link href={previewModel} download>{studio.downloadLabel}</Link>}
           </Atom>
       </Surface>
     </Atom>

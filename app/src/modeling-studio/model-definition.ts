@@ -33,7 +33,7 @@ export const modelPageDefinition: ProductPageDefinition = {
     modeling: {
       endpoint: "/api/modeling/jobs",
       previewSrc: `${serviceOrigin}/?${embeddedHostOrigin.slice(1)}`,
-      downloadSrc: `${serviceOrigin}/models/showcase-vial.glb`,
+      downloadSrc: "",
       title: "OpenAI × Blender",
       copy: "이미지는 선택적 모델링 입력입니다. OpenAI가 안전한 구조 명세를 만들고 headless Blender가 GLB를 생성합니다.",
       backLabel: "Storefront로 돌아가기",
@@ -63,10 +63,11 @@ export const modelPageDefinition: ProductPageDefinition = {
       components: [
         { id: "bottle", label: "유리병" },
         { id: "cap", label: "뚜껑" },
-        { id: "labelFront", label: "전면 라벨" },
-        { id: "labelBack", label: "후면 라벨" },
-        { id: "vitamin", label: "알약" },
-        { id: "physicsCollider", label: "물리 콜라이더" },
+        { id: "pouringRing", label: "푸어링 링" },
+        { id: "liner", label: "밀봉 라이너" },
+        { id: "decorationFront", label: "전면 인쇄" },
+        { id: "decorationBack", label: "후면 인쇄" },
+        { id: "contents", label: "내용물" },
       ],
       materials: [
         { id: "glass", label: "유리" },
@@ -86,7 +87,7 @@ export const modelPageDefinition: ProductPageDefinition = {
       ],
       defaults: {
         modelId: "",
-        componentId: "bottle",
+        componentIds: ["bottle", "cap", "pouringRing", "decorationFront"],
         materialId: "glass",
         shapeId: "cylindrical",
         sizeXmm: 45,
@@ -96,7 +97,7 @@ export const modelPageDefinition: ProductPageDefinition = {
         distortion: 0.12,
         tone: "#2d5fc4",
         finish: "high-gloss",
-        prompt: "투명한 유리병, 짙은 파란 리브 캡, 크림색 전면 라벨을 가진 정교한 건강보조제 패키지를 생성하세요. 부드러운 숄더, 실제 벽 두께, 깨끗한 PBR 재질을 사용하세요.",
+        prompt: "DURAN Original GL 45 100 mL 실험용 유리병과 청색 PP 리브 캡, 푸어링 링, 백색 인쇄 눈금을 생성하세요. 병·캡·링의 조립 규격을 공통으로 유지하고, 별도 내외벽과 둥근 숄더·힐을 표현하세요.",
       },
     },
   },

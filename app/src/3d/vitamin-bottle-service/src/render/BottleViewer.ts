@@ -3,12 +3,9 @@ import {
   AmbientLight,
   Box3,
   Color,
-  CylinderGeometry,
   DirectionalLight,
-  DoubleSide,
   Group,
   Mesh,
-  MeshBasicMaterial,
   MeshStandardMaterial,
   OrthographicCamera,
   PCFSoftShadowMap,
@@ -22,14 +19,12 @@ import {
 } from "three";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { LabelSurface, ProductConfig } from "../api/contracts";
-import { LabelManager } from "../labels/labelManager";
 import { loadBottle, type LoadedBottle } from "../model/loadBottle";
-import { DEFAULT_CONTENTS } from "../model/presets";
-import { ContentWorld } from "../physics/contentWorld";
 
 export type BottleViewerOptions = {
   readonly onStatus?: (message: string) => void;
   readonly fit?: { readonly zoom?: number; readonly offsetY?: number; readonly scaleX?: number; readonly scaleY?: number };
+  readonly modelUrl?: string;
 };
 
 type ControlState = {
@@ -50,15 +45,12 @@ export class BottleViewer {
   readonly scene = new Scene();
   readonly camera: OrthographicCamera;
   readonly modelRoot = new Group();
-  readonly labelManager: LabelManager;
   private readonly onStatus: (message: string) => void;
   private readonly fit: NonNullable<BottleViewerOptions["fit"]>;
+  private readonly modelUrl?: string;
   private readonly controls: ControlState;
   private readonly resizeObserver: ResizeObserver;
   private bottle: LoadedBottle | null = null;
-  private contents: ContentWorld | null = null;
-  private presentationShell: Group | null = null;
-  private presentationCap: Mesh | null = null;
   private environment: WebGLRenderTarget | null = null;
   private frame = 0;
   private lastTime = performance.now();
@@ -70,6 +62,7 @@ export class BottleViewer {
 
   constructor(readonly canvas: HTMLCanvasElement, options: BottleViewerOptions) {
     this.fit = options.fit ?? {};
+    this.modelUrl = options.modelUrl;
     this.onStatus = options.onStatus ?? (() => undefined);
     this.renderer = new WebGLRenderer({
       canvas,
@@ -108,8 +101,6 @@ export class BottleViewer {
 
     this.scene.background = new Color(0xffffff);
     this.scene.add(this.modelRoot);
-    this.labelManager = new LabelManager(this.renderer.capabilities.getMaxAnisotropy());
-    this.modelRoot.add(this.labelManager.group);
     this.createStudio();
     this.attachControls();
     this.resizeObserver = new ResizeObserver(() => {
@@ -158,7 +149,7 @@ export class BottleViewer {
   async initialize(config: ProductConfig) {
     this.onStatus("고품질 GLB 병 모델 로딩");
     // The independent service owns this URL through its Vite base (/3d/).
-    this.bottle = await loadBottle();
+    this.bottle = await loadBottle(this.modelUrl);
     if (this.disposed) {
       this.bottle.dispose();
       return;
@@ -171,11 +162,7 @@ export class BottleViewer {
     this.modelRoot.add(this.bottle.group);
     this.bottle.setCapColor(config.capColor ?? "#083da9");
     this.fitCamera(this.bottle.bounds);
-    this.installPresentationShell(this.bottle.bounds, config.capColor ?? "#083da9");
-    this.onStatus("비타민 중력 엔진 초기화");
-    this.contents = await ContentWorld.create(config.contents ?? DEFAULT_CONTENTS, this.renderer.capabilities.getMaxAnisotropy());
-    this.contents.meshes.forEach((mesh) => this.scene.add(mesh));
-    this.onStatus("PBR·라벨 API·물리 준비 완료");
+    this.onStatus("GLB의 실제 PBR 재질과 메시를 표시 중");
     this.resize();
     this.requestRender();
     void this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined);
@@ -192,57 +179,13 @@ export class BottleViewer {
     this.camera.updateProjectionMatrix();
   }
 
-  private installPresentationShell(bounds: Box3, capColor: string) {
-    this.presentationShell?.traverse((node) => {
-      if (!(node instanceof Mesh)) return;
-      node.geometry.dispose();
-      const materials = Array.isArray(node.material) ? node.material : [node.material];
-      materials.forEach((material) => material.dispose());
-    });
-    if (this.presentationShell) this.scene.remove(this.presentationShell);
-
-    const size = bounds.getSize(new Vector3());
-    const radius = Math.max(size.x, size.z) / 2;
-    const bodyHeight = size.y * 0.76;
-    const capHeight = size.y * 0.24;
-    const body = new Mesh(
-      new CylinderGeometry(radius, radius * 0.97, bodyHeight, 64, 1, true),
-      new MeshBasicMaterial({
-        color: "#5b9dd3", transparent: true, opacity: 0.62, side: DoubleSide, depthWrite: false,
-      }),
-    );
-    const cap = new Mesh(
-      new CylinderGeometry(radius * 0.93, radius * 0.95, capHeight, 64),
-      new MeshBasicMaterial({ color: capColor }),
-    );
-    const shell = new Group();
-    shell.name = "NET30RuntimeBottleShell";
-    body.name = "NET30RuntimeGlassShell";
-    cap.name = "NET30RuntimeCap";
-    body.position.y = bounds.min.y + bodyHeight / 2;
-    cap.position.y = bounds.max.y - capHeight / 2;
-    body.renderOrder = 2;
-    cap.renderOrder = 7;
-    shell.add(body, cap);
-    this.presentationShell = shell;
-    this.presentationCap = cap;
-    this.scene.add(shell);
-  }
-
   async configure(config: ProductConfig) {
     this.bottle?.setCapColor(config.capColor ?? "#083da9");
-    if (this.presentationCap?.material instanceof MeshBasicMaterial) {
-      this.presentationCap.material.color.set(config.capColor ?? "#083da9");
-    }
-    this.contents?.meshes.forEach((mesh) => this.scene.remove(mesh));
-    this.contents?.dispose();
-    this.contents = await ContentWorld.create(config.contents ?? DEFAULT_CONTENTS, this.renderer.capabilities.getMaxAnisotropy());
-    this.contents.meshes.forEach((mesh) => this.scene.add(mesh));
     this.requestRender();
   }
 
   async applyLabels(front: LabelSurface, back: LabelSurface) {
-    await this.labelManager.apply(front, back);
+    void front; void back;
     this.requestRender();
   }
 
@@ -341,16 +284,13 @@ export class BottleViewer {
     const zoomDiff = this.controls.targetZoom - this.controls.zoom;
     this.controls.zoom += zoomDiff * Math.min(1, 16 * delta);
     this.modelRoot.rotation.y = this.controls.yaw;
-    if (this.presentationShell) this.presentationShell.rotation.y = this.controls.yaw;
     this.camera.zoom = this.controls.zoom;
     this.camera.updateProjectionMatrix();
-    this.contents?.step(delta, this.controls.yaw);
-
-    if (this.renderRequested || Math.abs(yawDiff) > 0.0001 || Math.abs(zoomDiff) > 0.0001 || this.contents?.isActive()) {
+    if (this.renderRequested || Math.abs(yawDiff) > 0.0001 || Math.abs(zoomDiff) > 0.0001) {
       this.renderRequested = false;
       this.renderer.render(this.scene, this.camera);
     }
-    if (this.controls.dragging || this.controls.velocity !== 0 || Math.abs(yawDiff) > 0.0001 || Math.abs(zoomDiff) > 0.0001 || this.contents?.isActive()) {
+    if (this.controls.dragging || this.controls.velocity !== 0 || Math.abs(yawDiff) > 0.0001 || Math.abs(zoomDiff) > 0.0001) {
       this.frame = requestAnimationFrame(this.tick);
     }
   };
@@ -380,18 +320,7 @@ export class BottleViewer {
     if (this.frame) cancelAnimationFrame(this.frame);
     this.resizeObserver.disconnect();
     this.detachControls();
-    this.contents?.dispose();
     this.bottle?.dispose();
-    this.presentationShell?.traverse((node) => {
-      if (!(node instanceof Mesh)) return;
-      node.geometry.dispose();
-      const materials = Array.isArray(node.material) ? node.material : [node.material];
-      materials.forEach((material) => material.dispose());
-    });
-    this.presentationShell?.removeFromParent();
-    this.presentationShell = null;
-    this.presentationCap = null;
-    this.labelManager.dispose();
     this.environment?.dispose();
     this.scene.traverse((node) => {
       if (node instanceof Mesh && node.name === "StudioFloor") {

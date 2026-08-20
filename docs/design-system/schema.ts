@@ -74,7 +74,7 @@ export type ModelingStudioDefinition = {
   materials: readonly ModelingOptionDefinition[];
   shapes: readonly ModelingOptionDefinition[];
   defaults: {
-    modelId: string; componentId: string; materialId: string; shapeId: string;
+    modelId: string; componentIds: readonly string[]; materialId: string; shapeId: string;
     sizeXmm: number; sizeYmm: number; sizeZmm: number; shellThicknessMm: number;
     distortion: number; tone: string; finish: string; prompt: string;
   };

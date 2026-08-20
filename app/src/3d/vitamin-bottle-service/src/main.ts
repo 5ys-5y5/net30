@@ -1,7 +1,6 @@
 import "./style.css";
 import { SERVICE_MESSAGE_TYPE, type ProductConfig } from "./api/contracts";
 import { attachBridge } from "./api/bridge";
-import { CONTENT_PRESETS, DEFAULT_CONTENTS } from "./model/presets";
 import { BottleViewer } from "./render/BottleViewer";
 
 const root = document.getElementById("app");
@@ -9,7 +8,6 @@ if (!root) throw new Error("3D service root not found");
 
 const query = new URLSearchParams(location.search);
 const captureMode = query.get("capture") === "1";
-const contentPreset = CONTENT_PRESETS[query.get("contents") ?? "multivitamin"] ?? DEFAULT_CONTENTS;
 
 root.innerHTML = `
   <section class="viewer${captureMode ? " viewer--capture" : ""}">
@@ -49,6 +47,7 @@ const viewer = new BottleViewer(canvas, {
     scaleX: numberParam("fitScaleX"),
     scaleY: numberParam("fitScaleY"),
   },
+  modelUrl: query.get("model") ?? undefined,
   onStatus: (message) => { status.textContent = message; },
 });
 
@@ -56,7 +55,6 @@ let activeConfig: ProductConfig = {
   skuId: query.get("sku") ?? "standalone-preview",
   modelId: "showcase-vial",
   capColor: query.get("cap") ?? "#083da9",
-  contents: contentPreset,
 };
 
 root.querySelector<HTMLButtonElement>("[data-zoom-out]")?.addEventListener("click", () => viewer.setView({ zoom: Math.max(0.35, viewer.camera.zoom / 1.18) }));

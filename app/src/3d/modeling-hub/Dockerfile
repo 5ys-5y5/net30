@@ -1,8 +1,10 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender ca-certificates python3-numpy \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender ca-certificates python3-numpy python3-pip \
   && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --break-system-packages cadquery==2.6.1
 
 WORKDIR /app
 COPY app/src/3d/modeling-hub/package.json app/src/3d/modeling-hub/package-lock.json ./
