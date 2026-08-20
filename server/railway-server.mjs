@@ -154,6 +154,10 @@ const server = createServer(async (req, res) => {
       });
     }
     if (url.pathname.startsWith("/api/modeling")) return await proxyModeling(req, res, url);
+    if (url.pathname === "/favicon.ico") {
+      const icon = resolve(hostDist, "favicon.svg");
+      return existsSync(icon) ? sendFile(req, res, icon) : sendJson(res, 404, { ok: false, error: "Favicon not found" });
+    }
     if (url.pathname === "/3d/models/showcase-vial.glb" || url.pathname === "/models/showcase-vial.glb") {
       if (await proxyGeneratedModel(req, res)) return;
     }

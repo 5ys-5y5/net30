@@ -11,6 +11,7 @@ import {
 } from "react";
 import type { ElementType, FormEvent, ReactNode, RefObject } from "react";
 import {
+  ActionButton,
   Atom,
   Container,
   Copy,
@@ -405,6 +406,38 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     setProgress(`v${version.ordinal}을 기반으로 수정할 준비가 되었습니다.`);
   };
 
+  const publishVersion = async (component: string, version: { id: string }) => {
+    setError("");
+    try {
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ component, versionId: version.id }),
+      });
+      const body = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !body.ok) throw new Error(body.error ?? "홈 표시 자산을 설정하지 못했습니다.");
+      setSelectedVersionId(version.id);
+      setPreviewModel("/api/modeling/showcase/artifact");
+      setPreviewRevision(Date.now().toString());
+      setProgress("선택한 조립 모델을 홈페이지 3D 뷰어에 표시하도록 설정했습니다.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  };
+
+  const deleteVersion = async (component: string, version: { id: string }) => {
+    setError("");
+    try {
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions/${version.id}`, { method: "DELETE" });
+      const body = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !body.ok) throw new Error(body.error ?? "저장된 자산을 삭제하지 못했습니다.");
+      if (selectedVersionId === version.id) setSelectedVersionId("");
+      await refreshVersions([component]);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  };
+
   const uploadImages = async () => {
     if (images.length > 4) throw new Error("모델링 입력 이미지는 최대 4장입니다.");
     const ids: string[] = [];
@@ -530,7 +563,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
               <Copy className={CLASS.modelingHint}>{images.length ? `${images.length}장 선택됨 · 작업 완료 후 7일 보관` : "선택 사항 · JPEG/PNG/WebP 최대 4장, 각 10MB"}</Copy>
             </label>
           </Atom>
-          <button className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? studio.pendingLabel : studio.submitLabel}</button>
+          <ActionButton className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? studio.pendingLabel : studio.submitLabel}</ActionButton>
           <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
           {Object.keys(componentProgress).length > 0 && <Atom className={CLASS.modelingProgress}><Label>컴포넌트 진행 상태</Label><Atom as="ul" className={CLASS.modelingProgressList}>{Object.entries(componentProgress).map(([id, item]) => <Atom as="li" className={CLASS.modelingProgressItem} key={id}><strong>{studio.components.find((option) => option.id === id)?.label ?? id}</strong><Atom as={ELEMENT.span}>{item.message}</Atom><Atom as={ELEMENT.span}>{item.state}</Atom></Atom>)}</Atom></Atom>}
         </form>
@@ -546,23 +579,39 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </Surface>
     </Atom>
     <Surface className={CLASS.modelingLibrary}>
-      <Atom><Label>{studio.assetLibrary.title}</Label><Copy>{studio.assetLibrary.copy}</Copy></Atom>
-      <Atom className={CLASS.modelingLibraryGrid}>{studio.componentGroups.map((group) => <Atom className={CLASS.modelingGroup} key={group.id}>
-        <Atom className={CLASS.modelingGroupHead}><Atom as={ELEMENT.strong}>{group.label}</Atom><Atom as={ELEMENT.small}>{group.description}</Atom></Atom>
-        {group.componentIds.map((componentId) => { const component = studio.components.find((item) => item.id === componentId); if (!component) return null; const items = versions[component.id] ?? []; return <Atom className={CLASS.modelingVersionList} key={component.id}>
-          <Label>{component.label}</Label>
-          {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <Atom className={CLASS.modelingVersion} data-active={selectedVersionId === version.id} key={version.id}>
-            <strong>v{version.ordinal}</strong>
-            <Atom as={ELEMENT.span}>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Atom>
-            <Atom className={CLASS.modelingActions}>
-              <button className={CLASS.modelingAction} type="button" onClick={() => previewVersion(version)}>{studio.assetLibrary.previewLabel}</button>
-              <button className={CLASS.modelingAction} type="button" onClick={() => editVersion(component.id, version)}>{studio.assetLibrary.editLabel}</button>
-              <button className={CLASS.modelingAction} type="button" onClick={async () => { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ component: component.id, versionId: version.id }) }); const body = await response.json() as { ok?: boolean; error?: string }; if (!response.ok || !body.ok) { setError(body.error ?? "홈 표시 자산을 설정하지 못했습니다."); return; } setSelectedVersionId(version.id); setPreviewModel("/api/modeling/showcase/artifact"); setPreviewRevision(Date.now().toString()); setProgress("선택한 조립 모델을 홈페이지 3D 뷰어에 표시하도록 설정했습니다."); }}>{studio.assetLibrary.homeLabel}</button>
-              <button className={CLASS.modelingAction} type="button" onClick={async () => { await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component.id}/versions/${version.id}`, { method: "DELETE" }); if (selectedVersionId === version.id) setSelectedVersionId(""); await refreshVersions([component.id]); }}>{studio.assetLibrary.deleteLabel}</button>
-            </Atom>
-          </Atom>)}
-        </Atom>; })}
-      </Atom>)}</Atom>
+      <Atom className={CLASS.modelingLibraryHeader}>
+        <Label>{studio.assetLibrary.title}</Label>
+        <Copy>{studio.assetLibrary.copy}</Copy>
+      </Atom>
+      <Atom className={CLASS.modelingLibraryGrid}>{studio.componentGroups.map((group) => <Surface className={CLASS.modelingAssetGroup} key={group.id}>
+        <Atom as="header" className={CLASS.modelingAssetGroupHeader}>
+          <Label>{group.label}</Label>
+          <Copy>{group.description}</Copy>
+        </Atom>
+        <Atom className={CLASS.modelingAssetList}>
+          {group.componentIds.map((componentId) => {
+            const component = studio.components.find((item) => item.id === componentId);
+            if (!component) return null;
+            const items = versions[component.id] ?? [];
+            return <Atom as="section" className={CLASS.modelingVersionList} aria-label={component.label} key={component.id}>
+              <Label>{component.label}</Label>
+              {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <Surface className={CLASS.modelingVersion} data-active={selectedVersionId === version.id} key={version.id}>
+                <Atom className={CLASS.modelingAssetMeta}>
+                  <Label>version</Label>
+                  <Atom as={ELEMENT.strong}>v{version.ordinal}</Atom>
+                </Atom>
+                <Copy>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Copy>
+                <Atom className={CLASS.modelingActions} role="group" aria-label={`${component.label} v${version.ordinal} 작업`}>
+                  <ActionButton className={CLASS.modelingAction} onClick={() => previewVersion(version)}>{studio.assetLibrary.previewLabel}</ActionButton>
+                  <ActionButton className={CLASS.modelingAction} onClick={() => editVersion(component.id, version)}>{studio.assetLibrary.editLabel}</ActionButton>
+                  <ActionButton className={CLASS.modelingAction} onClick={() => void publishVersion(component.id, version)}>{studio.assetLibrary.homeLabel}</ActionButton>
+                  <ActionButton className={CLASS.modelingAction} onClick={() => void deleteVersion(component.id, version)}>{studio.assetLibrary.deleteLabel}</ActionButton>
+                </Atom>
+              </Surface>)}
+            </Atom>;
+          })}
+        </Atom>
+      </Surface>)}</Atom>
     </Surface>
     <Atom className={CLASS.modelingOutputSections}>
       <Surface className={CLASS.modelingOutputSection}>

@@ -1,6 +1,7 @@
 import { Fragment, forwardRef, useEffect, useRef } from "react";
 import type {
   AnchorHTMLAttributes,
+  ButtonHTMLAttributes,
   CanvasHTMLAttributes,
   ComponentPropsWithoutRef,
   CSSProperties,
@@ -118,6 +119,15 @@ export function Copy({ children, className = "" }: { children: ReactNode; classN
 
 export function Link({ children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
   return <a {...props}>{children}</a>;
+}
+
+/** A shared interactive atom. Feature surfaces only supply their semantic intent and variant class. */
+export function ActionButton({
+  className = "",
+  type = "button",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return <Atom as="button" type={type} className={joinClasses(CLASS.button, className)} {...props} />;
 }
 
 export function SiteHeader({
