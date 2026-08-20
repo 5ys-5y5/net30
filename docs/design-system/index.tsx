@@ -8,6 +8,7 @@ import type {
   ElementType,
   FieldsetHTMLAttributes,
   HTMLAttributes,
+  IframeHTMLAttributes,
   ReactNode,
   Ref,
 } from "react";
@@ -155,6 +156,16 @@ export function SelectionCard({
   ...props
 }: HTMLAttributes<HTMLDivElement> & { selected: boolean }) {
   return <Surface className={joinClasses(CLASS.selectionCard, className)} data-selected={selected} {...props} />;
+}
+
+/** A shared iframe atom for persisted product-model assets. */
+export function ModelPreviewFrame({ className = "", loading = "lazy", ...props }: IframeHTMLAttributes<HTMLIFrameElement>) {
+  return <iframe className={joinClasses(CLASS.modelPreviewFrame, className)} loading={loading} {...props} />;
+}
+
+/** The selectable portion of a card stays keyboard-operable without nesting action buttons. */
+export function SelectionCardControl({ className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return <ActionButton className={joinClasses(CLASS.selectionCardControl, className)} {...props} />;
 }
 
 export function SiteHeader({

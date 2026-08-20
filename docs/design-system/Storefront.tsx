@@ -22,6 +22,7 @@ import {
   Label,
   LabeledChoice,
   Link,
+  ModelPreviewFrame,
   Metric,
   Panel,
   PanelBody,
@@ -30,11 +31,17 @@ import {
   ProductVisual,
   SectionHeading,
   SelectionCard,
+  SelectionCardControl,
   SiteFooter,
   SiteHeader,
   Surface,
   SurfaceGrid,
 } from "./index";
+import {
+  mergeComponentVersions,
+  removeComponentVersion,
+  removeSelectedVersion,
+} from "./modeling-library-state";
 import { renderLabelStickerToTexture } from "./render-label-texture";
 import { SupplyGlobe } from "./SupplyGlobe";
 import { CLASS, ELEMENT, joinClasses, ROLE } from "./tokens";
@@ -55,6 +62,14 @@ type ActiveRenderedLabel = {
 type CapturedTexture = {
   sourceKey: string;
   texture: RenderedLabelTexture;
+};
+
+type ModelingLibraryVersion = {
+  id: string;
+  ordinal: number;
+  summary: string;
+  createdAt: string;
+  assetPath: string;
 };
 
 const THREE_D_LABEL_SHEETS = ["한글표시사항", "전체 가격 구조"] as const;
@@ -354,12 +369,19 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [downloadReady, setDownloadReady] = useState(false);
   const [componentProgress, setComponentProgress] = useState<Record<string, { state: string; message: string; version?: string | null }>>({});
   const [resultArtifacts, setResultArtifacts] = useState<{ assemblyGlb?: string; report?: string; components?: Record<string, string | null> }>({});
-  const [versions, setVersions] = useState<Record<string, readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[]>>({});
+  const [versions, setVersions] = useState<Record<string, readonly ModelingLibraryVersion[]>>({});
   const [parentVersionId, setParentVersionId] = useState<Record<string, string>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
+  const [libraryPreviewModel, setLibraryPreviewModel] = useState("");
+  const [libraryPreviewRevision, setLibraryPreviewRevision] = useState("initial");
+  const [libraryPreviewPending, setLibraryPreviewPending] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
+  const libraryPreviewRequest = useRef(0);
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
-  const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}${previewModel ? `&model=${encodeURIComponent(previewModel)}` : ""}`;
+  const modelPreviewSrc = (assetPath: string, revision: string) => `${studio.previewSrc}${previewJoin}refresh=${revision}&model=${encodeURIComponent(assetPath)}`;
+  const previewSrc = previewModel ? modelPreviewSrc(previewModel, previewRevision) : "";
+  const libraryPreviewSrc = libraryPreviewModel ? modelPreviewSrc(libraryPreviewModel, libraryPreviewRevision) : "";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -378,12 +400,17 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     const entries = await Promise.all(componentIds.map(async (component) => {
       const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions`);
       const body = await response.json() as { ok?: boolean; versions?: readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[] };
-      return [component, body.ok ? body.versions ?? [] : []] as const;
+      if (!response.ok || !body.ok) throw new Error(`${component} 버전을 불러오지 못했습니다.`);
+      return [component, body.versions ?? []] as const;
     }));
-    setVersions(Object.fromEntries(entries));
+    setVersions((current) => mergeComponentVersions(current, Object.fromEntries(entries)));
   };
 
-  useEffect(() => { void refreshVersions(studio.components.map((component) => component.id)); }, [studio.endpoint]);
+  useEffect(() => {
+    void refreshVersions(studio.components.map((component) => component.id)).catch((requestError) => {
+      setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
+    });
+  }, [studio.endpoint]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -392,13 +419,56 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       const selections = body.showcase?.selections ?? (body.showcase?.component && body.showcase?.versionId ? [{ component: body.showcase.component, versionId: body.showcase.versionId }] : []);
       if (response.ok && body.ok && body.showcase?.assetPath && selections.length) {
         setSelectedVersions(Object.fromEntries(selections.map((item) => [item.component, item.versionId])));
-        setPreviewModel(body.showcase.assetPath); setPreviewRevision(Date.now().toString()); setDownloadReady(true);
+        setLibraryPreviewModel(body.showcase.assetPath); setLibraryPreviewRevision(Date.now().toString());
       }
     }).catch(() => undefined);
     return () => controller.abort();
   }, [studio.endpoint]);
 
-  const selectedAssembly = () => Object.entries(selectedVersions).map(([component, versionId]) => ({ component, versionId }));
+  const selectedAssembly = (selection = selectedVersions) => Object.entries(selection).map(([component, versionId]) => ({ component, versionId }));
+
+  const requestLibraryPreview = async (selections: readonly { component: string; versionId: string }[]) => {
+    const requestId = ++libraryPreviewRequest.current;
+    setLibraryError("");
+    if (!selections.length) {
+      setLibraryPreviewModel("");
+      setLibraryPreviewPending(false);
+      return;
+    }
+    setLibraryPreviewPending(true);
+    try {
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/assemblies/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ selections }),
+      });
+      const body = await response.json() as { ok?: boolean; error?: string; assembly?: { assetPath?: string } };
+      if (!response.ok || !body.ok || !body.assembly?.assetPath) throw new Error(body.error ?? "선택한 조립 모델을 만들지 못했습니다.");
+      if (requestId !== libraryPreviewRequest.current) return;
+      setLibraryPreviewModel(body.assembly.assetPath);
+      setLibraryPreviewRevision(Date.now().toString());
+      setProgress("선택한 컴포넌트 버전을 제품 자산 라이브러리에서 조립해 표시했습니다.");
+    } catch (requestError) {
+      if (requestId === libraryPreviewRequest.current) setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      if (requestId === libraryPreviewRequest.current) setLibraryPreviewPending(false);
+    }
+  };
+
+  useEffect(() => {
+    const selections = selectedAssembly();
+    if (!selections.length) {
+      libraryPreviewRequest.current += 1;
+      setLibraryPreviewModel("");
+      setLibraryPreviewPending(false);
+      return;
+    }
+    const timer = window.setTimeout(() => { void requestLibraryPreview(selections); }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      libraryPreviewRequest.current += 1;
+    };
+  }, [selectedVersions]);
 
   const toggleLibraryVersion = (component: string, version: { id: string; ordinal: number }) => {
     setSelectedVersions((current) => {
@@ -419,28 +489,16 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   };
 
   const previewSelectedVersions = async () => {
-    setError("");
-    try {
-      const selections = selectedAssembly();
-      if (!selections.length) throw new Error(studio.assetLibrary.selectionEmptyMessage);
-      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/assemblies/preview`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ selections }),
-      });
-      const body = await response.json() as { ok?: boolean; error?: string; assembly?: { assetPath?: string } };
-      if (!response.ok || !body.ok || !body.assembly?.assetPath) throw new Error(body.error ?? "선택한 조립 모델을 만들지 못했습니다.");
-      setPreviewModel(body.assembly.assetPath);
-      setPreviewRevision(Date.now().toString());
-      setDownloadReady(true);
-      setProgress("선택한 컴포넌트 버전만 완성 조립 모델에 표시했습니다.");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    const selections = selectedAssembly();
+    if (!selections.length) {
+      setLibraryError(studio.assetLibrary.selectionEmptyMessage);
+      return;
     }
+    await requestLibraryPreview(selections);
   };
 
   const publishSelectedVersions = async () => {
-    setError("");
+    setLibraryError("");
     try {
       const selections = selectedAssembly();
       if (!selections.length) throw new Error(studio.assetLibrary.selectionEmptyMessage);
@@ -451,25 +509,25 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       });
       const body = await response.json() as { ok?: boolean; error?: string; showcase?: { assetPath?: string } };
       if (!response.ok || !body.ok || !body.showcase?.assetPath) throw new Error(body.error ?? "홈 표시 자산을 설정하지 못했습니다.");
-      setPreviewModel(body.showcase.assetPath);
-      setPreviewRevision(Date.now().toString());
-      setDownloadReady(true);
+      setLibraryPreviewModel(body.showcase.assetPath);
+      setLibraryPreviewRevision(Date.now().toString());
       setProgress("선택한 컴포넌트 버전만 홈페이지 3D 뷰어에 표시하도록 설정했습니다.");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : String(requestError));
+      setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
     }
   };
 
   const deleteVersion = async (component: string, version: { id: string }) => {
-    setError("");
+    setLibraryError("");
     try {
       const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions/${version.id}`, { method: "DELETE" });
       const body = await response.json() as { ok?: boolean; error?: string };
       if (!response.ok || !body.ok) throw new Error(body.error ?? "저장된 자산을 삭제하지 못했습니다.");
-      setSelectedVersions((current) => current[component] === version.id ? Object.fromEntries(Object.entries(current).filter(([id]) => id !== component)) : current);
+      setVersions((current) => removeComponentVersion(current, component, version.id));
+      setSelectedVersions((current) => removeSelectedVersion(current, component, version.id));
       await refreshVersions([component]);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : String(requestError));
+      setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
     }
   };
 
@@ -601,7 +659,9 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </Surface>
       <Surface className={CLASS.modelingPreview}>
         <Atom className={CLASS.modelingToolbar}><Atom><Label>{studio.workspace.assemblyLabel}</Label><Copy className={CLASS.modelingHint}>{studio.workspace.assemblyDescription}</Copy></Atom><Link href="/">{studio.backLabel}</Link></Atom>
-        <iframe className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
+        {previewModel
+          ? <ModelPreviewFrame className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
+          : <Atom className={CLASS.modelingPreviewEmpty}><Copy>{studio.idleMessage}</Copy></Atom>}
           <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
             <Label>{studio.resultTitle}</Label>
             <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
@@ -615,14 +675,19 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <Copy>{studio.assetLibrary.copy}</Copy>
       </Atom>
       <Atom className={CLASS.modelingLibrarySelection}>
-        <Atom>
-          <Label>조립 선택</Label>
+        <Atom className={CLASS.modelingLibrarySelectionMeta}>
+          <Label>{studio.assetLibrary.selectionTitle}</Label>
           <Copy>{Object.keys(selectedVersions).length ? studio.assetLibrary.selectionSummary(Object.keys(selectedVersions).length) : studio.assetLibrary.selectionEmptyMessage}</Copy>
         </Atom>
         <Atom className={CLASS.modelingLibraryActions} role="group" aria-label="선택한 자산 작업">
           <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0} onClick={() => void previewSelectedVersions()}>{studio.assetLibrary.previewLabel}</ActionButton>
           <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0} onClick={() => void publishSelectedVersions()}>{studio.assetLibrary.homeLabel}</ActionButton>
         </Atom>
+        {libraryPreviewModel
+          ? <ModelPreviewFrame className={CLASS.modelingLibraryPreview} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
+          : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{libraryPreviewPending ? studio.assetLibrary.previewPendingMessage : studio.assetLibrary.previewIdleMessage}</Copy></Atom>}
+        {libraryPreviewPending && libraryPreviewModel ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.previewPendingMessage}</Copy> : null}
+        {libraryError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{libraryError}</Atom> : null}
       </Atom>
       <Atom className={CLASS.modelingLibraryGrid}>{studio.componentGroups.map((group) => <Surface className={CLASS.modelingAssetGroup} key={group.id}>
         <Atom as="header" className={CLASS.modelingAssetGroupHeader}>
@@ -637,13 +702,21 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             return <Atom as="section" className={CLASS.modelingVersionList} aria-label={component.label} key={component.id}>
               <Label>{component.label}</Label>
               {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <SelectionCard className={CLASS.modelingVersion} selected={selectedVersions[component.id] === version.id} key={version.id}>
-                <Atom className={CLASS.modelingAssetMeta}>
-                  <Label>version</Label>
-                  <Atom as={ELEMENT.strong}>v{version.ordinal}</Atom>
-                </Atom>
-                <Copy>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Copy>
+                <ModelPreviewFrame className={CLASS.modelingVersionPreview} title={`${component.label} v${version.ordinal} 3D 미리보기`} src={modelPreviewSrc(version.assetPath, version.id)} />
+                <SelectionCardControl
+                  aria-label={`${component.label} v${version.ordinal} ${studio.assetLibrary.selectionLabel}`}
+                  aria-pressed={selectedVersions[component.id] === version.id}
+                  onClick={() => toggleLibraryVersion(component.id, version)}
+                >
+                  <Atom className={CLASS.modelingVersionContent}>
+                    <Atom className={CLASS.modelingAssetMeta}>
+                      <Label>version</Label>
+                      <Atom as={ELEMENT.strong}>v{version.ordinal}</Atom>
+                    </Atom>
+                    <Copy>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Copy>
+                  </Atom>
+                </SelectionCardControl>
                 <Atom className={CLASS.modelingActions} role="group" aria-label={`${component.label} v${version.ordinal} 작업`}>
-                  <ActionButton className={CLASS.modelingAction} aria-pressed={selectedVersions[component.id] === version.id} onClick={() => toggleLibraryVersion(component.id, version)}>{studio.assetLibrary.selectionLabel}</ActionButton>
                   <ActionButton className={CLASS.modelingAction} onClick={() => editVersion(component.id, version)}>{studio.assetLibrary.editLabel}</ActionButton>
                   <ActionButton className={CLASS.modelingAction} onClick={() => void deleteVersion(component.id, version)}>{studio.assetLibrary.deleteLabel}</ActionButton>
                 </Atom>

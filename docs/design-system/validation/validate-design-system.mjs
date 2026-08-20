@@ -24,7 +24,7 @@ export async function validateDesignSystem(root = repositoryRoot) {
   }
   if (failures.length) throw new Error(`Design-system validation failed:\n- ${failures.join("\n- ")}`);
 
-  const [entry, definition, storefront, schema, tokens, system, templateMap] = await Promise.all([
+  const [entry, definition, storefront, schema, tokens, system, templateMap, atoms] = await Promise.all([
     source(root, ARCHITECTURE.applicationEntry),
     source(root, ARCHITECTURE.modelDefinition),
     source(root, `${designRoot}/Storefront.tsx`),
@@ -32,6 +32,7 @@ export async function validateDesignSystem(root = repositoryRoot) {
     source(root, `${designRoot}/tokens.ts`),
     source(root, `${designRoot}/system.css`),
     source(root, `${designRoot}/template-map.mjs`),
+    source(root, `${designRoot}/index.tsx`),
   ]);
 
   if (!entry.includes('import { Storefront }') || !entry.includes('<Storefront definition={definition} />')) {
@@ -61,6 +62,22 @@ export async function validateDesignSystem(root = repositoryRoot) {
     const className = match[1];
     if (!new RegExp(`CLASS\\.${escapeRegExp(key)}\\b`).test(storefront)) {
       failures.push(`Storefront.tsx must consume CLASS.${key}`);
+    }
+    if (!new RegExp(`\\.${escapeRegExp(className)}(?:\\s|\\{|:|,|\\[|>|#|\\.|$)`).test(system)) {
+      failures.push(`system.css must define .${className}`);
+    }
+  }
+
+  for (const key of ARCHITECTURE.atomClassKeys) {
+    const keyPattern = new RegExp(`\\b${escapeRegExp(key)}\\s*:\\s*"([^"]+)"`);
+    const match = tokens.match(keyPattern);
+    if (!match) {
+      failures.push(`tokens.ts must register CLASS.${key}`);
+      continue;
+    }
+    const className = match[1];
+    if (!new RegExp(`CLASS\\.${escapeRegExp(key)}\\b`).test(atoms)) {
+      failures.push(`index.tsx must consume CLASS.${key}`);
     }
     if (!new RegExp(`\\.${escapeRegExp(className)}(?:\\s|\\{|:|,|\\[|>|#|\\.|$)`).test(system)) {
       failures.push(`system.css must define .${className}`);

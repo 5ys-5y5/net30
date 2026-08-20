@@ -78,7 +78,8 @@ export type ModelingStudioDefinition = {
   };
   assetLibrary: {
     title: string; copy: string; emptyMessage: string; selectionLabel: string; selectionEmptyMessage: string;
-    selectionSummary: (count: number) => string; previewLabel: string; editLabel: string; homeLabel: string; deleteLabel: string;
+    selectionTitle: string; selectionSummary: (count: number) => string; previewTitle: string; previewIdleMessage: string; previewPendingMessage: string;
+    previewLabel: string; editLabel: string; homeLabel: string; deleteLabel: string;
   };
   fields: {
     model: string; images: string; component: string; sku: string; material: string; shape: string;

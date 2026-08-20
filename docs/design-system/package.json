@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "validate": "node validation/validate-design-system.mjs",
-    "proof": "node validation/test-architecture-proof.mjs"
+    "proof": "node --experimental-strip-types validation/test-modeling-library-state.test.ts && node validation/test-architecture-proof.mjs"
   },
   "peerDependencies": {
     "cobe": "^2.0.1",
