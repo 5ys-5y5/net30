@@ -7,6 +7,7 @@ const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serviceDir = resolve(appDir, "src/3d/vitamin-bottle-service");
 const hubDir = resolve(appDir, "src/3d/modeling-hub");
 const modelingHubPort = Number(process.env.NET30_MODELING_HUB_PORT ?? 8788);
+const useLocalBlender = process.env.NET30_USE_LOCAL_BLENDER === "1";
 const children = new Set();
 let stopping = false;
 
@@ -68,16 +69,22 @@ try {
   await Promise.all([
     assertPortAvailable(5173, "NET30 host"),
     assertPortAvailable(5174, "3D service"),
-    assertPortAvailable(modelingHubPort, "Modeling hub"),
+    ...(useLocalBlender ? [assertPortAvailable(modelingHubPort, "Modeling hub")] : []),
   ]);
 
   launch("3D service", serviceDir, ["run", "dev"]);
   await waitFor("http://127.0.0.1:5174/3d/", "3D service");
 
-  launch("Modeling hub", hubDir, ["run", "dev"], { NET30_MODELING_HUB_PORT: String(modelingHubPort) });
-  await waitFor(`http://127.0.0.1:${modelingHubPort}/health`, "Modeling hub");
+  if (useLocalBlender) {
+    launch("Modeling hub", hubDir, ["run", "dev"], { NET30_MODELING_HUB_PORT: String(modelingHubPort) });
+    await waitFor(`http://127.0.0.1:${modelingHubPort}/health`, "Modeling hub");
+  }
 
-  launch("NET30 host", appDir, ["run", "dev:host"], { NET30_MODELING_HUB_PORT: String(modelingHubPort) });
+  launch("NET30 host", appDir, ["run", "dev:host"], {
+    NET30_MODELING_HUB_PORT: String(modelingHubPort),
+    NET30_3D_PROXY_URL: "http://127.0.0.1:5174",
+    ...(useLocalBlender ? { NET30_MODELING_PROXY_URL: `http://127.0.0.1:${modelingHubPort}` } : {}),
+  });
   await waitFor("http://127.0.0.1:5173/", "NET30 host");
 
   console.log("\nNET30 local services ready");

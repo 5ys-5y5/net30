@@ -3,6 +3,9 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 
 const modelingHubPort = Number(process.env.NET30_MODELING_HUB_PORT ?? 8788);
+const deployedServiceUrl = "https://net30-production.up.railway.app";
+const threeServiceTarget = process.env.NET30_3D_PROXY_URL ?? deployedServiceUrl;
+const modelingHubTarget = process.env.NET30_MODELING_PROXY_URL ?? deployedServiceUrl;
 
 export default defineConfig({
   plugins: [react()],
@@ -20,22 +23,22 @@ export default defineConfig({
     fs: { allow: [".."] },
     proxy: {
       "/3d": {
-        target: "http://127.0.0.1:5174",
-        changeOrigin: false,
+        target: threeServiceTarget,
+        changeOrigin: true,
       },
       "/models": {
-        target: "http://127.0.0.1:5174",
-        changeOrigin: false,
+        target: threeServiceTarget,
+        changeOrigin: true,
         rewrite: (pathname) => `/3d${pathname}`,
       },
       "/qa": {
-        target: "http://127.0.0.1:5174",
-        changeOrigin: false,
+        target: threeServiceTarget,
+        changeOrigin: true,
         rewrite: (pathname) => `/3d${pathname}`,
       },
       "/api/modeling": {
-        target: `http://127.0.0.1:${modelingHubPort}`,
-        changeOrigin: false,
+        target: modelingHubTarget,
+        changeOrigin: true,
       },
     },
   },
