@@ -65,6 +65,7 @@ export type ModelingStudioDefinition = {
   downloadLabel: string;
   idleMessage: string;
   unavailableMessage: string;
+  assetLibrary: { title: string; copy: string; emptyMessage: string; previewLabel: string; editLabel: string; deleteLabel: string; };
   fields: {
     model: string; images: string; component: string; sku: string; material: string; shape: string;
     sizeXmm: string; sizeYmm: string; sizeZmm: string; shellThicknessMm: string;

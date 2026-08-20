@@ -351,6 +351,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [componentProgress, setComponentProgress] = useState<Record<string, { state: string; message: string; version?: string | null }>>({});
   const [versions, setVersions] = useState<Record<string, readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[]>>({});
   const [parentVersionId, setParentVersionId] = useState<Record<string, string>>({});
+  const [selectedVersionId, setSelectedVersionId] = useState("");
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
   const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}${previewModel ? `&model=${encodeURIComponent(previewModel)}` : ""}`;
@@ -377,7 +378,22 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     setVersions(Object.fromEntries(entries));
   };
 
-  useEffect(() => { void refreshVersions(defaults.componentIds); }, [studio.endpoint]);
+  useEffect(() => { void refreshVersions(studio.components.map((component) => component.id)); }, [studio.endpoint]);
+
+  const previewVersion = (version: { id: string; assetPath: string }) => {
+    setSelectedVersionId(version.id);
+    setPreviewModel(version.assetPath);
+    setPreviewRevision(Date.now().toString());
+    setDownloadReady(true);
+    setProgress("저장된 자산을 3D 미리보기에 표시했습니다.");
+  };
+
+  const editVersion = (component: string, version: { id: string; ordinal: number; assetPath: string }) => {
+    previewVersion(version);
+    setComponents([component]);
+    setParentVersionId({ [component]: version.id });
+    setProgress(`v${version.ordinal}을 기반으로 수정할 준비가 되었습니다.`);
+  };
 
   const uploadImages = async () => {
     if (images.length > 4) throw new Error("모델링 입력 이미지는 최대 4장입니다.");
@@ -504,10 +520,27 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             <Label>{studio.resultTitle}</Label>
             <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
             {downloadReady && previewModel && <Link href={previewModel} download>{studio.downloadLabel}</Link>}
-            {Object.entries(versions).map(([component, items]) => items.length > 0 && <Atom className={CLASS.modelingVersionList} key={component}><Label>{studio.components.find((option) => option.id === component)?.label ?? component} 버전</Label>{items.map((version) => <Atom className={CLASS.modelingVersion} key={version.id}><strong>v{version.ordinal}</strong><Atom as={ELEMENT.span}>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Atom><Atom><button className={CLASS.modelingAction} type="button" onClick={() => { setComponents([component]); setParentVersionId({ [component]: version.id }); setProgress(`v${version.ordinal}을 기반으로 수정할 준비가 되었습니다.`); }}>수정</button><button className={CLASS.modelingAction} type="button" onClick={async () => { await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions/${version.id}`, { method: "DELETE" }); await refreshVersions([component]); }}>삭제</button></Atom></Atom>)}</Atom>)}
           </Atom>
       </Surface>
     </Atom>
+    <Surface className={CLASS.modelingLibrary}>
+      <Atom><Label>{studio.assetLibrary.title}</Label><Copy>{studio.assetLibrary.copy}</Copy></Atom>
+      <Atom className={CLASS.modelingLibraryGrid}>{studio.components.map((component) => {
+        const items = versions[component.id] ?? [];
+        return <Atom className={CLASS.modelingVersionList} key={component.id}>
+          <Label>{component.label}</Label>
+          {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <Atom className={CLASS.modelingVersion} data-active={selectedVersionId === version.id} key={version.id}>
+            <strong>v{version.ordinal}</strong>
+            <Atom as={ELEMENT.span}>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Atom>
+            <Atom className={CLASS.modelingActions}>
+              <button className={CLASS.modelingAction} type="button" onClick={() => previewVersion(version)}>{studio.assetLibrary.previewLabel}</button>
+              <button className={CLASS.modelingAction} type="button" onClick={() => editVersion(component.id, version)}>{studio.assetLibrary.editLabel}</button>
+              <button className={CLASS.modelingAction} type="button" onClick={async () => { await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component.id}/versions/${version.id}`, { method: "DELETE" }); if (selectedVersionId === version.id) setSelectedVersionId(""); await refreshVersions([component.id]); }}>{studio.assetLibrary.deleteLabel}</button>
+            </Atom>
+          </Atom>)}
+        </Atom>;
+      })}</Atom>
+    </Surface>
   </Container>;
 }
 

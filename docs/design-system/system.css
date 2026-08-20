@@ -23,10 +23,15 @@
 .ds-modeling-choice:has(input:checked){background:var(--ds-ink);color:var(--ds-white)}
 .ds-modeling-component-prompt{grid-column:1/-1}
 .ds-modeling-progress,.ds-modeling-version-list{display:grid;gap:8px;margin-top:18px;padding-top:18px;border-top:var(--ds-line)}
+.ds-modeling-library{display:grid;gap:18px;margin-top:24px;padding:24px}
+.ds-modeling-library-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.ds-modeling-library .ds-modeling-version-list{margin:0;padding-top:0;border-top:0}
 .ds-modeling-progress-list{display:grid;gap:6px;margin:0;padding:0;list-style:none}
 .ds-modeling-progress-item,.ds-modeling-version{display:grid;grid-template-columns:minmax(96px,.8fr) minmax(0,1.8fr) auto;gap:10px;align-items:center;padding:10px;border:var(--ds-line);border-radius:var(--ds-r-sm);font:500 10px/1.45 var(--ds-font-mono)}
+.ds-modeling-version[data-active="true"]{background:var(--ds-quiet);border-width:var(--ds-selection-line-width)}
 .ds-modeling-progress-item strong,.ds-modeling-version strong{font:600 10px/1.2 var(--ds-font-mono);color:var(--ds-ink)}
+.ds-modeling-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
 .ds-modeling-action{border:var(--ds-line);border-radius:var(--ds-r-sm);background:var(--ds-white);color:var(--ds-ink);padding:7px 9px;font:600 9px/1 var(--ds-font-mono);cursor:pointer}
 .ds-modeling-action:disabled{opacity:.5;cursor:wait}
-@media(max-width:900px){.ds-modeling-studio{grid-template-columns:1fr}.ds-modeling-frame{height:560px}}
-@media(max-width:600px){.ds-modeling-fields{grid-template-columns:1fr}.ds-modeling-field-wide{grid-column:auto}.ds-modeling-form,.ds-modeling-preview{padding:18px}.ds-modeling-frame{height:480px;min-height:360px}}
+@media(max-width:900px){.ds-modeling-studio{grid-template-columns:1fr}.ds-modeling-frame{height:560px}.ds-modeling-library-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.ds-modeling-fields{grid-template-columns:1fr}.ds-modeling-field-wide{grid-column:auto}.ds-modeling-form,.ds-modeling-preview,.ds-modeling-library{padding:18px}.ds-modeling-frame{height:480px;min-height:360px}.ds-modeling-progress-item,.ds-modeling-version{grid-template-columns:1fr}.ds-modeling-actions{justify-content:flex-start}}

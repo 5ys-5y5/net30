@@ -44,6 +44,14 @@ export const modelPageDefinition: ProductPageDefinition = {
       downloadLabel: "현재 GLB 다운로드",
       idleMessage: "아직 실행한 모델링 작업이 없습니다.",
       unavailableMessage: "모델링 서비스가 일시적으로 준비되지 않아도, 저장된 3D 자산 미리보기는 계속 표시됩니다.",
+      assetLibrary: {
+        title: "저장된 모델링 자산",
+        copy: "컴포넌트별 이전 버전을 미리보고, 선택한 버전을 바탕으로 수정 작업을 시작할 수 있습니다.",
+        emptyMessage: "저장된 버전이 없습니다.",
+        previewLabel: "미리보기",
+        editLabel: "수정 시작",
+        deleteLabel: "삭제",
+      },
       fields: {
         model: "OpenAI 모델",
         images: "모델링 입력 이미지",

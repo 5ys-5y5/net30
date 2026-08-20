@@ -40,8 +40,11 @@ export const ARCHITECTURE = Object.freeze({
     "modelingProgress",
     "modelingProgressList",
     "modelingProgressItem",
+    "modelingLibrary",
+    "modelingLibraryGrid",
     "modelingVersionList",
     "modelingVersion",
+    "modelingActions",
     "modelingAction",
   ]),
 });
