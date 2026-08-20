@@ -120,11 +120,13 @@ def build_scene(payload):
     vitamin = material("Vitamin", (0.94, 0.56, 0.12), roughness=0.35)
     collider = material("Collider", (0.1, 0.1, 0.1), roughness=0.9)
 
-    body = add_cylinder("Bottle", radius, height, height / 2, render, glass, min(thickness * 1.5, radius * 0.15))
+    # Keep runtime semantic names stable: the browser uses them to apply its
+    # glass/cap treatment even after a Blender-generated asset replaces seed GLB.
+    body = add_cylinder("BottleGlass", radius, height, height / 2, render, glass, min(thickness * 1.5, radius * 0.15))
     body["net30_prompt"] = prompt
-    add_cylinder("Neck", radius * 0.72, height * 0.12, height * 1.02, render, glass, min(thickness, radius * 0.1))
-    add_cylinder("Ribbed cap", radius * 0.81, cap_height, height * 1.02 + cap_height / 2, render, cap, min(thickness, radius * 0.08))
-    label_obj = add_cylinder("Front label", radius * 1.012, height * 0.36, height * 0.48, render, label, 0.001)
+    add_cylinder("BottleNeck", radius * 0.72, height * 0.12, height * 1.02, render, glass, min(thickness, radius * 0.1))
+    add_cylinder("CapBluePP", radius * 0.81, cap_height, height * 1.02 + cap_height / 2, render, cap, min(thickness, radius * 0.08))
+    label_obj = add_cylinder("FrontLabel", radius * 1.012, height * 0.36, height * 0.48, render, label, 0.001)
     label_obj.scale.x = 1.002
 
     add_cylinder("Bottle collider", max(radius - thickness, 0.001), max(height - thickness, 0.001), height / 2, physics, collider)
