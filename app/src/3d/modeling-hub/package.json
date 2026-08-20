@@ -1,8 +1,10 @@
 {
   "name": "@net30/blender-modeling-hub",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.2",
+  "engines": { "node": ">=22 <23" },
   "scripts": {
     "dev": "node src/server.mjs",
     "start": "node src/server.mjs",

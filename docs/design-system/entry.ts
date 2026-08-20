@@ -18,6 +18,8 @@ export type {
   HeroTextSegment,
   IngredientCostLine,
   KoreanSupplementLabelDefinition,
+  ModelingOptionDefinition,
+  ModelingStudioDefinition,
   LabelField,
   LabelSection,
   ProductCostLine,

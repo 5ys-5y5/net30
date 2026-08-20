@@ -3,7 +3,7 @@ import { landingCopy } from "./landing-copy";
 import { calculateReceiptPrice, type CostBreakdownInput, DEFAULT_PRICING_POLICY, type PricingPolicy } from "./pricing-model";
 
 const NET30_3D_SERVICE_ORIGIN =
-  import.meta.env.VITE_NET30_3D_SERVICE_URL ?? "http://127.0.0.1:5174";
+  import.meta.env.VITE_NET30_3D_SERVICE_URL ?? "/3d";
 const NET30_HOST_ORIGIN =
   typeof window === "undefined" ? "http://127.0.0.1:5173" : window.location.origin;
 const NET30_3D_SERVICE_SRC =

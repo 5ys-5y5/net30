@@ -6,32 +6,52 @@ import cors from "cors";
 import { runModelingJob } from "./modeling-agent.mjs";
 
 const app = express();
-app.use(cors());
+const token = (process.env.NET30_MODELING_HUB_TOKEN ?? "").trim();
+const allowedOrigins = (process.env.NET30_MODELING_ALLOWED_ORIGINS ?? "http://127.0.0.1:5173")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`허용되지 않은 origin: ${origin}`));
+  },
+}));
 app.use(express.json({ limit: "1mb" }));
 
-function requireEnv(name, fallback = "") {
-  const value = process.env[name] && process.env[name].trim().length ? process.env[name] : fallback;
-  if (!value) throw new Error(`필수 환경변수가 없습니다: ${name}`);
-  return value;
+function env(name, fallback = "") {
+  return process.env[name] && process.env[name].trim().length ? process.env[name] : fallback;
 }
 
-const repoRoot = requireEnv("NET30_REPO", path.resolve(process.cwd(), "../../../.."));
-const assetRoot = requireEnv("NET30_3D_ASSET_ROOT", path.resolve(repoRoot, "../net30-3d-assets"));
-const jobsRoot = path.join(assetRoot, "jobs");
+function authorized(req) {
+  if (!token) return true;
+  const remoteAddress = req.socket.remoteAddress ?? "";
+  const origin = req.headers.origin ?? "";
+  const trustedLocal = (remoteAddress === "127.0.0.1" || remoteAddress === "::1" || remoteAddress === "::ffff:127.0.0.1")
+    && (origin === "http://127.0.0.1:5173" || origin === "http://localhost:5173");
+  return trustedLocal || req.headers.authorization === `Bearer ${token}`;
+}
 
+const repoRoot = env("NET30_REPO", path.resolve(process.cwd(), "../../../.."));
+const assetRoot = env("NET30_3D_ASSET_ROOT", path.resolve(repoRoot, "../net30-3d-assets"));
+const jobsRoot = path.join(assetRoot, "jobs");
 await fs.mkdir(jobsRoot, { recursive: true });
 
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
+    mode: env("NET30_BLENDER_MCP_URL") ? "remote-mcp" : "local-stdio",
     repoRoot,
     assetRoot,
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
+    authRequired: Boolean(token),
   });
 });
 
-app.get("/api/modeling/schema", (_req, res) => {
-  res.json({
+app.get("/api/modeling/schema", (req, res) => {
+  if (!authorized(req)) return res.status(401).json({ ok: false, error: "인증되지 않은 modeling-hub 요청입니다." });
+  return res.json({
     ok: true,
     components: ["bottle", "cap", "labelFront", "labelBack", "vitamin", "physicsCollider"],
     materials: ["glass", "opaque-plastic", "paper", "capsule", "tablet", "softgel", "custom"],
@@ -40,6 +60,7 @@ app.get("/api/modeling/schema", (_req, res) => {
 });
 
 app.post("/api/modeling/jobs", async (req, res) => {
+  if (!authorized(req)) return res.status(401).json({ ok: false, error: "인증되지 않은 modeling-hub 요청입니다." });
   try {
     const payload = req.body ?? {};
     if (!payload.component) throw new Error("component가 필요합니다.");
@@ -52,16 +73,14 @@ app.post("/api/modeling/jobs", async (req, res) => {
     await fs.writeFile(path.join(jobDir, "request.json"), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 
     const result = await runModelingJob(payload);
-
     await fs.writeFile(path.join(jobDir, "result.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
-
-    res.json({ ok: true, jobId, ...result });
+    return res.json({ ok: true, jobId, ...result });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
 
-const port = Number(process.env.PORT ?? process.env.NET30_MODELING_HUB_PORT ?? 8787);
+const port = Number(process.env.PORT ?? process.env.NET30_MODELING_HUB_PORT ?? 8788);
 const host = process.env.HOST ?? "127.0.0.1";
 app.listen(port, host, () => {
   console.log(`NET30 modeling hub listening on http://${host}:${port}`);

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { Agent, MCPServerStdio, run } from "@openai/agents";
+import { Agent, MCPServerStdio, MCPServerStreamableHttp, run } from "@openai/agents";
 import { buildMission } from "./mission.mjs";
 
 function env(name, fallback = "") {
@@ -13,13 +13,30 @@ function requireEnv(name) {
   return value;
 }
 
+function createMcpServer(repoRoot) {
+  const remoteUrl = env("NET30_BLENDER_MCP_URL");
+  if (remoteUrl) {
+    if (!/^https?:\/\//i.test(remoteUrl)) {
+      throw new Error("NET30_BLENDER_MCP_URL은 http 또는 https URL이어야 합니다.");
+    }
+    return new MCPServerStreamableHttp({
+      name: "Remote Blender MCP",
+      url: remoteUrl,
+    });
+  }
+  const mcpCommand = env("NET30_BLENDER_MCP_COMMAND", "bash");
+  const mcpArgs = env("NET30_BLENDER_MCP_ARGS", path.join(repoRoot, "scripts/3d/start-blender-mcp.sh"));
+  return new MCPServerStdio({
+    name: "Local Blender MCP",
+    fullCommand: `${mcpCommand} ${mcpArgs}`,
+  });
+}
+
 export async function runModelingJob(payload) {
   requireEnv("OPENAI_API_KEY");
 
   const repoRoot = requireEnv("NET30_REPO");
   const assetRoot = requireEnv("NET30_3D_ASSET_ROOT");
-  const mcpCommand = env("NET30_BLENDER_MCP_COMMAND", "bash");
-  const mcpArgs = (env("NET30_BLENDER_MCP_ARGS", `${path.join(repoRoot, "scripts/3d/start-blender-mcp.sh")}`)).split(" ");
   const model = env("NET30_OPENAI_MODEL", "gpt-5");
 
   const paths = {
@@ -31,18 +48,16 @@ export async function runModelingJob(payload) {
     qaDir: env("NET30_QA_DIR", path.join(assetRoot, "qa/renders")),
   };
 
-  await fs.mkdir(path.dirname(paths.blendFile), { recursive: true });
-  await fs.mkdir(path.dirname(paths.renderGlb), { recursive: true });
-  await fs.mkdir(path.dirname(paths.physicsGlb), { recursive: true });
-  await fs.mkdir(path.dirname(paths.vitaminGlb), { recursive: true });
-  await fs.mkdir(paths.qaDir, { recursive: true });
+  await Promise.all([
+    fs.mkdir(path.dirname(paths.blendFile), { recursive: true }),
+    fs.mkdir(path.dirname(paths.renderGlb), { recursive: true }),
+    fs.mkdir(path.dirname(paths.physicsGlb), { recursive: true }),
+    fs.mkdir(path.dirname(paths.vitaminGlb), { recursive: true }),
+    fs.mkdir(paths.qaDir, { recursive: true }),
+  ]);
 
   const mission = buildMission({ ...payload, paths });
-  const mcpServer = new MCPServerStdio({
-    name: "Blender MCP",
-    fullCommand: [mcpCommand, ...mcpArgs].join(" "),
-  });
-
+  const mcpServer = createMcpServer(repoRoot);
   await mcpServer.connect();
 
   try {
@@ -59,7 +74,6 @@ export async function runModelingJob(payload) {
     });
 
     const result = await run(agent, mission);
-
     return {
       summary: String(result.finalOutput ?? ""),
       exportPaths: {

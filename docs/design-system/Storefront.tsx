@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ElementType, ReactNode, RefObject } from "react";
+import type { ElementType, FormEvent, ReactNode, RefObject } from "react";
 import {
   Atom,
   Container,
@@ -193,7 +193,7 @@ function HeroRegion({
   </Container>;
 }
 
-function CatalogRegion({
+function ProductCatalogRegion({
   definition,
   onRenderedLabel,
 }: {
@@ -315,6 +315,120 @@ function CatalogRegion({
       <Atom className={CLASS.traceGrid}>{catalog.detailPanels.map((panel) => <Fragment key={panel}>{detailRegistry[panel]}</Fragment>)}</Atom>
     </Atom>
   </Container>;
+}
+
+
+function ModelingCatalogRegion({ definition }: { definition: ProductPageDefinition }) {
+  const { catalog, catalogSection, system } = definition;
+  const studio = catalog.modeling;
+  if (!studio) throw new Error("Modeling presentation requires catalog.modeling");
+
+  const skuIds = catalog.skus.map((item) => item.id);
+  const defaults = studio.defaults;
+  const [component, setComponent] = useState(defaults.componentId);
+  const [material, setMaterial] = useState(defaults.materialId);
+  const [shape, setShape] = useState(defaults.shapeId);
+  const [skuId, setSkuId] = useState(skuIds[0] ?? "default-sku");
+  const [sizeXmm, setSizeXmm] = useState(defaults.sizeXmm);
+  const [sizeYmm, setSizeYmm] = useState(defaults.sizeYmm);
+  const [sizeZmm, setSizeZmm] = useState(defaults.sizeZmm);
+  const [shellThicknessMm, setShellThicknessMm] = useState(defaults.shellThicknessMm);
+  const [distortion, setDistortion] = useState(defaults.distortion);
+  const [tone, setTone] = useState(defaults.tone);
+  const [finish, setFinish] = useState(defaults.finish);
+  const [prompt, setPrompt] = useState(defaults.prompt);
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState("");
+  const [error, setError] = useState("");
+  const [previewRevision, setPreviewRevision] = useState("initial");
+
+  const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
+  const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}`;
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPending(true);
+    setResult("");
+    setError("");
+    try {
+      const response = await fetch(studio.endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          component,
+          prompt,
+          settings: { sizeXmm, sizeYmm, sizeZmm, shellThicknessMm, distortion, material, shape, tone, finish, presetSkuId: skuId },
+        }),
+      });
+      const body = await response.json() as { ok?: boolean; summary?: string; error?: string; exportPaths?: Record<string, string> };
+      if (!response.ok || !body.ok) throw new Error(body.error ?? `모델링 요청 실패 (${response.status})`);
+      const paths = body.exportPaths ? Object.entries(body.exportPaths).map(([key, value]) => `${key}: ${value}`) : [];
+      setResult([body.summary ?? "", ...paths].filter(Boolean).join("\n"));
+      setPreviewRevision(Date.now().toString());
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const selectField = (label: string, value: string, onChange: (value: string) => void, options: readonly { id: string; label: string }[]) => <label className={CLASS.modelingField}>
+    <Label>{label}</Label>
+    <select className={CLASS.modelingControl} value={value} onChange={(event) => onChange(event.target.value)}>
+      {options.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}
+    </select>
+  </label>;
+  const numberField = (label: string, value: number, onChange: (value: number) => void, step = "1") => <label className={CLASS.modelingField}>
+    <Label>{label}</Label>
+    <input className={CLASS.modelingControl} type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+  </label>;
+
+  return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
+    <SectionHeading {...catalogSection} />
+    <Atom className={CLASS.modelingStudio}>
+      <Surface className={CLASS.modelingForm}>
+        <form onSubmit={submit}>
+          <Atom>
+            <Label>{studio.title}</Label>
+            <Copy>{studio.copy}</Copy>
+          </Atom>
+          <Atom className={CLASS.modelingFields}>
+            {selectField(studio.fields.component, component, setComponent, studio.components)}
+            {selectField(studio.fields.sku, skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
+            {selectField(studio.fields.material, material, setMaterial, studio.materials)}
+            {selectField(studio.fields.shape, shape, setShape, studio.shapes)}
+            {numberField(studio.fields.sizeXmm, sizeXmm, setSizeXmm)}
+            {numberField(studio.fields.sizeYmm, sizeYmm, setSizeYmm)}
+            {numberField(studio.fields.sizeZmm, sizeZmm, setSizeZmm)}
+            {numberField(studio.fields.shellThicknessMm, shellThicknessMm, setShellThicknessMm, "0.1")}
+            {numberField(studio.fields.distortion, distortion, setDistortion, "0.01")}
+            <label className={CLASS.modelingField}><Label>{studio.fields.tone}</Label><input className={CLASS.modelingControl} type="color" value={tone} onChange={(event) => setTone(event.target.value)} /></label>
+            <label className={CLASS.modelingField}><Label>{studio.fields.finish}</Label><input className={CLASS.modelingControl} value={finish} onChange={(event) => setFinish(event.target.value)} /></label>
+            <label className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}>
+              <Label>{studio.fields.prompt}</Label>
+              <textarea className={joinClasses(CLASS.modelingControl, CLASS.modelingTextarea)} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+            </label>
+          </Atom>
+          <button className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? studio.pendingLabel : studio.submitLabel}</button>
+          <Copy className={CLASS.modelingHint}>{studio.unavailableMessage}</Copy>
+        </form>
+      </Surface>
+      <Surface className={CLASS.modelingPreview}>
+        <Atom className={CLASS.modelingToolbar}><Label>{studio.previewTitle}</Label><Link href="/">{studio.backLabel}</Link></Atom>
+        <iframe className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
+        <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
+          <Label>{studio.resultTitle}</Label>
+          <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
+        </Atom>
+      </Surface>
+    </Atom>
+  </Container>;
+}
+
+function CatalogRegion(props: { definition: ProductPageDefinition; onRenderedLabel: (value: ActiveRenderedLabel | null) => void }) {
+  return props.definition.catalog.presentation === "modeling"
+    ? <ModelingCatalogRegion definition={props.definition} />
+    : <ProductCatalogRegion {...props} />;
 }
 
 function PrinciplesRegion({ definition }: { definition: ProductPageDefinition }) {

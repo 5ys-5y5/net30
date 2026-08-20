@@ -4,10 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "predev": "npm run validate:design",
+    "dev": "node scripts/dev-all.mjs",
+    "predev:host": "npm run validate:design",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prebuild": "npm run validate:design",
     "build": "npm run typecheck && vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "prepreview": "npm run validate:design",
+    "preview": "vite preview --host 127.0.0.1",
+    "dev:host": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "validate:design": "npm --prefix ../docs/design-system run validate",
+    "proof:design": "npm --prefix ../docs/design-system run proof"
   },
   "dependencies": {
     "cobe": "^2.0.1",

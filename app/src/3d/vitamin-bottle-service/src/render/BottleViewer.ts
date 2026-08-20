@@ -153,7 +153,8 @@ export class BottleViewer {
 
   async initialize(config: ProductConfig) {
     this.onStatus("고품질 GLB 병 모델 로딩");
-    this.bottle = await loadBottle("/models/reference-vial.glb");
+    // The independent service owns this URL through its Vite base (/3d/).
+    this.bottle = await loadBottle();
     if (this.disposed) {
       this.bottle.dispose();
       return;

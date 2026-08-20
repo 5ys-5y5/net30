@@ -49,8 +49,38 @@ export type SupplyRoute = { id: string; city: string; country: string; role: str
 export type SupplyArc = { id: string; from: number; to: number; cost: string };
 export type MetricDefinition = { key: string; label: string; suffix?: string };
 
+export type ModelingOptionDefinition = { id: string; label: string };
+
+export type ModelingStudioDefinition = {
+  endpoint: string;
+  previewSrc: string;
+  title: string;
+  copy: string;
+  backLabel: string;
+  submitLabel: string;
+  pendingLabel: string;
+  previewTitle: string;
+  resultTitle: string;
+  idleMessage: string;
+  unavailableMessage: string;
+  fields: {
+    component: string; sku: string; material: string; shape: string;
+    sizeXmm: string; sizeYmm: string; sizeZmm: string; shellThicknessMm: string;
+    distortion: string; tone: string; finish: string; prompt: string;
+  };
+  components: readonly ModelingOptionDefinition[];
+  materials: readonly ModelingOptionDefinition[];
+  shapes: readonly ModelingOptionDefinition[];
+  defaults: {
+    componentId: string; materialId: string; shapeId: string;
+    sizeXmm: number; sizeYmm: number; sizeZmm: number; shellThicknessMm: number;
+    distortion: number; tone: string; finish: string; prompt: string;
+  };
+};
+
 export type CatalogDefinition = {
-  presentation?: "metrics" | "label";
+  presentation?: "metrics" | "label" | "modeling";
+  modeling?: ModelingStudioDefinition;
   primaryOptions: readonly PrimaryOption[];
   secondaryOptions: readonly SecondaryOption[];
   combinations: readonly ProductCombination[];

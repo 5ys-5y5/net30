@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const hostDist = resolve(root, "app/dist");
 const threeDist = resolve(root, "app/src/3d/vitamin-bottle-service/dist");
+const referenceModel = resolve(threeDist, "models/reference-vial.glb");
 const port = Number(process.env.PORT ?? 3000);
-const modelingHubUrl = (process.env.NET30_MODELING_HUB_URL ?? "").replace(/\/$/, "");
+const modelingHubUrl = (process.env.NET30_MODELING_HUB_URL ?? "").trim().replace(/\/$/, "");
+const modelingHubToken = (process.env.NET30_MODELING_HUB_TOKEN ?? "").trim();
+const commitSha = process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT_SHA ?? "local";
 
 const MIME = new Map([
   [".html", "text/html; charset=utf-8"], [".js", "text/javascript; charset=utf-8"],
@@ -28,11 +31,13 @@ function sendJson(res, status, payload) {
   });
   res.end(body);
 }
+
 function safePath(base, pathname) {
   const decoded = decodeURIComponent(pathname).replace(/^\/+/, "");
   const candidate = resolve(base, normalize(decoded));
   return candidate === base || candidate.startsWith(`${base}${sep}`) ? candidate : null;
 }
+
 function resolveStatic(base, pathname, allowSpaFallback) {
   const requested = safePath(base, pathname);
   if (requested && existsSync(requested)) {
@@ -47,6 +52,7 @@ function resolveStatic(base, pathname, allowSpaFallback) {
   const indexFile = resolve(base, "index.html");
   return existsSync(indexFile) ? indexFile : null;
 }
+
 function sendFile(req, res, filePath) {
   const info = statSync(filePath);
   const headers = {
@@ -77,6 +83,7 @@ function sendFile(req, res, filePath) {
   res.writeHead(200, { ...headers, "content-length": info.size });
   return createReadStream(filePath).pipe(res);
 }
+
 async function readBody(req) {
   const chunks = [];
   let total = 0;
@@ -87,21 +94,25 @@ async function readBody(req) {
   }
   return Buffer.concat(chunks);
 }
+
 async function proxyModeling(req, res, url) {
   if (!modelingHubUrl) {
     return sendJson(res, 503, {
       ok: false,
-      error: "Blender MCP modeling backend is not configured for this Railway service.",
-      action: "Set NET30_MODELING_HUB_URL or run scripts/3d/run-local.sh on a machine with Blender.",
+      error: "원격 Blender MCP modeling backend가 설정되지 않았습니다.",
+      localAction: "로컬에서는 npm --prefix app run dev를 실행하세요.",
+      railwayAction: "NET30_BLENDER_MCP_URL을 제공한 뒤 별도 modeling-hub 서비스를 연결하세요.",
     });
   }
   const body = ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : await readBody(req);
+  const headers = {
+    "content-type": req.headers["content-type"] ?? "application/json",
+    accept: req.headers.accept ?? "application/json",
+  };
+  if (modelingHubToken) headers.authorization = `Bearer ${modelingHubToken}`;
   const upstream = await fetch(`${modelingHubUrl}${url.pathname}${url.search}`, {
     method: req.method,
-    headers: {
-      "content-type": req.headers["content-type"] ?? "application/json",
-      accept: req.headers.accept ?? "application/json",
-    },
+    headers,
     body,
     redirect: "manual",
   });
@@ -119,8 +130,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/health") {
       return sendJson(res, 200, {
         ok: true,
+        commitSha,
         hostBuild: existsSync(resolve(hostDist, "index.html")),
         threeBuild: existsSync(resolve(threeDist, "index.html")),
+        referenceModel: existsSync(referenceModel),
         modelingProxyConfigured: Boolean(modelingHubUrl),
         uptimeSeconds: Math.round(process.uptime()),
       });
@@ -133,6 +146,12 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith("/3d/")) {
       const filePath = resolveStatic(threeDist, url.pathname.slice(4), true);
       return filePath ? sendFile(req, res, filePath) : sendJson(res, 404, { ok: false, error: "3D asset not found" });
+    }
+    for (const legacyPrefix of ["/models/", "/qa/"]) {
+      if (url.pathname.startsWith(legacyPrefix)) {
+        const filePath = resolveStatic(threeDist, url.pathname.slice(1), false);
+        return filePath ? sendFile(req, res, filePath) : sendJson(res, 404, { ok: false, error: "Legacy 3D asset not found" });
+      }
     }
     const filePath = resolveStatic(hostDist, url.pathname, true);
     return filePath ? sendFile(req, res, filePath) : sendJson(res, 404, { ok: false, error: "Host asset not found" });
