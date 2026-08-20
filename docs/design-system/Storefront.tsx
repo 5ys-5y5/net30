@@ -15,6 +15,8 @@ import {
   Atom,
   Container,
   Copy,
+  FieldGroup,
+  FormField,
   GridCell,
   KoreanSupplementLabel,
   Label,
@@ -27,6 +29,7 @@ import {
   PanelHeader,
   ProductVisual,
   SectionHeading,
+  SelectionCard,
   SiteFooter,
   SiteHeader,
   Surface,
@@ -353,7 +356,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [resultArtifacts, setResultArtifacts] = useState<{ assemblyGlb?: string; report?: string; components?: Record<string, string | null> }>({});
   const [versions, setVersions] = useState<Record<string, readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[]>>({});
   const [parentVersionId, setParentVersionId] = useState<Record<string, string>>({});
-  const [selectedVersionId, setSelectedVersionId] = useState("");
+  const [selectedVersions, setSelectedVersions] = useState<Record<string, string>>({});
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
   const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}${previewModel ? `&model=${encodeURIComponent(previewModel)}` : ""}`;
@@ -385,41 +388,73 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   useEffect(() => {
     const controller = new AbortController();
     void fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, { signal: controller.signal }).then(async (response) => {
-      const body = await response.json() as { ok?: boolean; showcase?: { assetPath?: string } | null };
-      if (response.ok && body.ok && body.showcase?.assetPath) { setPreviewModel(body.showcase.assetPath); setPreviewRevision(Date.now().toString()); }
+      const body = await response.json() as { ok?: boolean; showcase?: { assetPath?: string; component?: string; versionId?: string; selections?: readonly { component: string; versionId: string }[] } | null };
+      const selections = body.showcase?.selections ?? (body.showcase?.component && body.showcase?.versionId ? [{ component: body.showcase.component, versionId: body.showcase.versionId }] : []);
+      if (response.ok && body.ok && body.showcase?.assetPath && selections.length) {
+        setSelectedVersions(Object.fromEntries(selections.map((item) => [item.component, item.versionId])));
+        setPreviewModel(body.showcase.assetPath); setPreviewRevision(Date.now().toString()); setDownloadReady(true);
+      }
     }).catch(() => undefined);
     return () => controller.abort();
   }, [studio.endpoint]);
 
-  const previewVersion = (version: { id: string; assetPath: string }) => {
-    setSelectedVersionId(version.id);
-    setPreviewModel(version.assetPath);
-    setPreviewRevision(Date.now().toString());
-    setDownloadReady(true);
-    setProgress("저장된 자산을 3D 미리보기에 표시했습니다.");
+  const selectedAssembly = () => Object.entries(selectedVersions).map(([component, versionId]) => ({ component, versionId }));
+
+  const toggleLibraryVersion = (component: string, version: { id: string; ordinal: number }) => {
+    setSelectedVersions((current) => {
+      if (current[component] === version.id) {
+        const { [component]: _removed, ...remaining } = current;
+        return remaining;
+      }
+      return { ...current, [component]: version.id };
+    });
+    setProgress(`${component} v${version.ordinal}을 조립 선택에 반영했습니다.`);
   };
 
   const editVersion = (component: string, version: { id: string; ordinal: number; assetPath: string }) => {
-    previewVersion(version);
+    setSelectedVersions((current) => ({ ...current, [component]: version.id }));
     setComponents([component]);
     setParentVersionId({ [component]: version.id });
     setProgress(`v${version.ordinal}을 기반으로 수정할 준비가 되었습니다.`);
   };
 
-  const publishVersion = async (component: string, version: { id: string }) => {
+  const previewSelectedVersions = async () => {
     setError("");
     try {
+      const selections = selectedAssembly();
+      if (!selections.length) throw new Error(studio.assetLibrary.selectionEmptyMessage);
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/assemblies/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ selections }),
+      });
+      const body = await response.json() as { ok?: boolean; error?: string; assembly?: { assetPath?: string } };
+      if (!response.ok || !body.ok || !body.assembly?.assetPath) throw new Error(body.error ?? "선택한 조립 모델을 만들지 못했습니다.");
+      setPreviewModel(body.assembly.assetPath);
+      setPreviewRevision(Date.now().toString());
+      setDownloadReady(true);
+      setProgress("선택한 컴포넌트 버전만 완성 조립 모델에 표시했습니다.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    }
+  };
+
+  const publishSelectedVersions = async () => {
+    setError("");
+    try {
+      const selections = selectedAssembly();
+      if (!selections.length) throw new Error(studio.assetLibrary.selectionEmptyMessage);
       const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/showcase`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ component, versionId: version.id }),
+        body: JSON.stringify({ selections }),
       });
-      const body = await response.json() as { ok?: boolean; error?: string };
-      if (!response.ok || !body.ok) throw new Error(body.error ?? "홈 표시 자산을 설정하지 못했습니다.");
-      setSelectedVersionId(version.id);
-      setPreviewModel("/api/modeling/showcase/artifact");
+      const body = await response.json() as { ok?: boolean; error?: string; showcase?: { assetPath?: string } };
+      if (!response.ok || !body.ok || !body.showcase?.assetPath) throw new Error(body.error ?? "홈 표시 자산을 설정하지 못했습니다.");
+      setPreviewModel(body.showcase.assetPath);
       setPreviewRevision(Date.now().toString());
-      setProgress("선택한 조립 모델을 홈페이지 3D 뷰어에 표시하도록 설정했습니다.");
+      setDownloadReady(true);
+      setProgress("선택한 컴포넌트 버전만 홈페이지 3D 뷰어에 표시하도록 설정했습니다.");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     }
@@ -431,7 +466,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions/${version.id}`, { method: "DELETE" });
       const body = await response.json() as { ok?: boolean; error?: string };
       if (!response.ok || !body.ok) throw new Error(body.error ?? "저장된 자산을 삭제하지 못했습니다.");
-      if (selectedVersionId === version.id) setSelectedVersionId("");
+      setSelectedVersions((current) => current[component] === version.id ? Object.fromEntries(Object.entries(current).filter(([id]) => id !== component)) : current);
       await refreshVersions([component]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
@@ -507,16 +542,14 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     }
   };
 
-  const selectField = (label: string, value: string, onChange: (value: string) => void, options: readonly { id: string; label: string }[]) => <label className={CLASS.modelingField}>
-    <Label>{label}</Label>
+  const selectField = (label: string, value: string, onChange: (value: string) => void, options: readonly { id: string; label: string }[]) => <FormField label={label} className={CLASS.modelingField}>
     <select className={CLASS.modelingControl} value={value} onChange={(event) => onChange(event.target.value)}>
       {options.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}
     </select>
-  </label>;
-  const numberField = (label: string, value: number, onChange: (value: number) => void, step = "1") => <label className={CLASS.modelingField}>
-    <Label>{label}</Label>
+  </FormField>;
+  const numberField = (label: string, value: number, onChange: (value: number) => void, step = "1") => <FormField label={label} className={CLASS.modelingField}>
     <input className={CLASS.modelingControl} type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
-  </label>;
+  </FormField>;
 
   return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
     <SectionHeading {...catalogSection} />
@@ -536,13 +569,13 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           </Atom>
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
-            <fieldset className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}><Label>{studio.workspace.componentsLabel}</Label>
+            <FieldGroup className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)} label={studio.workspace.componentsLabel}>
               {studio.componentGroups.map((group) => <Atom className={CLASS.modelingGroup} key={group.id}>
                 <Atom className={CLASS.modelingGroupHead}><Atom as={ELEMENT.strong}>{group.label}</Atom><Atom as={ELEMENT.small}>{group.description}</Atom></Atom>
                 <Atom className={CLASS.modelingChoices}>{group.componentIds.map((id) => { const option = studio.components.find((item) => item.id === id); if (!option) return null; return <label className={CLASS.modelingChoice} key={option.id}><input type="checkbox" checked={components.includes(option.id)} onChange={(event) => setComponents((current) => event.target.checked ? [...current, option.id] : current.filter((currentId) => currentId !== option.id))} /> {option.label}</label>; })}</Atom>
               </Atom>)}
               {components.map((id) => <input className={joinClasses(CLASS.modelingControl, CLASS.modelingComponentPrompt)} key={id} aria-label={`${id} 추가 지시`} placeholder={`${studio.components.find((item) => item.id === id)?.label ?? id} 추가 지시 (선택)`} value={componentPrompts[id] ?? ""} onChange={(event) => setComponentPrompts((current) => ({ ...current, [id]: event.target.value }))} />)}
-            </fieldset>
+            </FieldGroup>
             {selectField(studio.fields.sku, skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
             {selectField(studio.fields.material, material, setMaterial, studio.materials)}
             {selectField(studio.fields.shape, shape, setShape, studio.shapes)}
@@ -551,17 +584,15 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             {numberField(studio.fields.sizeZmm, sizeZmm, setSizeZmm)}
             {numberField(studio.fields.shellThicknessMm, shellThicknessMm, setShellThicknessMm, "0.1")}
             {numberField(studio.fields.distortion, distortion, setDistortion, "0.01")}
-            <label className={CLASS.modelingField}><Label>{studio.fields.tone}</Label><input className={CLASS.modelingControl} type="color" value={tone} onChange={(event) => setTone(event.target.value)} /></label>
-            <label className={CLASS.modelingField}><Label>{studio.fields.finish}</Label><input className={CLASS.modelingControl} value={finish} onChange={(event) => setFinish(event.target.value)} /></label>
-            <label className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}>
-              <Label>{studio.fields.prompt}</Label>
+            <FormField className={CLASS.modelingField} label={studio.fields.tone}><input className={CLASS.modelingControl} type="color" value={tone} onChange={(event) => setTone(event.target.value)} /></FormField>
+            <FormField className={CLASS.modelingField} label={studio.fields.finish}><input className={CLASS.modelingControl} value={finish} onChange={(event) => setFinish(event.target.value)} /></FormField>
+            <FormField className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)} label={studio.fields.prompt}>
               <textarea className={joinClasses(CLASS.modelingControl, CLASS.modelingTextarea)} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-            </label>
-            <label className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}>
-              <Label>{studio.fields.images}</Label>
+            </FormField>
+            <FormField className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)} label={studio.fields.images}>
               <input className={CLASS.modelingControl} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setImages(Array.from(event.target.files ?? []))} />
               <Copy className={CLASS.modelingHint}>{images.length ? `${images.length}장 선택됨 · 작업 완료 후 7일 보관` : "선택 사항 · JPEG/PNG/WebP 최대 4장, 각 10MB"}</Copy>
-            </label>
+            </FormField>
           </Atom>
           <ActionButton className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? studio.pendingLabel : studio.submitLabel}</ActionButton>
           <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
@@ -583,6 +614,16 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <Label>{studio.assetLibrary.title}</Label>
         <Copy>{studio.assetLibrary.copy}</Copy>
       </Atom>
+      <Atom className={CLASS.modelingLibrarySelection}>
+        <Atom>
+          <Label>조립 선택</Label>
+          <Copy>{Object.keys(selectedVersions).length ? studio.assetLibrary.selectionSummary(Object.keys(selectedVersions).length) : studio.assetLibrary.selectionEmptyMessage}</Copy>
+        </Atom>
+        <Atom className={CLASS.modelingLibraryActions} role="group" aria-label="선택한 자산 작업">
+          <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0} onClick={() => void previewSelectedVersions()}>{studio.assetLibrary.previewLabel}</ActionButton>
+          <ActionButton className={CLASS.modelingAction} disabled={Object.keys(selectedVersions).length === 0} onClick={() => void publishSelectedVersions()}>{studio.assetLibrary.homeLabel}</ActionButton>
+        </Atom>
+      </Atom>
       <Atom className={CLASS.modelingLibraryGrid}>{studio.componentGroups.map((group) => <Surface className={CLASS.modelingAssetGroup} key={group.id}>
         <Atom as="header" className={CLASS.modelingAssetGroupHeader}>
           <Label>{group.label}</Label>
@@ -595,19 +636,18 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             const items = versions[component.id] ?? [];
             return <Atom as="section" className={CLASS.modelingVersionList} aria-label={component.label} key={component.id}>
               <Label>{component.label}</Label>
-              {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <Surface className={CLASS.modelingVersion} data-active={selectedVersionId === version.id} key={version.id}>
+              {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <SelectionCard className={CLASS.modelingVersion} selected={selectedVersions[component.id] === version.id} key={version.id}>
                 <Atom className={CLASS.modelingAssetMeta}>
                   <Label>version</Label>
                   <Atom as={ELEMENT.strong}>v{version.ordinal}</Atom>
                 </Atom>
                 <Copy>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Copy>
                 <Atom className={CLASS.modelingActions} role="group" aria-label={`${component.label} v${version.ordinal} 작업`}>
-                  <ActionButton className={CLASS.modelingAction} onClick={() => previewVersion(version)}>{studio.assetLibrary.previewLabel}</ActionButton>
+                  <ActionButton className={CLASS.modelingAction} aria-pressed={selectedVersions[component.id] === version.id} onClick={() => toggleLibraryVersion(component.id, version)}>{studio.assetLibrary.selectionLabel}</ActionButton>
                   <ActionButton className={CLASS.modelingAction} onClick={() => editVersion(component.id, version)}>{studio.assetLibrary.editLabel}</ActionButton>
-                  <ActionButton className={CLASS.modelingAction} onClick={() => void publishVersion(component.id, version)}>{studio.assetLibrary.homeLabel}</ActionButton>
                   <ActionButton className={CLASS.modelingAction} onClick={() => void deleteVersion(component.id, version)}>{studio.assetLibrary.deleteLabel}</ActionButton>
                 </Atom>
-              </Surface>)}
+              </SelectionCard>)}
             </Atom>;
           })}
         </Atom>

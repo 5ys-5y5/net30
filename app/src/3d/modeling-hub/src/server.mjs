@@ -5,7 +5,7 @@ import path from "node:path";
 import express from "express";
 import cors from "cors";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { createBlenderMcpServer, modelingPayloadSchema } from "./blender-mcp.mjs";
+import { composeSelectedComponentGlbs, createBlenderMcpServer, modelingPayloadSchema } from "./blender-mcp.mjs";
 import { runModelingJob } from "./modeling-agent.mjs";
 import { createAssetStorage, IMAGE_TYPES, MAX_IMAGE_BYTES } from "./storage.mjs";
 import { COMPONENTS, JOB_STATES, defaultOpenAiModel, openAiModels } from "./modeling-spec.mjs";
@@ -21,6 +21,24 @@ function event(job, state, message, components = job.components) { job.state=sta
 function publicJob(job) { const { clients, promise, ...value }=job; return value; }
 async function getJob(id) { if (jobs.has(id)) return jobs.get(id); const file=path.join(jobsRoot,id,"result.json"); if (!existsSync(file)) return null; const result=JSON.parse(await fs.readFile(file,"utf8")); return { id, state:"complete", message:"저장된 작업", createdAt:"", updatedAt:"", events:[], result }; }
 async function serveArtifact(req,res) { const id=req.params.id; const part=(Array.isArray(req.params.path) ? req.params.path.join("/") : req.params.path ?? "").replace(/^\/+/,""); if (!part || part.includes("..")) return res.status(400).json({ok:false,error:"잘못된 artifact 경로입니다."}); const file=path.resolve(jobsRoot,id,part); if (!file.startsWith(`${path.resolve(jobsRoot,id)}${path.sep}`) || !existsSync(file)) return res.status(404).json({ok:false,error:"artifact를 찾을 수 없습니다."}); const ext=path.extname(file); res.set({"content-type":ext===".glb"?"model/gltf-binary":ext===".json"?"application/json":"application/octet-stream","cache-control":"no-store","cross-origin-resource-policy":"cross-origin"}); return createReadStream(file).pipe(res); }
+async function resolveComponentSelections(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error("조립에 포함할 컴포넌트 버전을 선택하세요.");
+  const requested = new Map();
+  for (const item of raw) {
+    const component = typeof item?.component === "string" ? item.component : ""; const versionId = typeof item?.versionId === "string" ? item.versionId : "";
+    if (!COMPONENTS.includes(component) || !versionId) throw new Error("선택한 컴포넌트 버전이 올바르지 않습니다.");
+    requested.set(component, { component, versionId });
+  }
+  const selections = [];
+  for (const item of requested.values()) {
+    const version = await versions.find(item.component, item.versionId);
+    if (!version) throw new Error(`${item.component}의 선택한 버전을 찾을 수 없습니다.`);
+    selections.push({ component: version.component, versionId: version.id, sourcePath: versions.artifactPath(version.component, version.id) });
+  }
+  return selections;
+}
+async function assembleSelections(raw) { return composeSelectedComponentGlbs(await resolveComponentSelections(raw), { assetRoot }); }
+function serveGlb(res, file, missingMessage) { if (!existsSync(file)) return res.status(404).json({ok:false,error:missingMessage}); res.set({"content-type":"model/gltf-binary","cache-control":"no-store","cross-origin-resource-policy":"cross-origin"}); return createReadStream(file).pipe(res); }
 async function queueJob(payload) { const id=`job-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; const componentState=Object.fromEntries(payload.components.map((component)=>[component,{state:"queued",message:"작업 대기"}])); const job={id,payload,state:"researching",message:"작업을 대기열에 추가했습니다.",components:componentState,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),events:[],clients:new Set(),result:null}; jobs.set(id,job); const imageInputs=await storage.imageInputs(payload.imageIds); job.promise=runModelingJob(payload,{jobId:id,imageInputs,onProgress:(state,message,components)=>event(job,state,message,components)}).then(async(result)=>{ const registered={}; for(const component of payload.components) { const source=path.join(assetRoot,"jobs",id,"components",`${component}.glb`); if(existsSync(source)) registered[component]=await versions.register({component,sourcePath:source,jobId:id,contractHash:result.report.contractHash,summary:result.summary,parentVersionId:payload.parentVersionId?.[component]??null}); } result.versions=registered; job.result=result; event(job,result.status,result.status==="review_required" ? "시각 결과와 컴포넌트 버전을 저장했습니다. 제조 승인에는 추가 검토가 필요합니다." : "작업과 컴포넌트 버전 저장이 완료되었습니다.",Object.fromEntries(payload.components.map((component)=>[component,{state:"complete",message:"버전 저장 완료",version:registered[component]?.id??null}]))); return result;}).catch((error)=>{job.error=error.message; event(job,"failed",error.message,Object.fromEntries(payload.components.map((component)=>[component,{state:"failed",message:error.message}])));}).finally(()=>{for(const client of job.clients) client.end(); job.clients.clear();}); return job; }
 
 await fs.mkdir(jobsRoot,{recursive:true}); await storage.initialise(); await storage.cleanupExpired(); await versions.importLegacyJobs(jobsRoot); await versions.initialiseShowcase(jobsRoot); setInterval(()=>void storage.cleanupExpired(),3600000).unref();
@@ -36,8 +54,10 @@ app.get("/api/modeling/jobs/:id/events",async(req,res)=>{ if(!authorized(req)) r
 app.post("/api/modeling/jobs/:id/input",async(req,res)=>{ const job=await getJob(req.params.id); if(!job) return res.status(404).json({ok:false,error:"작업을 찾을 수 없습니다."}); if(job.state!=="awaiting_input") return res.status(409).json({ok:false,error:"이 작업은 추가 입력을 기다리고 있지 않습니다."}); event(job,"planning","추가 입력을 받았습니다. 계획을 재개합니다."); return res.json({ok:true,job:publicJob(job)}); });
 app.get("/api/modeling/jobs/:id/artifacts/{*path}",serveArtifact);
 app.get("/api/modeling/showcase",async(_req,res)=>res.json({ok:true,showcase:await versions.showcase()}));
-app.get("/api/modeling/showcase/artifact",async(_req,res)=>{ const file=versions.showcaseArtifactPath(); if(!existsSync(file)) return res.status(404).json({ok:false,error:"홈에 표시할 모델링 자산이 없습니다."}); res.set({"content-type":"model/gltf-binary","cache-control":"no-store","cross-origin-resource-policy":"cross-origin"}); return createReadStream(file).pipe(res); });
-app.post("/api/modeling/showcase",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); try { const { component, versionId }=req.body??{}; const version=await versions.find(component,versionId); if(!version) throw new Error("버전을 찾을 수 없습니다."); const sourcePath=path.join(jobsRoot,version.jobId,"render","assembly.glb"); return res.json({ok:true,showcase:await versions.setShowcase({component,versionId,sourcePath})}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
+app.get("/api/modeling/showcase/artifact",async(_req,res)=>serveGlb(res,versions.showcaseArtifactPath(),"홈에 표시할 모델링 자산이 없습니다."));
+app.post("/api/modeling/assemblies/preview",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); try { const assembly=await assembleSelections(req.body?.selections); return res.json({ok:true,assembly:{...assembly,assetPath:`/api/modeling/assemblies/${assembly.id}/artifact`}}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
+app.get("/api/modeling/assemblies/:id/artifact",async(req,res)=>serveGlb(res,versions.assemblyPath(req.params.id),"선택한 조립 모델을 찾을 수 없습니다."));
+app.post("/api/modeling/showcase",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); try { const body=req.body??{}; const raw=Array.isArray(body.selections) ? body.selections : [{component:body.component,versionId:body.versionId}]; const assembly=await assembleSelections(raw); return res.json({ok:true,showcase:await versions.setShowcase({selections:assembly.components,sourcePath:assembly.sourcePath})}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
 app.get("/api/modeling/components/:component/versions",async(req,res)=>{ try { return res.json({ok:true,versions:await versions.list(req.params.component)}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
 app.get("/api/modeling/components/:component/versions/:versionId",async(req,res)=>{ const version=await versions.find(req.params.component,req.params.versionId); return version?res.json({ok:true,version}):res.status(404).json({ok:false,error:"버전을 찾을 수 없습니다."}); });
 app.get("/api/modeling/components/:component/versions/:versionId/artifact",async(req,res)=>{ const version=await versions.find(req.params.component,req.params.versionId); const file=versions.artifactPath(req.params.component,req.params.versionId); if(!version||!existsSync(file)) return res.status(404).json({ok:false,error:"버전 자산을 찾을 수 없습니다."}); res.set({"content-type":"model/gltf-binary","cache-control":"no-store","cross-origin-resource-policy":"cross-origin"}); return createReadStream(file).pipe(res); });

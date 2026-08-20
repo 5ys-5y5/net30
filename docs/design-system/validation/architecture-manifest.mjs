@@ -47,6 +47,8 @@ export const ARCHITECTURE = Object.freeze({
     "modelingProgressItem",
     "modelingLibrary",
     "modelingLibraryHeader",
+    "modelingLibrarySelection",
+    "modelingLibraryActions",
     "modelingLibraryGrid",
     "modelingAssetGroup",
     "modelingAssetGroupHeader",

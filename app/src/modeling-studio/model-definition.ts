@@ -56,11 +56,14 @@ export const modelPageDefinition: ProductPageDefinition = {
       },
       assetLibrary: {
         title: "제품 자산 라이브러리",
-        copy: "제품 구성별 이전 버전을 살펴보고, 선택한 버전을 바탕으로 수정 작업을 시작할 수 있습니다.",
+        copy: "컴포넌트별 버전을 선택해 조립에 포함하고, 선택한 항목만 완성 조립 모델과 홈페이지에 표시합니다.",
         emptyMessage: "저장된 버전이 없습니다.",
-        previewLabel: "미리보기",
+        selectionLabel: "조립에 포함",
+        selectionEmptyMessage: "조립에 포함할 저장 버전을 선택하세요.",
+        selectionSummary: (count) => `${count}개 컴포넌트 버전이 조립에 포함됩니다.`,
+        previewLabel: "선택한 항목 미리보기",
         editLabel: "수정 시작",
-        homeLabel: "홈에 표시",
+        homeLabel: "선택 항목을 홈에 표시",
         deleteLabel: "삭제",
       },
       fields: {

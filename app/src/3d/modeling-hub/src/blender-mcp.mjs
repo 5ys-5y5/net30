@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -14,6 +15,30 @@ export const modelingPayloadSchema = z.object({ version: z.literal("net30.modeli
 function env(name, fallback = "") { const value = process.env[name]; return value && value.trim().length ? value.trim() : fallback; }
 function run(command, args, timeoutMs = 12 * 60 * 1000) { return new Promise((resolve, reject) => { const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }); let output = ""; const capture = (chunk) => { output = `${output}${chunk}`.slice(-16000); }; child.stdout.on("data", capture); child.stderr.on("data", capture); const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs); child.once("error", (error) => { clearTimeout(timer); reject(error); }); child.once("close", (code, signal) => { clearTimeout(timer); if (code === 0 && !/Traceback|RuntimeError:/i.test(output)) resolve(output); else reject(new Error(`Blender 작업이 실패했습니다 (code=${code ?? "unknown"}, signal=${signal ?? "none"}). ${output}`)); }); }); }
 function blenderBin() { const candidates = [env("BLENDER_BIN"), "/Applications/Blender 4.5 LTS.app/Contents/MacOS/Blender", "/Applications/Blender.app/Contents/MacOS/Blender", "blender"].filter(Boolean); return candidates.find((candidate) => candidate === "blender" || existsSync(candidate)); }
+
+export async function composeSelectedComponentGlbs(componentFiles, { assetRoot } = {}) {
+  if (!Array.isArray(componentFiles) || componentFiles.length === 0) throw new Error("조립할 컴포넌트 버전을 선택하세요.");
+  const items = [...componentFiles]
+    .map(({ component, versionId, sourcePath }) => ({ component: String(component), versionId: String(versionId), sourcePath: path.resolve(String(sourcePath)) }))
+    .sort((left, right) => left.component.localeCompare(right.component));
+  if (new Set(items.map((item) => item.component)).size !== items.length) throw new Error("컴포넌트별로 하나의 버전만 조립할 수 있습니다.");
+  for (const item of items) if (!existsSync(item.sourcePath)) throw new Error(`${item.component} 버전 GLB를 찾을 수 없습니다.`);
+
+  const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../net30-3d-assets")));
+  const signature = createHash("sha256").update(items.map((item) => `${item.component}:${item.versionId}`).join("\n")).digest("hex").slice(0, 24);
+  const assemblyId = `assembly-${signature}`;
+  const outputPath = path.join(root, "component-library", "assemblies", `${assemblyId}.glb`);
+  if (!existsSync(outputPath)) {
+    const requestPath = path.join(root, "component-library", "assemblies", `${assemblyId}.request.json`);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(requestPath, `${JSON.stringify({ mode: "assemble-library", components: items, paths: { assemblyGlb: outputPath } }, null, 2)}\n`);
+    const workerPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "blender-worker.py");
+    await run(blenderBin(), ["--background", "--factory-startup", "--python", workerPath, "--", requestPath], 4 * 60 * 1000);
+  }
+  const header = await fs.readFile(outputPath);
+  if (header.length < 20 || header.subarray(0, 4).toString("ascii") !== "glTF") throw new Error("선택한 컴포넌트의 조립 GLB를 만들지 못했습니다.");
+  return { id: assemblyId, sourcePath: outputPath, components: items.map(({ component, versionId }) => ({ component, versionId })) };
+}
 async function cadExports(spec, requestPath, cadDir) {
   const worker = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cad-worker.py"); const python = env("NET30_CADQUERY_BIN", "python3"); const manufacturable = spec.contract.unresolved.length === 0;
   if (!manufacturable) return { available: false, reason: "critical interface evidence is unresolved" };

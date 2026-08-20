@@ -86,8 +86,24 @@ def export(objects,destination):
     bpy.context.view_layer.objects.active=meshes[0]; destination.parent.mkdir(parents=True,exist_ok=True)
     bpy.ops.export_scene.gltf(filepath=str(destination),export_format="GLB",use_selection=True,export_yup=True,export_apply=True,export_materials="EXPORT",export_cameras=False,export_lights=False)
     return True
+def assemble_library(request):
+    clear(); assembly=col("LIBRARY_ASSEMBLY")
+    for item in request["components"]:
+        source=pathlib.Path(item["sourcePath"])
+        if not source.is_file(): raise RuntimeError(f"Missing component GLB: {source}")
+        before=set(bpy.data.objects)
+        bpy.ops.import_scene.gltf(filepath=str(source))
+        imported=[obj for obj in bpy.data.objects if obj not in before and obj.type=="MESH"]
+        if not imported: raise RuntimeError(f"No mesh imported from {source}")
+        for obj in imported:
+            obj.name=f"{item['component']}_{obj.name}"; obj["net30_component"]=item["component"]; link(obj,assembly)
+    destination=pathlib.Path(request["paths"]["assemblyGlb"])
+    if not export(list(assembly.all_objects),destination): raise RuntimeError("No selected component mesh could be assembled")
+    print("ASSEMBLY_GLB="+str(destination))
 def main():
-    request=json.loads(request_path().read_text()); paths=request["paths"]; clear(); assembly=col("ASSEMBLY")
+    request=json.loads(request_path().read_text())
+    if request.get("mode")=="assemble-library": return assemble_library(request)
+    paths=request["paths"]; clear(); assembly=col("ASSEMBLY")
     for component in request["spec"]["components"]:
         part=col("PART_"+component["component"]); build_component(component,request["spec"]["contract"],part)
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(component["component"]+".glb"))

@@ -38,20 +38,33 @@ export function createVersionStore(assetRoot) {
     if (changed) await save(manifest);
   }
   async function showcase() { return (await load()).showcase; }
-  async function setShowcase({ component, versionId, sourcePath }) {
-    const version = await find(component, versionId); if (!version) throw new Error("버전을 찾을 수 없습니다.");
+  async function setShowcase({ component, versionId, selections, sourcePath }) {
+    const selected = selections?.length ? selections : [{ component, versionId }];
+    if (!Array.isArray(selected) || selected.length === 0) throw new Error("홈에 표시할 컴포넌트 버전을 선택하세요.");
+    const unique = new Map();
+    for (const item of selected) unique.set(item.component, { component: item.component, versionId: item.versionId });
+    const resolved = [];
+    for (const item of unique.values()) {
+      const version = await find(item.component, item.versionId); if (!version) throw new Error("버전을 찾을 수 없습니다.");
+      resolved.push({ component: version.component, versionId: version.id });
+    }
     if (!existsSync(sourcePath)) throw new Error("조립 GLB를 찾을 수 없습니다.");
     const manifest = await load(); const target = path.join(root, "showcase", "current.glb"); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.copyFile(sourcePath, target);
-    manifest.showcase = { component, versionId: version.id, jobId: version.jobId, assetPath: "/api/modeling/showcase/artifact", updatedAt: new Date().toISOString() }; await save(manifest); return manifest.showcase;
+    const first = resolved[0]; const version = await find(first.component, first.versionId);
+    manifest.showcase = { component: first.component, versionId: first.versionId, jobId: version.jobId, selections: resolved, assetPath: "/api/modeling/showcase/artifact", updatedAt: new Date().toISOString() }; await save(manifest); return manifest.showcase;
   }
   async function initialiseShowcase(jobsRoot) {
-    if (await showcase()) return;
-    const all = (await Promise.all(COMPONENTS.map((component) => list(component)))).flat().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-    for (const version of all) { const sourcePath = path.join(jobsRoot, version.jobId, "render", "assembly.glb"); if (existsSync(sourcePath)) { await setShowcase({ component: version.component, versionId: version.id, sourcePath }); return; } }
+    const current = await showcase();
+    if (current?.selections?.length) return;
+    if (current?.component && current?.versionId) {
+      const sourcePath = artifactPath(current.component, current.versionId);
+      if (existsSync(sourcePath)) await setShowcase({ selections: [{ component: current.component, versionId: current.versionId }], sourcePath });
+    }
   }
   async function find(component, versionId) { return (await list(component)).find((item) => item.id === versionId) ?? null; }
   async function remove(component, versionId) { const manifest = await load(); const history = manifest.components[component] ?? []; const entry = history.find((item) => item.id === versionId); if (!entry) return null; manifest.components[component] = history.filter((item) => item.id !== versionId); await fs.rm(path.join(root, component, cleanId(versionId)), { recursive: true, force: true }); await save(manifest); return entry; }
   function artifactPath(component, versionId) { return path.join(root, component, cleanId(versionId), "model.glb"); }
+  function assemblyPath(assemblyId) { return path.join(root, "assemblies", `${cleanId(assemblyId)}.glb`); }
   function showcaseArtifactPath() { return path.join(root, "showcase", "current.glb"); }
-  return { list, register, importLegacyJobs, showcase, setShowcase, initialiseShowcase, find, remove, artifactPath, showcaseArtifactPath };
+  return { list, register, importLegacyJobs, showcase, setShowcase, initialiseShowcase, find, remove, artifactPath, assemblyPath, showcaseArtifactPath };
 }

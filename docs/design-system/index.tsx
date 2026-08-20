@@ -6,6 +6,7 @@ import type {
   ComponentPropsWithoutRef,
   CSSProperties,
   ElementType,
+  FieldsetHTMLAttributes,
   HTMLAttributes,
   ReactNode,
   Ref,
@@ -128,6 +129,32 @@ export function ActionButton({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return <Atom as="button" type={type} className={joinClasses(CLASS.button, className)} {...props} />;
+}
+
+export function FormField({
+  label,
+  children,
+  className = "",
+  ...props
+}: { label: ReactNode; children: ReactNode; className?: string } & Omit<ComponentPropsWithoutRef<"label">, "children" | "className">) {
+  return <Atom as="label" className={className} {...props}><Label>{label}</Label>{children}</Atom>;
+}
+
+export function FieldGroup({
+  label,
+  children,
+  className = "",
+  ...props
+}: { label: ReactNode; children: ReactNode; className?: string } & Omit<FieldsetHTMLAttributes<HTMLFieldSetElement>, "children" | "className">) {
+  return <fieldset className={joinClasses(CLASS.fieldGroup, className)} {...props}><legend><Label>{label}</Label></legend>{children}</fieldset>;
+}
+
+export function SelectionCard({
+  selected,
+  className = "",
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { selected: boolean }) {
+  return <Surface className={joinClasses(CLASS.selectionCard, className)} data-selected={selected} {...props} />;
 }
 
 export function SiteHeader({
