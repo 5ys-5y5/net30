@@ -348,6 +348,9 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [previewModel, setPreviewModel] = useState("");
   const [progress, setProgress] = useState("");
   const [downloadReady, setDownloadReady] = useState(false);
+  const [componentProgress, setComponentProgress] = useState<Record<string, { state: string; message: string; version?: string | null }>>({});
+  const [versions, setVersions] = useState<Record<string, readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[]>>({});
+  const [parentVersionId, setParentVersionId] = useState<Record<string, string>>({});
 
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
   const previewSrc = `${studio.previewSrc}${previewJoin}refresh=${previewRevision}${previewModel ? `&model=${encodeURIComponent(previewModel)}` : ""}`;
@@ -364,6 +367,17 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     }).catch(() => undefined);
     return () => controller.abort();
   }, [studio.endpoint]);
+
+  const refreshVersions = async (componentIds: readonly string[]) => {
+    const entries = await Promise.all(componentIds.map(async (component) => {
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions`);
+      const body = await response.json() as { ok?: boolean; versions?: readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[] };
+      return [component, body.ok ? body.versions ?? [] : []] as const;
+    }));
+    setVersions(Object.fromEntries(entries));
+  };
+
+  useEffect(() => { void refreshVersions(defaults.componentIds); }, [studio.endpoint]);
 
   const uploadImages = async () => {
     if (images.length > 4) throw new Error("모델링 입력 이미지는 최대 4장입니다.");
@@ -391,6 +405,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     setResult("");
     setError("");
     setDownloadReady(false);
+    setComponentProgress(Object.fromEntries(components.map((component) => [component, { state: "uploading", message: "입력 준비 중" }])));
     setProgress(images.length ? "이미지 업로드 중" : "모델링 지시 준비 중");
     try {
       const imageIds = await uploadImages();
@@ -399,26 +414,29 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "net30.modeling-job.v2", components, componentPrompts, model: model || undefined, imageIds,
+          version: "net30.modeling-job.v2", components, componentPrompts, parentVersionId, model: model || undefined, imageIds,
           prompt,
           dimensionOverrides: { widthMm: sizeXmm, heightMm: sizeYmm, depthMm: sizeZmm, wallMm: shellThicknessMm },
           settings: { material, shape, tone, finish, presetSkuId: skuId }, quality: "high",
         }),
       });
-      setProgress("조립 계약과 Blender 작업을 시작했습니다.");
-      const body = await response.json() as { ok?: boolean; error?: string; job?: { id: string; state: string; message: string }; statusUrl?: string };
+      const body = await response.json() as { ok?: boolean; error?: string; job?: { id: string; state: string; message: string; components?: Record<string, { state: string; message: string }> }; statusUrl?: string };
       if (!response.ok || !body.ok) throw new Error(body.error ?? `모델링 요청 실패 (${response.status})`);
+      setProgress(body.job?.message ?? "작업을 시작했습니다.");
+      setComponentProgress(body.job?.components ?? {});
       const statusUrl = body.statusUrl ?? `${studio.endpoint}/${body.job?.id}`;
       for (;;) {
         await new Promise((resolve) => window.setTimeout(resolve, 1200));
-        const statusResponse = await fetch(statusUrl); const statusBody = await statusResponse.json() as { ok?: boolean; job?: { state: string; message: string; result?: { artifact?: { assemblyGlb?: string }; report?: { requiredReview?: string[] } } }; error?: string };
+        const statusResponse = await fetch(statusUrl); const statusBody = await statusResponse.json() as { ok?: boolean; job?: { state: string; message: string; components?: Record<string, { state: string; message: string; version?: string | null }>; result?: { artifact?: { assemblyGlb?: string }; report?: { requiredReview?: string[] } } }; error?: string };
         if (!statusResponse.ok || !statusBody.ok || !statusBody.job) throw new Error(statusBody.error ?? "작업 상태를 불러오지 못했습니다.");
         setProgress(statusBody.job.message);
+        setComponentProgress(statusBody.job.components ?? {});
         if (["complete", "review_required", "failed"].includes(statusBody.job.state)) {
           if (statusBody.job.state === "failed") throw new Error(statusBody.job.message);
           const asset = statusBody.job.result?.artifact?.assemblyGlb ?? "";
           setPreviewModel(asset); setPreviewRevision(Date.now().toString()); setDownloadReady(Boolean(asset));
-          setResult([statusBody.job.message, statusBody.job.state === "review_required" ? "제조용 STEP은 나사·공차의 공식 도면 확인 후 엔지니어 검토가 필요합니다." : "엔지니어 검토용 제조 후보를 생성했습니다.", asset].filter(Boolean).join("\n")); break;
+          setResult([statusBody.job.message, statusBody.job.state === "review_required" ? "제조용 STEP은 나사·공차의 공식 도면 확인 후 엔지니어 검토가 필요합니다." : "엔지니어 검토용 제조 후보를 생성했습니다.", asset].filter(Boolean).join("\n"));
+          await refreshVersions(components); break;
         }
       }
     } catch (requestError) {
@@ -451,8 +469,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
             <fieldset className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}><Label>{studio.fields.component}</Label>
-              {studio.components.map((option) => <label key={option.id}><input type="checkbox" checked={components.includes(option.id)} onChange={(event) => setComponents((current) => event.target.checked ? [...current, option.id] : current.filter((id) => id !== option.id))} /> {option.label}</label>)}
-              {components.map((id) => <input className={CLASS.modelingControl} key={id} aria-label={`${id} 추가 지시`} placeholder={`${studio.components.find((item) => item.id === id)?.label ?? id} 추가 지시 (선택)`} value={componentPrompts[id] ?? ""} onChange={(event) => setComponentPrompts((current) => ({ ...current, [id]: event.target.value }))} />)}
+              <Atom className={CLASS.modelingChoices}>{studio.components.map((option) => <label className={CLASS.modelingChoice} key={option.id}><input type="checkbox" checked={components.includes(option.id)} onChange={(event) => setComponents((current) => event.target.checked ? [...current, option.id] : current.filter((id) => id !== option.id))} /> {option.label}</label>)}</Atom>
+              {components.map((id) => <input className={joinClasses(CLASS.modelingControl, CLASS.modelingComponentPrompt)} key={id} aria-label={`${id} 추가 지시`} placeholder={`${studio.components.find((item) => item.id === id)?.label ?? id} 추가 지시 (선택)`} value={componentPrompts[id] ?? ""} onChange={(event) => setComponentPrompts((current) => ({ ...current, [id]: event.target.value }))} />)}
             </fieldset>
             {selectField(studio.fields.sku, skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
             {selectField(studio.fields.material, material, setMaterial, studio.materials)}
@@ -476,6 +494,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           </Atom>
           <button className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? studio.pendingLabel : studio.submitLabel}</button>
           <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
+          {Object.keys(componentProgress).length > 0 && <Atom className={CLASS.modelingProgress}><Label>컴포넌트 진행 상태</Label><Atom as="ul" className={CLASS.modelingProgressList}>{Object.entries(componentProgress).map(([id, item]) => <Atom as="li" className={CLASS.modelingProgressItem} key={id}><strong>{studio.components.find((option) => option.id === id)?.label ?? id}</strong><Atom as={ELEMENT.span}>{item.message}</Atom><Atom as={ELEMENT.span}>{item.state}</Atom></Atom>)}</Atom></Atom>}
         </form>
       </Surface>
       <Surface className={CLASS.modelingPreview}>
@@ -485,6 +504,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             <Label>{studio.resultTitle}</Label>
             <Atom as={ELEMENT.span}>{error || result || studio.idleMessage}</Atom>
             {downloadReady && previewModel && <Link href={previewModel} download>{studio.downloadLabel}</Link>}
+            {Object.entries(versions).map(([component, items]) => items.length > 0 && <Atom className={CLASS.modelingVersionList} key={component}><Label>{studio.components.find((option) => option.id === component)?.label ?? component} 버전</Label>{items.map((version) => <Atom className={CLASS.modelingVersion} key={version.id}><strong>v{version.ordinal}</strong><Atom as={ELEMENT.span}>{new Date(version.createdAt).toLocaleString()} · {version.summary}</Atom><Atom><button className={CLASS.modelingAction} type="button" onClick={() => { setComponents([component]); setParentVersionId({ [component]: version.id }); setProgress(`v${version.ordinal}을 기반으로 수정할 준비가 되었습니다.`); }}>수정</button><button className={CLASS.modelingAction} type="button" onClick={async () => { await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component}/versions/${version.id}`, { method: "DELETE" }); await refreshVersions([component]); }}>삭제</button></Atom></Atom>)}</Atom>)}
           </Atom>
       </Surface>
     </Atom>
