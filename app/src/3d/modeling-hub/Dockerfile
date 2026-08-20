@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender ca-certificates \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender ca-certificates python3-numpy \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
