@@ -20,6 +20,9 @@ export const ARCHITECTURE = Object.freeze({
     "visual-contract.mjs",
   ]),
   modelingClassKeys: Object.freeze([
+    "modelingWorkspace",
+    "modelingWorkspaceMeta",
+    "modelingWorkspaceName",
     "modelingStudio",
     "modelingForm",
     "modelingFields",
@@ -37,6 +40,8 @@ export const ARCHITECTURE = Object.freeze({
     "modelingChoices",
     "modelingChoice",
     "modelingComponentPrompt",
+    "modelingGroup",
+    "modelingGroupHead",
     "modelingProgress",
     "modelingProgressList",
     "modelingProgressItem",
@@ -46,5 +51,7 @@ export const ARCHITECTURE = Object.freeze({
     "modelingVersion",
     "modelingActions",
     "modelingAction",
+    "modelingOutputSections",
+    "modelingOutputSection",
   ]),
 });

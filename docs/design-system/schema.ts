@@ -50,6 +50,7 @@ export type SupplyArc = { id: string; from: number; to: number; cost: string };
 export type MetricDefinition = { key: string; label: string; suffix?: string };
 
 export type ModelingOptionDefinition = { id: string; label: string };
+export type ModelingComponentGroupDefinition = { id: string; label: string; description: string; componentIds: readonly string[] };
 
 export type ModelingStudioDefinition = {
   endpoint: string;
@@ -65,6 +66,16 @@ export type ModelingStudioDefinition = {
   downloadLabel: string;
   idleMessage: string;
   unavailableMessage: string;
+  workspace: {
+    productLabel: string;
+    productName: string;
+    productDescription: string;
+    assemblyLabel: string;
+    assemblyDescription: string;
+    componentsLabel: string;
+    manufacturingLabel: string;
+    publicationLabel: string;
+  };
   assetLibrary: { title: string; copy: string; emptyMessage: string; previewLabel: string; editLabel: string; homeLabel: string; deleteLabel: string; };
   fields: {
     model: string; images: string; component: string; sku: string; material: string; shape: string;
@@ -72,6 +83,7 @@ export type ModelingStudioDefinition = {
     distortion: string; tone: string; finish: string; prompt: string;
   };
   components: readonly ModelingOptionDefinition[];
+  componentGroups: readonly ModelingComponentGroupDefinition[];
   materials: readonly ModelingOptionDefinition[];
   shapes: readonly ModelingOptionDefinition[];
   defaults: {

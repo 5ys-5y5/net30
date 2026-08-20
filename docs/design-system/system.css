@@ -2,6 +2,10 @@
 .ds-section-head h2{font:var(--ds-type-title);line-height:1.25;margin:10px 0 0;letter-spacing:normal;} .ds-section-head>p{justify-self:end;max-width:420px;color:var(--ds-muted);font:var(--ds-type-body);line-height:1.65;letter-spacing:normal;}@media(max-width:600px){.ds-section-head h2{font:var(--ds-type-title);margin-top:8px}}
 .ds-product-image[src]{border:0;display:block;}
 
+.ds-modeling-workspace{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr);gap:24px;align-items:end;margin-bottom:24px;padding:24px;border:var(--ds-line);border-radius:var(--ds-r-md);background:var(--ds-quiet)}
+.ds-modeling-workspace-meta{display:grid;gap:8px}
+.ds-modeling-workspace-name{display:block;margin-top:10px;font-size:clamp(26px,3.4vw,48px);line-height:1;letter-spacing:-.05em;font-weight:600}
+.ds-modeling-workspace>p{margin:0;color:var(--ds-muted);font:500 11px/1.65 var(--ds-font-mono)}
 .ds-modeling-studio{display:grid;grid-template-columns:minmax(340px,480px) minmax(0,1fr);gap:24px;align-items:start}
 .ds-modeling-form,.ds-modeling-preview{padding:24px}
 .ds-modeling-form form{display:grid;gap:18px}
@@ -19,6 +23,11 @@
 .ds-modeling-error{color:#8f102f}
 .ds-modeling-hint{margin:0;color:var(--ds-muted);font:500 10px/1.6 var(--ds-font-mono)}
 .ds-modeling-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px;border:0;margin:0;padding:0}
+.ds-modeling-group{display:grid;gap:9px;padding:14px 0;border-top:var(--ds-line)}
+.ds-modeling-group:first-child{border-top:0;padding-top:0}
+.ds-modeling-group-head{display:grid;gap:4px}
+.ds-modeling-group-head strong{font-size:13px;line-height:1.2}
+.ds-modeling-group-head small{color:var(--ds-muted);font:500 10px/1.45 var(--ds-font-mono)}
 .ds-modeling-choice{display:flex;align-items:center;gap:8px;min-height:38px;padding:8px 10px;border:var(--ds-line);border-radius:var(--ds-r-sm);font:500 11px/1.2 var(--ds-font-sans);cursor:pointer}
 .ds-modeling-choice:has(input:checked){background:var(--ds-ink);color:var(--ds-white)}
 .ds-modeling-component-prompt{grid-column:1/-1}
@@ -31,7 +40,11 @@
 .ds-modeling-version[data-active="true"]{background:var(--ds-quiet);border-width:var(--ds-selection-line-width)}
 .ds-modeling-progress-item strong,.ds-modeling-version strong{font:600 10px/1.2 var(--ds-font-mono);color:var(--ds-ink)}
 .ds-modeling-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
+.ds-modeling-output-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:24px}
+.ds-modeling-output-section{display:grid;gap:12px;padding:24px;align-content:start}
+.ds-modeling-output-section p{margin:0;color:var(--ds-muted);font-size:12px;line-height:1.65}
+.ds-modeling-output-section a{justify-self:start;border-bottom:var(--ds-line);font:600 10px/1.2 var(--ds-font-mono)}
 .ds-modeling-action{border:var(--ds-line);border-radius:var(--ds-r-sm);background:var(--ds-white);color:var(--ds-ink);padding:7px 9px;font:600 9px/1 var(--ds-font-mono);cursor:pointer}
 .ds-modeling-action:disabled{opacity:.5;cursor:wait}
-@media(max-width:900px){.ds-modeling-studio{grid-template-columns:1fr}.ds-modeling-frame{height:560px}.ds-modeling-library-grid{grid-template-columns:1fr}}
-@media(max-width:600px){.ds-modeling-fields{grid-template-columns:1fr}.ds-modeling-field-wide{grid-column:auto}.ds-modeling-form,.ds-modeling-preview,.ds-modeling-library{padding:18px}.ds-modeling-frame{height:480px;min-height:360px}.ds-modeling-progress-item,.ds-modeling-version{grid-template-columns:1fr}.ds-modeling-actions{justify-content:flex-start}}
+@media(max-width:900px){.ds-modeling-workspace{grid-template-columns:1fr}.ds-modeling-studio{grid-template-columns:1fr}.ds-modeling-frame{height:560px}.ds-modeling-library-grid,.ds-modeling-output-sections{grid-template-columns:1fr}}
+@media(max-width:600px){.ds-modeling-fields{grid-template-columns:1fr}.ds-modeling-field-wide{grid-column:auto}.ds-modeling-workspace,.ds-modeling-form,.ds-modeling-preview,.ds-modeling-library,.ds-modeling-output-section{padding:18px}.ds-modeling-frame{height:480px;min-height:360px}.ds-modeling-progress-item,.ds-modeling-version{grid-template-columns:1fr}.ds-modeling-actions{justify-content:flex-start}}

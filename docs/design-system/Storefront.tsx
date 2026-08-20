@@ -349,6 +349,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [progress, setProgress] = useState("");
   const [downloadReady, setDownloadReady] = useState(false);
   const [componentProgress, setComponentProgress] = useState<Record<string, { state: string; message: string; version?: string | null }>>({});
+  const [resultArtifacts, setResultArtifacts] = useState<{ assemblyGlb?: string; report?: string; components?: Record<string, string | null> }>({});
   const [versions, setVersions] = useState<Record<string, readonly { id: string; ordinal: number; summary: string; createdAt: string; assetPath: string }[]>>({});
   const [parentVersionId, setParentVersionId] = useState<Record<string, string>>({});
   const [selectedVersionId, setSelectedVersionId] = useState("");
@@ -429,6 +430,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     setPending(true);
     setResult("");
     setError("");
+    setResultArtifacts({});
     setDownloadReady(false);
     setComponentProgress(Object.fromEntries(components.map((component) => [component, { state: "uploading", message: "입력 준비 중" }])));
     setProgress(images.length ? "이미지 업로드 중" : "모델링 지시 준비 중");
@@ -452,13 +454,14 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       const statusUrl = body.statusUrl ?? `${studio.endpoint}/${body.job?.id}`;
       for (;;) {
         await new Promise((resolve) => window.setTimeout(resolve, 1200));
-        const statusResponse = await fetch(statusUrl); const statusBody = await statusResponse.json() as { ok?: boolean; job?: { state: string; message: string; components?: Record<string, { state: string; message: string; version?: string | null }>; result?: { artifact?: { assemblyGlb?: string }; report?: { requiredReview?: string[] } } }; error?: string };
+        const statusResponse = await fetch(statusUrl); const statusBody = await statusResponse.json() as { ok?: boolean; job?: { state: string; message: string; components?: Record<string, { state: string; message: string; version?: string | null }>; result?: { artifact?: { assemblyGlb?: string; report?: string; components?: Record<string, string | null> } } }; error?: string };
         if (!statusResponse.ok || !statusBody.ok || !statusBody.job) throw new Error(statusBody.error ?? "작업 상태를 불러오지 못했습니다.");
         setProgress(statusBody.job.message);
         setComponentProgress(statusBody.job.components ?? {});
         if (["complete", "review_required", "failed"].includes(statusBody.job.state)) {
           if (statusBody.job.state === "failed") throw new Error(statusBody.job.message);
           const asset = statusBody.job.result?.artifact?.assemblyGlb ?? "";
+          setResultArtifacts(statusBody.job.result?.artifact ?? {});
           setPreviewModel(asset); setPreviewRevision(Date.now().toString()); setDownloadReady(Boolean(asset));
           setResult([statusBody.job.message, statusBody.job.state === "review_required" ? "제조용 STEP은 나사·공차의 공식 도면 확인 후 엔지니어 검토가 필요합니다." : "엔지니어 검토용 제조 후보를 생성했습니다.", asset].filter(Boolean).join("\n"));
           await refreshVersions(components); break;
@@ -484,6 +487,13 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
 
   return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
     <SectionHeading {...catalogSection} />
+    <Atom className={CLASS.modelingWorkspace}>
+      <Atom className={CLASS.modelingWorkspaceMeta}>
+        <Label>{studio.workspace.productLabel}</Label>
+        <Atom as={ELEMENT.span} className={CLASS.modelingWorkspaceName}>{studio.workspace.productName}</Atom>
+      </Atom>
+      <Copy>{studio.workspace.productDescription}</Copy>
+    </Atom>
     <Atom className={CLASS.modelingStudio}>
       <Surface className={CLASS.modelingForm}>
         <form onSubmit={submit}>
@@ -493,8 +503,11 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           </Atom>
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
-            <fieldset className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}><Label>{studio.fields.component}</Label>
-              <Atom className={CLASS.modelingChoices}>{studio.components.map((option) => <label className={CLASS.modelingChoice} key={option.id}><input type="checkbox" checked={components.includes(option.id)} onChange={(event) => setComponents((current) => event.target.checked ? [...current, option.id] : current.filter((id) => id !== option.id))} /> {option.label}</label>)}</Atom>
+            <fieldset className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)}><Label>{studio.workspace.componentsLabel}</Label>
+              {studio.componentGroups.map((group) => <Atom className={CLASS.modelingGroup} key={group.id}>
+                <Atom className={CLASS.modelingGroupHead}><Atom as={ELEMENT.strong}>{group.label}</Atom><Atom as={ELEMENT.small}>{group.description}</Atom></Atom>
+                <Atom className={CLASS.modelingChoices}>{group.componentIds.map((id) => { const option = studio.components.find((item) => item.id === id); if (!option) return null; return <label className={CLASS.modelingChoice} key={option.id}><input type="checkbox" checked={components.includes(option.id)} onChange={(event) => setComponents((current) => event.target.checked ? [...current, option.id] : current.filter((currentId) => currentId !== option.id))} /> {option.label}</label>; })}</Atom>
+              </Atom>)}
               {components.map((id) => <input className={joinClasses(CLASS.modelingControl, CLASS.modelingComponentPrompt)} key={id} aria-label={`${id} 추가 지시`} placeholder={`${studio.components.find((item) => item.id === id)?.label ?? id} 추가 지시 (선택)`} value={componentPrompts[id] ?? ""} onChange={(event) => setComponentPrompts((current) => ({ ...current, [id]: event.target.value }))} />)}
             </fieldset>
             {selectField(studio.fields.sku, skuId, setSkuId, skuIds.map((id) => ({ id, label: id })))}
@@ -523,7 +536,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         </form>
       </Surface>
       <Surface className={CLASS.modelingPreview}>
-        <Atom className={CLASS.modelingToolbar}><Label>{studio.previewTitle}</Label><Link href="/">{studio.backLabel}</Link></Atom>
+        <Atom className={CLASS.modelingToolbar}><Atom><Label>{studio.workspace.assemblyLabel}</Label><Copy className={CLASS.modelingHint}>{studio.workspace.assemblyDescription}</Copy></Atom><Link href="/">{studio.backLabel}</Link></Atom>
         <iframe className={CLASS.modelingFrame} title={studio.previewTitle} src={previewSrc} />
           <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}>
             <Label>{studio.resultTitle}</Label>
@@ -534,9 +547,9 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     </Atom>
     <Surface className={CLASS.modelingLibrary}>
       <Atom><Label>{studio.assetLibrary.title}</Label><Copy>{studio.assetLibrary.copy}</Copy></Atom>
-      <Atom className={CLASS.modelingLibraryGrid}>{studio.components.map((component) => {
-        const items = versions[component.id] ?? [];
-        return <Atom className={CLASS.modelingVersionList} key={component.id}>
+      <Atom className={CLASS.modelingLibraryGrid}>{studio.componentGroups.map((group) => <Atom className={CLASS.modelingGroup} key={group.id}>
+        <Atom className={CLASS.modelingGroupHead}><Atom as={ELEMENT.strong}>{group.label}</Atom><Atom as={ELEMENT.small}>{group.description}</Atom></Atom>
+        {group.componentIds.map((componentId) => { const component = studio.components.find((item) => item.id === componentId); if (!component) return null; const items = versions[component.id] ?? []; return <Atom className={CLASS.modelingVersionList} key={component.id}>
           <Label>{component.label}</Label>
           {items.length === 0 ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.emptyMessage}</Copy> : items.map((version) => <Atom className={CLASS.modelingVersion} data-active={selectedVersionId === version.id} key={version.id}>
             <strong>v{version.ordinal}</strong>
@@ -548,9 +561,21 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
               <button className={CLASS.modelingAction} type="button" onClick={async () => { await fetch(`${studio.endpoint.replace(/\/jobs$/, "")}/components/${component.id}/versions/${version.id}`, { method: "DELETE" }); if (selectedVersionId === version.id) setSelectedVersionId(""); await refreshVersions([component.id]); }}>{studio.assetLibrary.deleteLabel}</button>
             </Atom>
           </Atom>)}
-        </Atom>;
-      })}</Atom>
+        </Atom>; })}
+      </Atom>)}</Atom>
     </Surface>
+    <Atom className={CLASS.modelingOutputSections}>
+      <Surface className={CLASS.modelingOutputSection}>
+        <Label>{studio.workspace.manufacturingLabel}</Label>
+        <Copy>현재 작업에서 생성된 제조 검토용 산출물과 검증 보고서를 확인합니다.</Copy>
+        {resultArtifacts.report ? <Link href={resultArtifacts.report} target="_blank" rel="noreferrer">검증 보고서 열기</Link> : <Copy className={CLASS.modelingHint}>작업을 완료하면 검증 보고서가 여기에 표시됩니다.</Copy>}
+      </Surface>
+      <Surface className={CLASS.modelingOutputSection}>
+        <Label>{studio.workspace.publicationLabel}</Label>
+        <Copy>자산 라이브러리에서 버전을 선택해 홈페이지에 표시할 조립 모델을 지정합니다.</Copy>
+        <Link href="/">홈페이지 3D 뷰어 열기</Link>
+      </Surface>
+    </Atom>
   </Container>;
 }
 
