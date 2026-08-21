@@ -11,9 +11,33 @@ except ImportError as error:
 
 def main():
     request = json.loads(pathlib.Path(sys.argv[1]).read_text())
-    component, contract, output = request["component"], request["contract"], pathlib.Path(request["output"])
+    component, graph_component, graph_nodes, contract, output = request["component"], request.get("graphComponent"), request.get("graphNodes", []), request["contract"], pathlib.Path(request["output"])
     d = contract["dimensionsMm"]; radius = max(d["widthMm"], d["depthMm"]) / 2
-    if component["component"] == "bottle":
+    if graph_component and graph_component.get("representation") == "brep_solid":
+        shapes = []
+        for node in graph_nodes:
+            params, operation = node["parameters"], node["operation"]
+            if operation == "revolve":
+                points = [(point["xMm"], point["zMm"]) for point in (params.get("profile") or [])]
+                if len(points) < 2: raise RuntimeError("Approved revolve profile needs at least two points")
+                outer = cq.Workplane("XZ").moveTo(*points[0]).spline(points[1:]).lineTo(0, points[-1][1]).lineTo(0, points[0][1]).close().revolve(360, (0, 0, 0), (0, 1, 0))
+                thickness = float(params.get("thicknessMm") or 0)
+                if thickness > 0:
+                    inner_points = [(max(.1, x - thickness), z) for x, z in points]
+                    inner = cq.Workplane("XZ").moveTo(*inner_points[0]).spline(inner_points[1:]).lineTo(0, inner_points[-1][1]).lineTo(0, inner_points[0][1]).close().revolve(360, (0, 0, 0), (0, 1, 0)); outer = outer.cut(inner)
+                shapes.append(outer)
+            elif operation in ["extrude", "primitive"]:
+                dimensions = params.get("dimensionsMm") or {"x": float(params.get("radiusMm") or 10) * 2, "y": float(params.get("radiusMm") or 10) * 2, "z": float(params.get("heightMm") or 10)}
+                primitive = params.get("primitive") or "cylinder"
+                if params.get("innerRadiusMm") is not None: shape = cq.Workplane("XY").circle(float(params.get("radiusMm") or dimensions["x"] / 2)).circle(float(params["innerRadiusMm"])).extrude(float(params.get("heightMm") or dimensions["z"]))
+                elif primitive == "box": shape = cq.Workplane("XY").box(float(dimensions["x"]), float(dimensions["y"]), float(dimensions["z"]))
+                elif primitive == "sphere": shape = cq.Workplane("XY").sphere(float(dimensions["x"]) / 2)
+                else: shape = cq.Workplane("XY").circle(float(params.get("radiusMm") or dimensions["x"] / 2)).extrude(float(params.get("heightMm") or dimensions["z"]))
+                shapes.append(shape)
+        if not shapes: return
+        shape = shapes[0]
+        for addition in shapes[1:]: shape = shape.union(addition)
+    elif component["component"] == "bottle":
         # Separate outer/inner solids: this is a manufacturable B-Rep wall, not a Blender modifier.
         points = [(point["radiusRatio"] * radius, point["zRatio"] * d["heightMm"]) for point in component["profile"]]
         outer = cq.Workplane("XZ").moveTo(*points[0]).spline(points[1:]).lineTo(0, d["heightMm"]).lineTo(0, 0).close().revolve(360, (0, 0, 0), (0, 1, 0))

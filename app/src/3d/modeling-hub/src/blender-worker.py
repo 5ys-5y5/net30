@@ -1,5 +1,5 @@
 """Compile only validated NET30 v2 component DSL into job-scoped GLB files."""
-import json, math, pathlib, sys, traceback
+import base64, json, math, pathlib, sys, traceback
 import bpy
 
 MM = .001
@@ -71,6 +71,71 @@ def sticker_slot(name, source_id, radius, height, target, values):
     mesh=bpy.data.meshes.new(name+"Mesh"); mesh.from_pydata(vs,[],fs); mesh.update(); obj=bpy.data.objects.new(name,mesh); target.objects.link(obj)
     material=bpy.data.materials.new(name+"Material"); material.use_nodes=True; material.node_tree.nodes.get("Principled BSDF").inputs["Alpha"].default_value=0; material.surface_render_method='DITHERED'; obj.data.materials.append(material)
     obj["net30_sticker_slot"]={"sourceGraphicId":source_id,"physicalWidthMm":width/MM,"physicalHeightMm":h/MM,"wrapDegrees":math.degrees(sweep),"surfaceOffsetMm":offset/MM}; return obj
+def graph_material(name, spec):
+    return mat(name,{"color":spec["baseColor"],"roughness":spec["roughness"],"transmission":spec["transmission"]})
+def absolute_lathe(name, points, target, material, wall=0):
+    if len(points)<2: raise RuntimeError(f"{name}: revolve profile needs at least two points")
+    rings=128; vertices=[]; faces=[]
+    for point in points:
+        r=max(.0001,float(point["xMm"])*MM); z=float(point["zMm"])*MM
+        for i in range(rings):
+            a=math.tau*i/rings; vertices.append((r*math.cos(a),r*math.sin(a),z))
+    for j in range(len(points)-1):
+        for i in range(rings):
+            n=(i+1)%rings; faces.append((j*rings+i,j*rings+n,(j+1)*rings+n,(j+1)*rings+i))
+    mesh=bpy.data.meshes.new(name+"Mesh"); mesh.from_pydata(vertices,[],faces); mesh.update(); obj=bpy.data.objects.new(name,mesh); target.objects.link(obj); obj.data.materials.append(material); smooth(obj)
+    if wall:
+        modifier=obj.modifiers.new("Approved graph wall","SOLIDIFY"); modifier.thickness=-float(wall)*MM; modifier.offset=-1; modifier.use_even_offset=True
+    return obj
+def graph_texture_material(name, spec, image_input, job_dir):
+    material=graph_material(name,spec)
+    if not image_input: return material
+    data_url=image_input.get("dataUrl",""); encoded=data_url.split(",",1)[1] if "," in data_url else ""
+    if not encoded: return material
+    suffix=pathlib.Path(image_input.get("filename","artwork.png")).suffix or ".png"; image_path=pathlib.Path(job_dir)/("artwork-"+str(image_input.get("id","input"))+suffix)
+    image_path.write_bytes(base64.b64decode(encoded)); image=bpy.data.images.load(str(image_path),check_existing=True)
+    nodes=material.node_tree.nodes; links=material.node_tree.links; texture=nodes.new("ShaderNodeTexImage"); texture.image=image; bsdf=nodes.get("Principled BSDF"); links.new(texture.outputs["Color"],bsdf.inputs["Base Color"])
+    if "Alpha" in texture.outputs and "Alpha" in bsdf.inputs: links.new(texture.outputs["Alpha"],bsdf.inputs["Alpha"]); material.surface_render_method='DITHERED'
+    return material
+def graph_decal(name, params, radius, height, target, material):
+    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or 118)); h=max(.001,float(crop.get("height",.3))*height); z=max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM
+    segments=64; vs=[]; fs=[]
+    for j in range(2):
+        for i in range(segments+1):
+            a=-sweep/2+sweep*i/segments; vs.append((r*math.sin(a),-r*math.cos(a),z+j*h))
+    for i in range(segments): fs.append((i,i+1,segments+2+i,segments+1+i))
+    mesh=bpy.data.meshes.new(name+"Mesh"); mesh.from_pydata(vs,[],fs); mesh.update(); uv=mesh.uv_layers.new(name="UVMap")
+    for polygon in mesh.polygons:
+        for loop_index in polygon.loop_indices:
+            vertex_index=mesh.loops[loop_index].vertex_index; row=1 if vertex_index>=segments+1 else 0; column=vertex_index%(segments+1); uv.data[loop_index].uv=(float(crop.get("x",0))+float(crop.get("width",1))*column/segments,float(crop.get("y",0))+float(crop.get("height",1))*row)
+    obj=bpy.data.objects.new(name,mesh); target.objects.link(obj); obj.data.materials.append(material); obj["net30_component_kind"]="dynamic-surface-decal"; obj["net30_artwork_image_id"]=params.get("artworkImageId") or ""; return obj
+def apply_graph_transform(objects, value):
+    translation=value.get("translationMm",{}); rotation=value.get("rotationDeg",{}); scale=value.get("scale",{})
+    for obj in objects:
+        obj.location.x+=float(translation.get("x",0))*MM; obj.location.y+=float(translation.get("y",0))*MM; obj.location.z+=float(translation.get("z",0))*MM
+        obj.rotation_euler.x+=math.radians(float(rotation.get("x",0))); obj.rotation_euler.y+=math.radians(float(rotation.get("y",0))); obj.rotation_euler.z+=math.radians(float(rotation.get("z",0)))
+        obj.scale.x*=float(scale.get("x",1)); obj.scale.y*=float(scale.get("y",1)); obj.scale.z*=float(scale.get("z",1))
+def build_graph_component(component, nodes, contract, image_inputs, job_dir, target):
+    before=set(target.objects); base_material=graph_material(component["id"]+"Material",component["material"]); d=contract["dimensionsMm"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM
+    for node in nodes:
+        params=node["parameters"]; op=node["operation"]
+        if op=="revolve":
+            obj=absolute_lathe(component["requestedName"],params.get("profile") or [],target,base_material,params.get("thicknessMm") or 0)
+            if params.get("count") and params.get("depthMm"): cap_ribs(max(point["xMm"] for point in params.get("profile") or [{"xMm":d["widthMm"]/2}])*MM,max(point["zMm"] for point in params.get("profile") or [{"zMm":d["heightMm"]}])*MM,0,int(params["count"]),float(params["depthMm"])*MM,target,base_material)
+        elif op in ["extrude","primitive"]:
+            dimensions=params.get("dimensionsMm") or {"x":params.get("radiusMm",10)*2,"y":params.get("radiusMm",10)*2,"z":params.get("heightMm",10)}; primitive=params.get("primitive") or "cylinder"
+            if params.get("innerRadiusMm"):
+                major=(float(params.get("radiusMm") or dimensions["x"]/2)+float(params["innerRadiusMm"]))/2*MM; minor=max(.0002,(float(params.get("radiusMm") or dimensions["x"]/2)-float(params["innerRadiusMm"]))/2*MM); bpy.ops.mesh.primitive_torus_add(major_radius=major,minor_radius=minor,major_segments=128,minor_segments=24); obj=bpy.context.object; obj.scale.z=max(.15,float(dimensions["z"])*MM/(minor*2)); link(obj,target); obj.data.materials.append(base_material)
+            elif primitive=="box": bpy.ops.mesh.primitive_cube_add(); obj=bpy.context.object; obj.dimensions=(float(dimensions["x"])*MM,float(dimensions["y"])*MM,float(dimensions["z"])*MM); link(obj,target); obj.data.materials.append(base_material)
+            elif primitive=="sphere": bpy.ops.mesh.primitive_uv_sphere_add(segments=48,ring_count=24); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
+            else: cylinder(component["requestedName"],float(params.get("radiusMm") or dimensions["x"]/2)*MM,float(params.get("heightMm") or dimensions["z"])*MM,0,target,base_material)
+        elif op=="surface_decal":
+            image=next((item for item in image_inputs if item.get("id")==params.get("artworkImageId")),None); decal_material=graph_texture_material(component["id"]+"Artwork",component["material"],image,job_dir); graph_decal(component["requestedName"],params,radius,height,target,decal_material)
+        elif op in ["instance_distribution","volume"]:
+            dimensions=params.get("dimensionsMm") or {"x":8,"y":8,"z":16}; quantity=min(120,int(params.get("quantity") or 1))
+            for index in range(quantity):
+                angle=math.tau*index/max(1,quantity); radial=radius*.45*((index%7)+1)/7; z=height*(.15+.65*((index*37)%101)/100); bpy.ops.mesh.primitive_uv_sphere_add(segments=20,ring_count=12,location=(radial*math.cos(angle),radial*math.sin(angle),z)); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
+    created=[obj for obj in target.objects if obj not in before]; apply_graph_transform(created,component["transform"])
 def build_component(component, contract, target):
     d=contract["dimensionsMm"]; kind=component["component"]; material=mat(kind+"Material",component["material"])
     features=component["features"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM; wall=float(features.get("wallMm",d["wallMm"]))*MM
@@ -124,8 +189,11 @@ def main():
     request=json.loads(request_path().read_text())
     if request.get("mode")=="assemble-library": return assemble_library(request)
     paths=request["paths"]; clear(); assembly=col("ASSEMBLY")
+    graph=request["spec"].get("modelingGraph"); graph_components={item["id"]:item for item in (graph or {}).get("components",[])}; graph_nodes=(graph or {}).get("nodes",[])
     for component in request["spec"]["components"]:
-        instance_id=component.get("componentInstanceId",component["component"]); part=col("PART_"+instance_id); build_component(component,request["spec"]["contract"],part)
+        instance_id=component.get("componentInstanceId",component["component"]); part=col("PART_"+instance_id)
+        if instance_id in graph_components: build_graph_component(graph_components[instance_id],[node for node in graph_nodes if node["componentId"]==instance_id],request["spec"]["contract"],request.get("imageInputs",[]),paths["jobDir"],part)
+        else: build_component(component,request["spec"]["contract"],part)
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(instance_id+".glb"))
         for obj in list(part.objects): link(obj,assembly)
     approved=request.get("payload",{}).get("approvedDraft") or {}

@@ -7,6 +7,7 @@ import {
   draftReady,
   normaliseComponentInput,
 } from "./modeling-spec.mjs";
+import { applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -18,6 +19,14 @@ const analysisSchema = draftAnalysisJsonSchema();
 const componentOutput = analysisSchema.properties.components.items;
 assert.equal("requestedName" in componentOutput.properties, false);
 assert.deepEqual([...componentOutput.required].sort(), Object.keys(componentOutput.properties).sort());
+function auditStrictSchema(schema, path = "root") {
+  if (!schema || typeof schema !== "object") return;
+  if (schema.properties) { assert.equal(schema.additionalProperties, false, `${path} must reject extra properties`); assert.deepEqual([...(schema.required ?? [])].sort(), Object.keys(schema.properties).sort(), `${path} must require every property`); }
+  for (const [key, value] of Object.entries(schema)) if (key !== "$defs") Array.isArray(value) ? value.forEach((item, index) => auditStrictSchema(item, `${path}.${key}[${index}]`)) : auditStrictSchema(value, `${path}.${key}`);
+  for (const [key, value] of Object.entries(schema.$defs ?? {})) auditStrictSchema(value, `${path}.$defs.${key}`);
+}
+auditStrictSchema(modelingGraphJsonSchema());
+auditStrictSchema(modelingPatchJsonSchema());
 
 const input = draftPayloadSchema.parse({
   version: "net30.modeling-draft.v4",
@@ -39,6 +48,8 @@ const draft = {
   input,
   product: analysis.product,
   components: analysis.components,
+  modelingGraph: analysis.modelingGraph,
+  modelingGraphHash: analysis.modelingGraphHash,
   questions: analysis.questions.map((question) => ({ ...question, status: "accepted", userValue: question.recommendedValue })),
   stickerSlots: analysis.stickerSlots,
 };
@@ -46,4 +57,13 @@ assert.equal(draftReady(draft).ready, true);
 const spec = compileApprovedDraftToModelingSpec(draft);
 assert.deepEqual(spec.components.map((component) => component.component), ["cap"]);
 assert.deepEqual(spec.components.map((component) => component.componentInstanceId), [analysis.components[0].id]);
+const printCanonical = canonicalizeGraph(fixtureGraphOutput({ product: { name: "인쇄 병" }, prompt: "사진의 전면 인쇄를 재현", requestedComponents: ["유리병", "전면 인쇄"], imageIds: ["image-1"] }), ["유리병", "전면 인쇄"], ["image-1"]);
+const printComponent = printCanonical.graph.components.find((item) => item.requestedName === "전면 인쇄");
+const printNode = printCanonical.graph.nodes.find((item) => item.componentId === printComponent.id);
+assert.equal(printComponent.representation, "visual_surface");
+assert.equal(printNode.operation, "surface_decal");
+assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).components[0].points.length >= 4);
+assert.throws(() => validateGraph({ ...printCanonical.graph, nodes: [{ ...printCanonical.graph.nodes[0], operation: "eval" }] }), /지원하지 않는|Invalid/);
+const patched = applyModelingPatch(printCanonical.graph, { version: "net30.modeling-patch.v1", baseGraphHash: printCanonical.graphHash, scope: { stage: "material_surface", componentIds: [printComponent.id] }, changes: [{ op: "set_parameter", nodeId: printNode.id, field: "wrapDegrees", expectedValueHash: valueHash(printNode.parameters.wrapDegrees), value: 120, rationale: "사진의 감김 범위" }] });
+assert.equal(patched.graph.nodes.find((item) => item.id === printNode.id).parameters.wrapDegrees, 120);
 console.log("Modeling v4 proof passed: requested component normalization and approved cap-only spec.");

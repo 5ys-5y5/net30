@@ -18,7 +18,7 @@ export async function runModelingJob(payload, { jobId, imageInputs = [], onProgr
   if (specs.some((spec) => spec.contractHash !== hash)) throw new Error("컴포넌트 명세가 공통 조립 계약과 충돌했습니다.");
   const spec = approvedSpec ?? { version: "net30.modeling-spec.v3", summary: analysis.contract.product.name, contract: analysis.contract, components: specs };
   onProgress("building_components", "선택한 컴포넌트의 CAD/Blender 자산을 생성 중입니다.", Object.fromEntries(payload.components.map((component) => [component, { state: "building", message: "독립 CAD/메시 생성 대기" }])));
-  const result = await executeBlenderModeling(payload, { assetRoot: root, jobId, spec, onProgress: (state, message) => onProgress(state, message, Object.fromEntries(payload.components.map((component) => [component, { state, message }])))});
+  const result = await executeBlenderModeling(payload, { assetRoot: root, jobId, spec, imageInputs, onProgress: (state, message) => onProgress(state, message, Object.fromEntries(payload.components.map((component) => [component, { state, message }])))});
   const status = needsThreadEvidence ? "review_required" : "complete";
   const report = { jobId, status, contractHash: hash, manufacturingCandidate: !needsThreadEvidence, requiredReview: needsThreadEvidence ? analysis.contract.unresolved : [], components: specs.map((item) => ({ component: item.component, componentInstanceId: item.componentInstanceId, displayName: item.displayName, contractHash: item.contractHash })), generatedAt: new Date().toISOString() };
   await fs.writeFile(path.join(jobDir, "reports", "verification.json"), `${JSON.stringify(report, null, 2)}\n`);

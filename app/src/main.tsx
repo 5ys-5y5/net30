@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Storefront } from "../../docs/design-system/entry";
+import { ApplicationErrorBoundary, Copy, Surface } from "../../docs/design-system";
 import "../../docs/design-system/styles.css";
 import "../../docs/design-system/typography.css";
 import "../../docs/design-system/hero.css";
@@ -26,6 +27,8 @@ else {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Storefront definition={definition} />
+    <ApplicationErrorBoundary fallback={<Surface role="alert"><Copy>화면을 표시하는 중 오류가 발생했습니다. 페이지를 새로고침해 다시 시도하세요.</Copy></Surface>}>
+      <Storefront definition={definition} />
+    </ApplicationErrorBoundary>
   </StrictMode>,
 );

@@ -82,6 +82,7 @@ import {
   SketchAnnotationLayer,
   PenToolbar,
   IterationNavigator,
+  PreviewErrorBoundary,
 } from "./index";
 import { mergeComponentVersions } from "./modeling-library-state";
 import { renderLabelStickerToTexture } from "./render-label-texture";
@@ -118,10 +119,11 @@ type ModelingLibraryVersion = {
 
 type ModelingDraftQuestion = { id: string; scope: string; componentInstanceId?: string; appliesToComponentIds?: readonly string[]; path: string; category: string; valueType: string; unit?: string; recommendedValue: unknown; rationale: string; evidence?: readonly { kind: string; label: string }[]; dependencies?: readonly string[]; criticality: string; required: boolean; status: string; userValue?: unknown };
 type ModelingProgress = { eventId: number; operation: "analysis" | "approval" | "build"; stage: string; state: "queued" | "running" | "complete" | "failed"; completed?: number; total?: number; unit?: "files" | "components" | "questions"; componentInstanceId?: string; message: string };
-type SketchPlan = { width: number; height: number; title: string; components: readonly { id: string; label: string; shape: string; x: number; y: number; width: number; height: number; color: string; note: string }[]; annotations: readonly { label: string; x: number; y: number }[] };
-type SketchStroke = { id: string; color: string; points: readonly { x: number; y: number }[] };
-type SketchIteration = { id: string; ordinal: number; status: "proposed" | "approved" | "superseded"; prompt: string; markup?: readonly SketchStroke[]; markupRevision?: number; plan: SketchPlan };
-type ModelingDraft = { id: string; revision: number; state: string; message: string; parentModelId?: string; input: { operation?: string; parentModelId?: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; iterations?: readonly SketchIteration[]; activeIterationId?: string | null; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean }; sketchReady?: boolean } };
+type MarkupSemantic = "shape" | "dimension" | "material" | "assembly";
+type SketchPlan = { width: number; height: number; title: string; views?: readonly { id: string; label: string }[]; components: readonly { id: string; label: string; color: string; note?: string; points: readonly { x: number; y: number }[] }[]; annotations: readonly { label: string; x: number; y: number }[] };
+type SketchStroke = { id: string; semantic: MarkupSemantic; color: string; width: number; note: string; componentId: string | null; nodeId: string | null; viewId: string; points: readonly { x: number; y: number }[] };
+type SketchIteration = { id: string; ordinal: number; status: "proposed" | "approved" | "superseded"; prompt: string; markup?: readonly SketchStroke[]; markupRevision?: number; resultGraphHash?: string; plan: SketchPlan };
+type ModelingDraft = { id: string; revision: number; state: string; message: string; modelingGraphHash?: string; parentModelId?: string; input: { operation?: string; parentModelId?: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; iterations?: readonly SketchIteration[]; activeIterationId?: string | null; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean }; sketchReady?: boolean } };
 type ProductModel = { id: string; name: string; kind: "assembly" | "component"; parentId?: string | null; revision: number; linkedSkuId: string | null; currentRevision: { id: string; ordinal: number; state: string; childCount: number; assetPath?: string | null } | null; publishedRevision: { id: string; ordinal: number } | null; directChildren: number; descendantCount: number; status: "empty" | "ready" | "unpublished" | "published" | "failed" | "archived" | string; archivedAt?: string | null; updatedAt: string };
 type ProductModelTree = ProductModel & { selectedRevision: { id: string; ordinal: number; assetPath?: string | null; childCount: number }; children: readonly { id: string; path: string; modelId: string; revisionId: string; order: number; transform: unknown; visible: boolean; model: ProductModelTree }[] };
 type AssetEditTarget = { mode: "refine-assembly" | "refine-node" | "add-child"; rootModelId: string; baseRootRevisionId: string; targetModelId?: string; baseTargetRevisionId?: string; targetChildRefIds?: readonly string[]; label: string };
@@ -157,6 +159,18 @@ function parameterValue(question: ModelingDraftQuestion) {
   return `${JSON.stringify(value, null, 2)}${question.unit ? ` ${question.unit}` : ""}`;
 }
 
+function editableParameterValue(question: ModelingDraftQuestion) {
+  const value = question.userValue ?? question.recommendedValue;
+  return typeof value === "object" && value !== null ? JSON.stringify(value, null, 2) : String(value ?? "");
+}
+
+function parseEditableParameter(question: ModelingDraftQuestion, raw: string): unknown {
+  if (question.valueType === "number") { const value = Number(raw); if (!Number.isFinite(value)) throw new Error("유효한 숫자를 입력하세요."); return value; }
+  if (question.valueType === "boolean") return raw === "true";
+  if (["vector", "profile", "curve", "material"].includes(question.valueType)) return JSON.parse(raw);
+  return raw;
+}
+
 function flattenAssetTree(root: ProductModelTree): readonly FlatAssetNode[] {
   const items: FlatAssetNode[] = [];
   const visit = (children: readonly ProductModelTree["children"][number][], depth: number, names: readonly string[], fallbackPrefix: string) => {
@@ -185,6 +199,16 @@ function groupDraftQuestions(draft: ModelingDraft, questions = draft.questions) 
 
 function DraftQuestionGroups({ draft, questions, readOnly = false, decisionPending = false, onDecision }: { draft: ModelingDraft; questions?: readonly ModelingDraftQuestion[]; readOnly?: boolean; decisionPending?: boolean; onDecision?: (question: ModelingDraftQuestion, action: "accept" | "override" | "needs_evidence", value?: unknown) => void }) {
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
+  const editor = (question: ModelingDraftQuestion) => {
+    const value = edits[question.id] ?? editableParameterValue(question);
+    const change = (next: string) => { setEdits((current) => ({ ...current, [question.id]: next })); setEditErrors((current) => ({ ...current, [question.id]: "" })); };
+    if (question.valueType === "boolean") return <select className={CLASS.modelingControl} value={value} onChange={(event) => change(event.target.value)}><option value="true">예</option><option value="false">아니요</option></select>;
+    if (question.valueType === "number") return <input className={CLASS.modelingControl} type="number" step="any" value={value} onChange={(event) => change(event.target.value)} />;
+    if (question.valueType === "color") return <input className={CLASS.modelingControl} type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#000000"} onChange={(event) => change(event.target.value)} />;
+    if (["vector", "profile", "curve", "material"].includes(question.valueType)) return <textarea className={joinClasses(CLASS.modelingControl, CLASS.modelingTextarea)} value={value} spellCheck={false} onChange={(event) => change(event.target.value)} />;
+    return <input className={CLASS.modelingControl} type={question.valueType === "file" ? "text" : "text"} value={value} onChange={(event) => change(event.target.value)} />;
+  };
   return <ParameterEditor>{groupDraftQuestions(draft, questions).map((group) => <ParameterGroup label={group.label} key={group.label}>{group.questions.map((question) => <ParameterQuestionCard status={question.status} key={question.id}>
     <div>
       <Label>{question.criticality} · {question.status}</Label>
@@ -192,50 +216,51 @@ function DraftQuestionGroups({ draft, questions, readOnly = false, decisionPendi
       <Copy>{question.rationale}</Copy>
       <ParameterValue>{parameterValue(question)}</ParameterValue>
       {question.evidence?.length ? <EvidencePreview>{question.evidence.map((item) => <Copy key={`${question.id}-${item.kind}-${item.label}`}>{item.kind} · {item.label}</Copy>)}</EvidencePreview> : null}
-      <code>{question.path}</code>
+      <details><summary>내부 기준 경로</summary><code>{question.path}</code></details>
     </div>
     {!readOnly && onDecision ? <DecisionActions>
       <ActionButton className={CLASS.modelingAction} disabled={decisionPending || ["accepted", "overridden"].includes(question.status)} onClick={() => onDecision(question, "accept")}>승인</ActionButton>
-      <FormField label="수정값"><input className={CLASS.modelingControl} value={edits[question.id] ?? String(question.userValue ?? question.recommendedValue ?? "")} onChange={(event) => setEdits((current) => ({ ...current, [question.id]: event.target.value }))} /></FormField>
-      <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => onDecision(question, "override", edits[question.id] ?? question.userValue ?? question.recommendedValue)}>수정 저장</ActionButton>
+      <FormField className={CLASS.modelingField} label={`수정값 · ${question.valueType}`}>{editor(question)}{editErrors[question.id] ? <Copy className={CLASS.modelingError}>{editErrors[question.id]}</Copy> : null}</FormField>
+      <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => { try { onDecision(question, "override", parseEditableParameter(question, edits[question.id] ?? editableParameterValue(question))); } catch (error) { setEditErrors((current) => ({ ...current, [question.id]: error instanceof Error ? error.message : String(error) })); } }}>수정 저장</ActionButton>
       <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => onDecision(question, "needs_evidence")}>근거 요청</ActionButton>
     </DecisionActions> : null}
   </ParameterQuestionCard>)}</ParameterGroup>)}</ParameterEditor>;
 }
 
 const PEN_COLORS = [
-  { id: "#be123c", label: "형상 보정" },
-  { id: "#2563eb", label: "치수·비율" },
-  { id: "#15803d", label: "재질·표면" },
-  { id: "#c2410c", label: "조립·결합" },
+  { semantic: "shape", color: "#dc2626", label: "형상 보정" },
+  { semantic: "dimension", color: "#2563eb", label: "치수·비율" },
+  { semantic: "material", color: "#16a34a", label: "재질·표면" },
+  { semantic: "assembly", color: "#ea580c", label: "조립·결합" },
 ] as const;
 
-function SketchReview({ draft, pending, onSave, onFeedback, onApprove }: { draft: ModelingDraft; pending: boolean; onSave: (iteration: SketchIteration, strokes: readonly SketchStroke[]) => void; onFeedback: (iteration: SketchIteration, prompt: string) => void; onApprove: (iteration: SketchIteration) => void }) {
+function SketchReview({ draft, pending, onSave, onFeedback, onApprove }: { draft: ModelingDraft; pending: boolean; onSave: (iteration: SketchIteration, strokes: readonly SketchStroke[]) => void; onFeedback: (iteration: SketchIteration, prompt: string, strokes: readonly SketchStroke[]) => void; onApprove: (iteration: SketchIteration) => void }) {
   const iteration = draft.iterations?.find((item) => item.id === draft.activeIterationId) ?? null;
   const [strokes, setStrokes] = useState<readonly SketchStroke[]>(iteration?.markup ?? []);
-  const [color, setColor] = useState<string>(PEN_COLORS[0].id);
+  const [redoStrokes, setRedoStrokes] = useState<readonly SketchStroke[]>([]);
+  const [semantic, setSemantic] = useState<MarkupSemantic>("shape");
+  const [eraser, setEraser] = useState(false);
   const [feedback, setFeedback] = useState("");
   const activeStroke = useRef<string | null>(null);
-  useEffect(() => { setStrokes(iteration?.markup ?? []); setFeedback(""); }, [iteration?.id]);
+  useEffect(() => { setStrokes(iteration?.markup ?? []); setRedoStrokes([]); setFeedback(""); }, [iteration?.id]);
   if (!iteration) return null;
-  const point = (event: ReactPointerEvent<SVGSVGElement>) => { const box = event.currentTarget.getBoundingClientRect(); return { x: Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)), y: Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)) }; };
-  const begin = (event: ReactPointerEvent<SVGSVGElement>) => { if (iteration.status !== "proposed") return; const id = `stroke-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; activeStroke.current = id; event.currentTarget.setPointerCapture(event.pointerId); setStrokes((current) => [...current, { id, color, points: [point(event)] }]); };
-  const draw = (event: ReactPointerEvent<SVGSVGElement>) => { const id = activeStroke.current; if (!id) return; const next = point(event); setStrokes((current) => current.map((stroke) => stroke.id === id ? { ...stroke, points: [...stroke.points, next].slice(-300) } : stroke)); };
-  const end = () => { activeStroke.current = null; };
-  const px = (value: number, size: number) => value * size;
+  const pointerPoint = (event: ReactPointerEvent<SVGSVGElement>) => { const box = event.currentTarget.getBoundingClientRect(); if (box.width <= 0 || box.height <= 0) return null; return { x: Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)), y: Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)) }; };
+  const begin = (event: ReactPointerEvent<SVGSVGElement>) => { if (iteration.status !== "proposed") return; const start = pointerPoint(event); if (!start) return; if (eraser) { const nearest = strokes.map((stroke) => ({ stroke, distance: Math.min(...stroke.points.map((item) => Math.hypot(item.x - start.x, item.y - start.y))) })).sort((a, b) => a.distance - b.distance)[0]; if (nearest?.distance < .04) { setRedoStrokes((current) => [...current, nearest.stroke]); setStrokes((current) => current.filter((item) => item.id !== nearest.stroke.id)); } return; } const pen = PEN_COLORS.find((item) => item.semantic === semantic) ?? PEN_COLORS[0]; const id = `stroke-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; activeStroke.current = id; setRedoStrokes([]); event.currentTarget.setPointerCapture?.(event.pointerId); setStrokes((current) => [...current, { id, semantic, color: pen.color, width: 5, note: "", componentId: null, nodeId: null, viewId: "isometric", points: [start] }]); };
+  const draw = (event: ReactPointerEvent<SVGSVGElement>) => { const id = activeStroke.current; if (!id) return; const next = pointerPoint(event); if (!next) return; setStrokes((current) => current.map((stroke) => { if (stroke.id !== id || stroke.points.length >= 300) return stroke; const prior = stroke.points.at(-1); if (prior && Math.hypot(prior.x - next.x, prior.y - next.y) < .003) return stroke; return { ...stroke, points: [...stroke.points, next] }; })); };
+  const end = (event?: ReactPointerEvent<SVGSVGElement>) => { if (event?.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); activeStroke.current = null; };
   return <SketchReviewPanel>
     <Atom><Label>LLM 구조 스케치</Label><Copy>{iteration.plan.title} · 색상 펜으로 모델링 의도와 다른 부분을 표시한 뒤 피드백을 적용하거나 스케치를 승인하세요.</Copy></Atom>
-    <SketchCanvas viewBox={`0 0 ${iteration.plan.width} ${iteration.plan.height}`} role="img" aria-label={`${iteration.plan.title} 주석 캔버스`} onPointerDown={begin} onPointerMove={draw} onPointerUp={end} onPointerCancel={end}>
+    <SketchCanvas viewBox={`0 0 ${iteration.plan.width} ${iteration.plan.height}`} role="img" aria-label={`${iteration.plan.title} 주석 캔버스`} onPointerDown={begin} onPointerMove={draw} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
       {iteration.plan.components.map((component) => <g key={component.id}>
-        <rect x={px(component.x, iteration.plan.width)} y={px(component.y, iteration.plan.height)} width={px(component.width, iteration.plan.width)} height={px(component.height, iteration.plan.height)} rx={component.shape === "body" ? 24 : 10} fill={component.color} fillOpacity="0.18" stroke={component.color} strokeWidth="3" />
-        <text x={px(component.x, iteration.plan.width)} y={px(component.y, iteration.plan.height) - 10} fill="currentColor" fontSize="18">{component.label}</text>
+        <polygon points={component.points.map((point) => `${point.x},${point.y}`).join(" ")} fill={component.color} fillOpacity="0.18" stroke={component.color} strokeWidth="3" />
+        <text x={component.points[0]?.x ?? 0} y={(component.points[0]?.y ?? 20) - 10} fill="currentColor" fontSize="18">{component.label}</text>
       </g>)}
-      {iteration.plan.annotations.map((annotation, index) => <text key={`${annotation.label}-${index}`} x={px(annotation.x, iteration.plan.width)} y={px(annotation.y, iteration.plan.height)} fill="currentColor" fontSize="14">{annotation.label}</text>)}
-      <SketchAnnotationLayer>{strokes.map((stroke) => <polyline key={stroke.id} points={stroke.points.map((item) => `${px(item.x, iteration.plan.width)},${px(item.y, iteration.plan.height)}`).join(" ")} fill="none" stroke={stroke.color} strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />)}</SketchAnnotationLayer>
+      {iteration.plan.annotations.map((annotation, index) => <text key={`${annotation.label}-${index}`} x={annotation.x} y={annotation.y} fill="currentColor" fontSize="14">{annotation.label}</text>)}
+      <SketchAnnotationLayer>{strokes.map((stroke) => <polyline key={stroke.id} points={stroke.points.map((item) => `${item.x * iteration.plan.width},${item.y * iteration.plan.height}`).join(" ")} fill="none" stroke={stroke.color} strokeWidth={stroke.width} strokeLinecap="round" strokeLinejoin="round" />)}</SketchAnnotationLayer>
     </SketchCanvas>
-    <PenToolbar>{PEN_COLORS.map((pen) => <ActionButton className={CLASS.modelingAction} data-active={color === pen.id} key={pen.id} onClick={() => setColor(pen.id)}>{pen.label}</ActionButton>)}<ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => setStrokes([])}>전체 지우기</ActionButton><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => onSave(iteration, strokes)}>주석 저장</ActionButton></PenToolbar>
+    <PenToolbar>{PEN_COLORS.map((pen) => <ActionButton className={CLASS.modelingAction} data-active={!eraser && semantic === pen.semantic} key={pen.semantic} onClick={() => { setSemantic(pen.semantic); setEraser(false); }}>{pen.label}</ActionButton>)}<ActionButton className={CLASS.modelingAction} data-active={eraser} onClick={() => setEraser((current) => !current)}>지우개</ActionButton><ActionButton className={CLASS.modelingAction} disabled={!strokes.length} onClick={() => { const removed = strokes.at(-1); if (removed) { setStrokes((current) => current.slice(0, -1)); setRedoStrokes((current) => [...current, removed]); } }}>실행 취소</ActionButton><ActionButton className={CLASS.modelingAction} disabled={!redoStrokes.length} onClick={() => { const restored = redoStrokes.at(-1); if (restored) { setStrokes((current) => [...current, restored]); setRedoStrokes((current) => current.slice(0, -1)); } }}>다시 실행</ActionButton><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => { setRedoStrokes(strokes); setStrokes([]); }}>전체 지우기</ActionButton><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => onSave(iteration, strokes)}>주석 저장</ActionButton></PenToolbar>
     <FormField label="이 단계의 추가 모델링 지시"><textarea className={joinClasses(CLASS.modelingControl, CLASS.modelingTextarea)} value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="예: 뚜껑 리브를 더 촘촘히, 목 부분의 유리 링을 강조" /></FormField>
-    <AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => onFeedback(iteration, feedback)}>피드백 적용</ActionButton><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => onApprove(iteration)}>이 단계 승인</ActionButton></AssetNodeActions>
+    <AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed" || (!feedback.trim() && !strokes.length)} onClick={() => onFeedback(iteration, feedback, strokes)}>피드백 적용</ActionButton><ActionButton className={CLASS.modelingAction} disabled={pending || iteration.status !== "proposed"} onClick={() => onApprove(iteration)}>이 단계 승인</ActionButton></AssetNodeActions>
     <IterationNavigator>{(draft.iterations ?? []).map((item) => <span key={item.id}>#{item.ordinal} · {item.status}</span>)}</IterationNavigator>
   </SketchReviewPanel>;
 }
@@ -830,7 +855,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "net30.modeling-draft.v7", operation, model: model || undefined, imageIds, prompt, componentInput,
+          version: "net30.modeling-draft.v8", operation, model: model || undefined, imageIds, prompt, componentInput,
           target: editTarget ? { rootModelId: editTarget.rootModelId, baseRootRevisionId: editTarget.baseRootRevisionId, mode: editTarget.mode, targetModelId: editTarget.targetModelId, baseTargetRevisionId: editTarget.baseTargetRevisionId, targetChildRefIds: editTarget.targetChildRefIds ?? [] } : undefined,
           expectedRootRevision: editTarget ? productModels.find((item) => item.id === editTarget.rootModelId)?.revision : undefined,
           revisionBaseRefs: Object.fromEntries(Object.entries(parentVersionId).map(([component, versionId]) => [component, { versionId }])),
@@ -891,13 +916,13 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   };
   const saveSketchMarkup = async (iteration: SketchIteration, strokes: readonly SketchStroke[]) => {
     if (!draft) return; setDraftDecisionPending(true); setError("");
-    try { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/iterations/${iteration.id}/markup`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, strokes }) }); const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft }; if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "스케치 주석을 저장하지 못했습니다."); setDraft(body.draft); setProgress(body.draft.message); }
+    try { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/iterations/${iteration.id}/markup`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, expectedMarkupRevision: iteration.markupRevision ?? 0, strokes }) }); const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft }; if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "스케치 주석을 저장하지 못했습니다."); setDraft(body.draft); setProgress(body.draft.message); }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
     finally { setDraftDecisionPending(false); }
   };
-  const applySketchFeedback = async (iteration: SketchIteration, feedbackPrompt: string) => {
+  const applySketchFeedback = async (iteration: SketchIteration, feedbackPrompt: string, strokes: readonly SketchStroke[]) => {
     if (!draft) return; setDraftDecisionPending(true); setError("");
-    try { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/iterations/${iteration.id}/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, feedbackPrompt }) }); const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft }; if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "스케치 피드백을 적용하지 못했습니다."); setDraft(body.draft); setProgress(body.draft.message); }
+    try { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/iterations/${iteration.id}/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, expectedMarkupRevision: iteration.markupRevision ?? 0, baseGraphHash: draft.modelingGraphHash, scope: { stage: activeReviewScope === "assembly" ? "assembly" : activeReviewScope === "graphics" ? "material_surface" : "shape_dimensions", componentIds: ["assembly", "graphics"].includes(activeReviewScope) ? [] : [activeReviewScope] }, strokes, feedbackPrompt }) }); const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft }; if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "스케치 피드백을 적용하지 못했습니다."); setDraft(body.draft); setProgress(body.draft.message); }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
     finally { setDraftDecisionPending(false); }
   };
@@ -951,9 +976,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeParentModelId, clearActiveParentSelection]);
-  const stagePreview = draft ? <Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending || buildInProgress} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt) => void applySketchFeedback(iteration, feedbackPrompt)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom>
-    : analysisInProgress ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>스케치를 준비 중입니다.</Copy></header></ProcessProgressPanel></Atom>
-      : previewModel ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={studio.previewTitle} src={previewSrc} />
+  const stagePreview = analysisInProgress ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>스케치를 준비 중입니다.</Copy></header></ProcessProgressPanel></Atom>
+    : previewModel ? <PreviewErrorBoundary fallback={<AssetEmptyState role="alert"><Copy>생성된 3D 모델을 표시하지 못했습니다. 결과 파일은 보존되었습니다.</Copy></AssetEmptyState>}><ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={studio.previewTitle} src={previewSrc} /></PreviewErrorBoundary>
+      : draft?.activeIterationId ? <PreviewErrorBoundary fallback={<AssetEmptyState role="alert"><Copy>스케치 미리보기를 표시하지 못했습니다. 입력과 승인 내용은 보존되었습니다.</Copy></AssetEmptyState>}><Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending || buildInProgress} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt, strokes) => void applySketchFeedback(iteration, feedbackPrompt, strokes)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom></PreviewErrorBoundary>
+      : draft ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>{draft.message || "실형상 스케치를 준비하고 있습니다."}</Copy></header></ProcessProgressPanel></Atom>
         : activeParentTree?.selectedRevision.assetPath ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title="선택한 조립 파일 3D 미리보기" src={modelPreviewSrc(activeParentTree.selectedRevision.assetPath, activeParentTree.selectedRevision.id)} />
           : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{activeParentTree ? "표시할 구성요소를 선택하면 조립 파일 미리보기가 이곳에 표시됩니다." : "조립 파일을 선택하면 3D 미리보기와 승인 스케치가 이곳에 표시됩니다."}</Copy></Atom>;
   return <>

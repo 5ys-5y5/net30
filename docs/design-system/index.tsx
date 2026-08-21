@@ -1,4 +1,4 @@
-import { Fragment, forwardRef, useEffect, useRef } from "react";
+import { Component, Fragment, forwardRef, useEffect, useRef } from "react";
 import type {
   AnchorHTMLAttributes,
   ButtonHTMLAttributes,
@@ -10,6 +10,7 @@ import type {
   HTMLAttributes,
   IframeHTMLAttributes,
   ReactNode,
+  ErrorInfo,
   Ref,
   SVGAttributes,
 } from "react";
@@ -303,6 +304,25 @@ export function SketchCanvas({ className = "", ...props }: SVGAttributes<SVGSVGE
 export function SketchAnnotationLayer({ children, ...props }: SVGAttributes<SVGGElement>) { return <g className={CLASS.sketchAnnotationLayer} {...props}>{children}</g>; }
 export function PenToolbar({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.penToolbar} role="toolbar" aria-label="스케치 주석 도구" {...props}>{children}</div>; }
 export function IterationNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.iterationNavigator} aria-label="스케치 검토 이력" {...props}>{children}</div>; }
+
+type ErrorBoundaryProps = { children: ReactNode; fallback: ReactNode };
+type ErrorBoundaryState = { failed: boolean };
+
+/** Keeps a failed 3D/sketch preview from unmounting the modeling form and decision workspace. */
+export class PreviewErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { failed: false };
+  static getDerivedStateFromError(): ErrorBoundaryState { return { failed: true }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error("[NET30] preview failed", error, info); }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+/** Last-resort application boundary; feature boundaries should handle recoverable failures first. */
+export class ApplicationErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { failed: false };
+  static getDerivedStateFromError(): ErrorBoundaryState { return { failed: true }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error("[NET30] application failed", error, info); }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
 
 export function SiteHeader({
   label,
