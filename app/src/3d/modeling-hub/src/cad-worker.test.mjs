@@ -79,6 +79,7 @@ try {
   assert.equal(capRun.status, 0, `${capRun.stdout}\n${capRun.stderr}`);
   const capReport = JSON.parse(await fs.readFile(`${capStem}.validation.json`, "utf8"));
   assert.equal(capReport.valid, true); assert.equal(capReport.closed, true); assert.equal(capReport.solidCount, 1, "a patterned ribbed closure must be fused into one B-Rep solid");
+  assert.ok(Math.abs(capReport.localDatumShiftMm ?? Infinity) <= 1e-6, "a component already authored on its local assembly datum must not receive an extra placement shift");
   const preflight = await preflightBrepGraph(capCanonical.graph, { preview: { title: "ribbed closure B-Rep review", maxTriangles: 80 } });
   assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
   assert.equal(preflight.sketchPlan?.version, "net30.brep-sketch.v1", "an approvable sketch must be derived from the same OCCT preflight solid");

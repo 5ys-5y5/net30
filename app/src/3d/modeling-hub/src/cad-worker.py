@@ -600,6 +600,15 @@ def compile_graph(graph_component, graph_nodes):
     shape = fuse_roots(roots)
     # Component transforms are assembly transforms.  B-Rep children are always
     # exported in local coordinates; cad-assembly-worker/XDE owns placement.
+    # The local Z datum is the physical lower assembly plane, not an invisible
+    # radial closing edge.  A revolved cap can close on the axis below its
+    # exterior skirt, leaving its material bounds above zero; normalising the
+    # finished child B-Rep here makes every graph component transform refer to
+    # the same component-local assembly datum without applying it twice.
+    bounds = shape.val().BoundingBox()
+    datum_shift = -float(bounds.zmin)
+    shape = shape.translate((0, 0, datum_shift)) if abs(datum_shift) > 1e-8 else shape
+    shape._net30_local_datum_shift_mm = datum_shift
     return shape
 
 
@@ -649,6 +658,7 @@ def main():
     graph_component, graph_nodes = request.get("graphComponent"), request.get("graphNodes", [])
     if not graph_component or graph_component.get("representation") != "brep_solid": raise SystemExit("not_brep_component: component does not define a B-Rep solid")
     print("CAD_PHASE=compile", flush=True); shape = compile_graph(graph_component, graph_nodes)
+    local_datum_shift = float(getattr(shape, "_net30_local_datum_shift_mm", 0))
     print("CAD_PHASE=validate", flush=True); solid = shape.val()
     if not solid.isValid(): raise RuntimeError("brep_invalid: OpenCascade validity check failed")
     paths = request.get("paths") or {"step": request["output"]}; step = pathlib.Path(paths["step"]); step.parent.mkdir(parents=True, exist_ok=True)
@@ -688,7 +698,7 @@ def main():
     volume_delta = abs(persisted.Volume() - step_shape.Volume()) / max(abs(persisted.Volume()), 1e-9)
     step_closed = bool(step_shells) and all(item.Closed() for item in step_shells)
     step_round_trip = {"valid": step_shape.isValid(), "closed": step_closed, "solidCount": len(step_shape.Solids()), "boundsDeltaMm": bounds_delta, "volumeDeltaRatio": volume_delta, "withinTolerance": step_closed and len(step_shape.Solids()) == 1 and max(bounds_delta.values(), default=0) <= .01 and volume_delta <= .001}
-    payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": source_bounds, "stepRoundTrip": step_round_trip, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
+    payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": source_bounds, "localDatumShiftMm": local_datum_shift, "stepRoundTrip": step_round_trip, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
     report.write_text(json.dumps(payload, indent=2) + "\n")
     if not closed or payload["solidCount"] != 1:
         raise RuntimeError(f"brep_preflight_failed: closed={closed}, solidCount={payload['solidCount']}")
