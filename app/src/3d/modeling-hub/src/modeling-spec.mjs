@@ -405,6 +405,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   // a boolean, shell, and patterned feature become one closed solid. Refuse to
   // show an approvable product graph if the exact final compiler reports a
   // disconnected component. The repair is deliberately local and bounded.
+  let brepPreflight = null;
   if (process.env.NET30_MODELING_DRAFT_FIXTURE !== "true") {
     const preflight = await preflightBrepGraph(canonical.graph);
     const failed = preflight.diagnostics.filter((item) => item.code !== "ok");
@@ -421,13 +422,19 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
       }
       throw new Error(`analysis_incomplete: ${failed.map((item) => `${item.componentId}: ${item.message}`).join("; ")}`);
     }
+    brepPreflight = preflight;
   }
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
   const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest, imageEvidence);
   const contour = compareAxisymmetricContour(canonical.graph, imageEvidence, primaryImageId);
-  const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  const preflightBrep = brepPreflight ? {
+    valid: brepPreflight.diagnostics.every((item) => item.valid),
+    closed: brepPreflight.diagnostics.every((item) => item.closed),
+    solidCount: Math.max(...brepPreflight.diagnostics.map((item) => item.solidCount ?? Infinity)),
+  } : null;
+  const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, evidenceComplete: false });
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {
