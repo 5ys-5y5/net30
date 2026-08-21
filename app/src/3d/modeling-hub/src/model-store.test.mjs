@@ -11,6 +11,7 @@ const store = createModelStore(root, { skuIds: new Set(["all-in-one-pilot", "all
 await store.initialise();
 const first = await store.createParent({ name: "빈 부모" });
 assert.equal(first.status, "empty");
+assert.equal(first.kind, "assembly");
 assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "unassigned");
 const bound = await store.bindSku(first.id, "all-in-one-pilot", first.revision);
 assert.equal(bound.linkedSkuId, "all-in-one-pilot");
@@ -28,6 +29,7 @@ assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "ready");
 const beforeRefine = await store.getTree(first.id, attached.revision.id);
 const childId = beforeRefine.children[0].model.id;
 const childRevisionBefore = beforeRefine.children[0].revisionId;
+assert.equal(beforeRefine.children[0].model.kind, "component");
 assert.equal(beforeRefine.children[0].path, beforeRefine.children[0].id);
 const selectedInputs = await store.assemblyInputs(first.id, attached.revision.id, [beforeRefine.children[0].path]);
 assert.equal(selectedInputs.length, 1);
@@ -65,4 +67,7 @@ const remove = await store.removeChild({ parentModelId: first.id, childRefId: la
 assert.equal((await store.getTree(first.id)).children.length, 0);
 assert.equal((await store.getTree(first.id, latest.selectedRevision.id)).children.length, 1);
 assert.equal(remove.model.status, "unpublished");
+const emptyAssembly = await store.getTree(first.id);
+assert.equal(emptyAssembly.selectedRevision.assetPath, null);
+assert.equal(emptyAssembly.selectedRevision.state, "empty");
 console.log("model-store tests passed");
