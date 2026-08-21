@@ -105,9 +105,12 @@ export function fitAxisymmetricProfile(samples, { smoothPasses = 2, toleranceMm 
 export function qualityGates({ graphHash, contour = null, landmarks = null, dimensions = null, brep = null, step = null, evidenceComplete = false }) {
   const value = (candidate) => Number.isFinite(candidate) ? candidate : null;
   const gates = [
-    { id: "silhouette_iou", state: contour?.iou >= .97 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.iou), threshold: .97, message: "Primary-image silhouette overlap" },
-    { id: "contour_rms_mm", state: contour?.rmsMm <= .35 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.rmsMm), threshold: .35, message: "Calibrated contour RMS" },
-    { id: "hausdorff95_mm", state: contour?.hausdorff95Mm <= .75 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.hausdorff95Mm), threshold: .75, message: "95th percentile contour distance" },
+    // These gates compare the approved graph profile to the calibrated image
+    // measurements. They must not be presented as a rendered-pixel similarity
+    // claim until a camera-matched B-Rep render comparison is available.
+    { id: "silhouette_iou", state: contour?.iou >= .97 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.iou), threshold: .97, message: "Fitted graph contour against calibrated primary-image silhouette" },
+    { id: "contour_rms_mm", state: contour?.rmsMm <= .35 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.rmsMm), threshold: .35, message: "Fitted graph contour RMS against calibrated measurements" },
+    { id: "hausdorff95_mm", state: contour?.hausdorff95Mm <= .75 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.hausdorff95Mm), threshold: .75, message: "Fitted graph contour 95th percentile distance" },
     { id: "landmarks_mm", state: landmarks?.maxMm <= .5 ? "pass" : landmarks ? "fail" : "not_measured", value: value(landmarks?.maxMm), threshold: .5, message: "Approved landmark deviation" },
     { id: "overall_dimensions", state: dimensions?.maxDeltaMm <= dimensions?.toleranceMm ? "pass" : dimensions ? "fail" : "not_measured", value: value(dimensions?.maxDeltaMm), threshold: value(dimensions?.toleranceMm), message: "Approved overall-width, depth, and height deviation" },
     { id: "brep_valid", state: brep?.valid ? "pass" : brep ? "fail" : "not_measured", value: null, threshold: null, message: "OCCT B-Rep validity" },
