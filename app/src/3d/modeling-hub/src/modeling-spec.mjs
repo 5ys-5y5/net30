@@ -489,9 +489,12 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const approvedDimensions = { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm };
   const locallyNormalised = normaliseComponentLocalCoordinates(evidenceScoped.graph);
   const fitted = fitPrimaryAxisymmetricComponent(locallyNormalised.graph, imageEvidence, primaryImageId, approvedDimensions);
-  const closureFit = fitMeasuredClosureAssembly(fitted.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? fitted.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
-  const envelopeFit = fitRadialAssemblyEnvelope(closureFit.graph, approvedDimensions, primaryMeasurement);
-  const placementFit = fitAxialAssemblyEnvelope(envelopeFit.graph, approvedDimensions);
+  // First fit the generic radial feature envelope, then replace the outer
+  // closure curve from its colour-band silhouette. Reversing this order would
+  // scale an already measured outline a second time through a patterned seed.
+  const envelopeFit = fitRadialAssemblyEnvelope(fitted.graph, approvedDimensions, primaryMeasurement);
+  const closureFit = fitMeasuredClosureAssembly(envelopeFit.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? envelopeFit.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
+  const placementFit = fitAxialAssemblyEnvelope(closureFit.graph, approvedDimensions);
   canonical.graph = validateGraph(placementFit.graph);
   canonical.graphHash = graphHash(canonical.graph);
   // JSON topology checks catch missing links, but only OCCT can establish that

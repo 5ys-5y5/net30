@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
-import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
+import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
 import { fitAxialAssemblyEnvelope, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
@@ -18,6 +18,7 @@ const evidence = await measureImageEvidence(inputs);
 assert.equal(evidence.images.filter((item) => item.ok).length, 3, "all fixed fixture images must be measurable without an LLM");
 assert.ok(evidence.images[0].measurement.cap.bottomY < evidence.images[0].measurement.bounds.bottomY, "primary image must isolate a cap boundary from the bottle");
 assert.ok(evidence.images[0].measurement.cap.outerDiameterRatio > .8, "primary image must expose a measured cap envelope separately from the bottle contour");
+assert.ok(evidence.images[0].measurement.cap.silhouette.length >= 12, "primary image must expose a separate closure outline for the revolved B-Rep");
 
 const analysis = await analyseDraft({
   model: "fixture", product: { source: "new", name: "DURAN GL45 100 mL 실험용 병" },
@@ -46,13 +47,16 @@ ribbedOutput.components[0].features = [ribBase, rib, pattern];
 const ribbedGraph = canonicalizeGraph(ribbedOutput, ["뚜껑"]).graph;
 const capFit = fitRadialAssemblyEnvelope(ribbedGraph, { widthMm: 56, depthMm: 56 }, { cap: { outerDiameterRatio: .9 } });
 assert.equal(capFit.adjustments[0]?.source, "primary_cap_measurement", "a ribbed radial component may expand to the measured cap envelope without a name rule");
-const capAssemblyFit = fitMeasuredClosureAssembly(ribbedGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25 } });
+const capAssemblyFit = fitMeasuredClosureAssembly(ribbedGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: index < 4 ? .94 : .86 })) } });
 assert.equal(capAssemblyFit.applied, true, "a cap colour-band measurement must fit a patterned component without matching its display name");
 assert.equal(capAssemblyFit.closureHeightMm, 25);
+assert.equal(capAssemblyFit.adjustments[0]?.role, "patterned_closure_outline", "the outer closure profile must be measured independently from its axial placement");
 const fittedClosure = capAssemblyFit.graph.components[0];
 assert.ok(fittedClosure.transform.translationMm.z > 0, "measured cap band must place the patterned closure above the component-local body datum");
 const closureProfiles = capAssemblyFit.graph.nodes.filter((node) => node.componentId === fittedClosure.id && Array.isArray(node.parameters?.profile)).flatMap((node) => node.parameters.profile);
 assert.ok(Math.max(...closureProfiles.map((point) => point.zMm)) + fittedClosure.transform.translationMm.z <= 100.01, "closure local B-Rep and assembly transform must remain inside the approved overall-height datum");
+assert.ok(capAssemblyFit.graph.nodes.some((node) => node.componentId === fittedClosure.id && node.operation === "revolve" && node.parameters.curveSegments?.length), "the measured closure outline must be declared as OCCT Bézier curves, not a display-only polyline");
+assert.equal(typeof graphHash(capAssemblyFit.graph), "string", "a fitted Bézier closure must remain serialisable by the strict graph schema");
 
 const localGraph = structuredClone(radialGraph);
 localGraph.nodes[0].parameters.profile.forEach((point) => { point.zMm += 83; });

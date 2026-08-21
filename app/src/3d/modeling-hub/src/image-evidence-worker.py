@@ -81,6 +81,26 @@ def analyse(item):
             "heightNorm": round((cap_bottom - cap_top + 1) / max(1, bottom - top + 1), 7),
             "outerDiameterRatio": round(cap_width / max(1.0, 2 * half_width), 7) if cap_width else None,
         }
+        # Keep the coloured closure's actual left/right envelope as a separate
+        # curve. It is deliberately not mixed into the transparent vessel
+        # silhouette: a patterned cap often has a lower skirt/brim whose
+        # axial order is critical to a revolved B-Rep.
+        cap_rows = []
+        # Anti-aliased corner pixels at a coloured cap's top/bottom can be a
+        # few pixels wide. They are not an exterior manufacturing contour.
+        # Retain rows that cover a substantial fraction of the independently
+        # measured cap width, while preserving their original axial position.
+        minimum_cap_span = max(4, int(cap_width * .60))
+        for y in np.linspace(cap_top, cap_bottom, 64).round().astype(int):
+            y = int(np.clip(y, cap_top, cap_bottom))
+            xs = np.flatnonzero(blue_mask[y])
+            if xs.size >= minimum_cap_span:
+                cap_rows.append({"y": y, "left": int(xs.min()), "right": int(xs.max())})
+        if len(cap_rows) >= 12:
+            cap["silhouette"] = [{
+                "zNorm": round((cap_bottom - row["y"]) / max(1, cap_bottom - cap_top), 7),
+                "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
+            } for row in cap_rows]
     # Vertical luminance transitions across the cap band are a measurable rib
     # cue.  The feature planner may use it, but it is never a mandatory count.
     rib_hint = None

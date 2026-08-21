@@ -239,11 +239,15 @@ function scaleAxialParameters(parameters, scale, originZ) {
   const next = structuredClone(parameters);
   const mapZ = (value) => Number((originZ + (Number(value) - originZ) * scale).toFixed(6));
   if (next.profile) next.profile = next.profile.map((point) => ({ ...point, zMm: mapZ(point.zMm) }));
-  if (next.curveSegments) next.curveSegments = next.curveSegments.map((segment) => ({
-    ...segment,
-    points: segment.points?.map((point) => ({ ...point, zMm: mapZ(point.zMm) })) ?? segment.points,
-    poles: segment.poles?.map((point) => ({ ...point, zMm: mapZ(point.zMm) })) ?? segment.poles,
-  }));
+  if (next.curveSegments) next.curveSegments = next.curveSegments.map((segment) => {
+    const adjusted = { ...segment };
+    // Strict graph schemas reject even an undefined unknown key. Preserve
+    // only the declared curve representation rather than manufacturing a
+    // `poles: undefined` property for ordinary Bézier segments.
+    if (Array.isArray(segment.points)) adjusted.points = segment.points.map((point) => ({ ...point, zMm: mapZ(point.zMm) }));
+    if (Array.isArray(segment.poles)) adjusted.poles = segment.poles.map((point) => ({ ...point, zMm: mapZ(point.zMm) }));
+    return adjusted;
+  });
   for (const key of ["heightMm", "zMm"]) if (Number.isFinite(next[key])) next[key] = key === "zMm" ? mapZ(next[key]) : Number((next[key] * scale).toFixed(6));
   if (next.dimensionsMm && Number.isFinite(next.dimensionsMm.z)) next.dimensionsMm.z = Number((next.dimensionsMm.z * scale).toFixed(6));
   if (next.transform?.translationMm && Number.isFinite(next.transform.translationMm.z)) next.transform.translationMm.z = mapZ(next.transform.translationMm.z);
@@ -255,6 +259,95 @@ function localAxialRange(graph, component) {
   const ranges = component.rootNodeIds.map((id) => axialEnvelopeForNode(nodes, id, new Map())).filter(Boolean);
   if (!ranges.length) return null;
   return { min: Math.min(...ranges.map((range) => range.min)), max: Math.max(...ranges.map((range) => range.max)) };
+}
+
+function outerRevolveNode(graph, componentId) {
+  return componentNodes(graph, componentId)
+    .filter((node) => node.operation === "revolve" && Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 4)
+    .map((node) => ({ node, radius: Math.max(...node.parameters.profile.map((point) => Math.abs(Number(point.xMm ?? 0)))) }))
+    .sort((left, right) => right.radius - left.radius)[0]?.node ?? null;
+}
+
+function fitClosureOutline(graph, componentId, capMeasurement, approvedDimensions) {
+  const samples = Array.isArray(capMeasurement?.silhouette) ? capMeasurement.silhouette
+    .filter((sample) => Number.isFinite(Number(sample.zNorm)) && Number.isFinite(Number(sample.radiusNorm)))
+    .sort((left, right) => Number(left.zNorm) - Number(right.zNorm)) : [];
+  const component = graph.components.find((item) => item.id === componentId);
+  const target = component ? outerRevolveNode(graph, componentId) : null;
+  const targetRadius = Math.min(Number(approvedDimensions?.widthMm), Number(approvedDimensions?.depthMm)) / 2;
+  const range = component ? localAxialRange(graph, component) : null;
+  if (!target || !range || samples.length < 12 || !Number.isFinite(targetRadius) || targetRadius <= 0 || range.max - range.min <= 1e-6) {
+    return null;
+  }
+  const compact = samples.length <= 64 ? samples : Array.from({ length: 64 }, (_, index) => samples[Math.round(index * (samples.length - 1) / 63)]);
+  const outer = compact.map((sample) => ({
+    xMm: Number((Math.max(.01, Number(sample.radiusNorm) * targetRadius)).toFixed(6)),
+    yMm: 0,
+    zMm: Number((range.min + Number(sample.zNorm) * (range.max - range.min)).toFixed(6)),
+  }));
+  // The raw profile keeps the explicit axial closing edges required for a
+  // revolved face. The exact observed outer curve is separately declared as
+  // bounded C1 Bézier segments, so OCCT never substitutes a mesh approximation
+  // or an LLM-guessed control net.
+  target.parameters.profile = [
+    { xMm: 0, yMm: 0, zMm: range.min },
+    ...outer,
+    { xMm: 0, yMm: 0, zMm: range.max },
+  ];
+  target.parameters.curveSegments = monotoneBezierSegments(outer.map(({ xMm, zMm }) => ({ xMm, zMm })));
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const anchors = [];
+  const visible = outer.map((point) => ({ xMm: point.xMm, zMm: point.zMm }));
+  const radiusAt = (zMm) => interpolate(visible.map((point) => ({ zNorm: (point.zMm - range.min) / Math.max(1e-9, range.max - range.min), radiusNorm: point.xMm / targetRadius })), (zMm - range.min) / Math.max(1e-9, range.max - range.min)) * targetRadius;
+  for (const pattern of componentNodes(graph, componentId).filter((node) => node.operation === "pattern" && node.inputNodeIds.length >= 1)) {
+    const seed = byId.get(pattern.inputNodeIds.at(-1));
+    if (seed?.operation !== "transform" || !seed.inputNodeIds.length) continue;
+    const primitive = byId.get(seed.inputNodeIds[0]); const width = Number(primitive?.parameters?.dimensionsMm?.x);
+    const translation = seed.parameters?.transform?.translationMm ?? {};
+    const zMm = Number(translation.z ?? 0);
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(zMm)) continue;
+    // The pattern seed is a centred box. Its inner half must overlap the
+    // measured base surface; a tangent seed frequently produces a null OCCT
+    // fuse after fitting even though it looks connected in a 2D sketch.
+    const surfaceRadius = radiusAt(zMm);
+    seed.parameters.transform = { ...seed.parameters.transform, translationMm: { ...translation, x: Number((surfaceRadius + width * .15).toFixed(6)) } };
+    anchors.push({ patternNodeId: pattern.id, seedNodeId: seed.id, zMm, surfaceRadiusMm: surfaceRadius, overlapMm: width * .35 });
+  }
+  return { nodeId: target.id, samples: outer.length, source: "primary_cap_silhouette_measurement", patternSeedAnchors: anchors };
+}
+
+function radiusFromProfile(profile, zMm) {
+  const visible = (profile ?? []).filter((point) => Math.abs(Number(point.xMm)) > 1e-8)
+    .map((point) => ({ zNorm: Number(point.zMm), radiusNorm: Math.abs(Number(point.xMm)) }));
+  return interpolate(visible, zMm);
+}
+
+/** A Boolean union must result in one physical solid, not a visually nearby
+ * detached ring. When an annular revolve is explicitly unioned with a shell,
+ * anchor its outer wall into the shell's inner wall with a bounded overlap.
+ * Separate components remain separate; this acts only on the graph's own
+ * declared Boolean topology. */
+function anchorUnionAnnularFeatures(graph, componentId) {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node])); const adjustments = [];
+  for (const boolean of componentNodes(graph, componentId).filter((node) => node.operation === "boolean" && node.parameters?.operation === "union")) {
+    const shell = boolean.inputNodeIds.map((id) => byId.get(id)).find((node) => node?.operation === "shell");
+    if (!shell?.inputNodeIds?.length) continue;
+    const outer = byId.get(shell.inputNodeIds[0]); const thickness = Number(shell.parameters?.thicknessMm);
+    if (outer?.operation !== "revolve" || !Number.isFinite(thickness) || thickness <= 0) continue;
+    for (const node of boolean.inputNodeIds.map((id) => byId.get(id)).filter((node) => node?.operation === "revolve" && node.id !== outer.id)) {
+      const profile = node.parameters?.profile; const visible = (profile ?? []).filter((point) => Number(point.xMm) > 1e-8);
+      if (visible.length < 3) continue;
+      const ringMax = Math.max(...visible.map((point) => Number(point.xMm))); const ringMin = Math.min(...visible.map((point) => Number(point.xMm)));
+      const zMid = (Math.min(...visible.map((point) => Number(point.zMm))) + Math.max(...visible.map((point) => Number(point.zMm)))) / 2;
+      const innerRadius = radiusFromProfile(outer.parameters?.profile, zMid) - thickness;
+      if (!Number.isFinite(innerRadius) || innerRadius <= 0 || ringMax >= innerRadius - 1e-5) continue;
+      const overlap = Math.min((ringMax - ringMin) * .35, thickness * .35);
+      const delta = innerRadius + overlap - ringMax;
+      node.parameters.profile = profile.map((point) => ({ ...point, xMm: Number(point.xMm) > 1e-8 ? Number((Number(point.xMm) + delta).toFixed(6)) : point.xMm }));
+      adjustments.push({ booleanNodeId: boolean.id, nodeId: node.id, source: "declared_boolean_union_inner_wall_anchor", innerRadiusMm: innerRadius, radialOverlapMm: overlap, shiftMm: delta });
+    }
+  }
+  return adjustments;
 }
 
 /**
@@ -279,6 +372,8 @@ export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, pri
   if (!closureRange || closureRange.max - closureRange.min <= 1e-6) return { graph, applied: false, adjustments: [], reason: "closure_height_unmeasurable" };
   const next = structuredClone(original);
   const nextClosure = next.components.find((component) => component.id === closure.id);
+  const outline = fitClosureOutline(next, closure.id, cap, approvedDimensions);
+  const annularAnchors = anchorUnionAnnularFeatures(next, closure.id);
   const targetClosureHeight = overallHeight * capRatio;
   const scale = targetClosureHeight / (closureRange.max - closureRange.min);
   for (const node of componentNodes(next, closure.id)) node.parameters = scaleAxialParameters(node.parameters, scale, closureRange.min);
@@ -296,6 +391,8 @@ export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, pri
     sourceHeightMm: closureRange.max - closureRange.min, targetHeightMm: targetClosureHeight,
     assemblyZMm: targetClosureZ, scale,
   }];
+  if (outline) adjustments.unshift({ componentId: closure.id, role: "patterned_closure_outline", ...outline });
+  if (annularAnchors.length) adjustments.push(...annularAnchors.map((item) => ({ componentId: closure.id, role: "declared_union_annular_feature", ...item })));
   // A centred annular child which is neither the primary body nor the
   // patterned closure is a candidate insert/ring.  Preserve its local B-Rep
   // and place it at the measured closure-bottom datum. Small liners and
@@ -342,12 +439,16 @@ export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null, prim
     const cache = new Map();
     const envelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, cache)).filter(Number.isFinite));
     const componentNodes = next.nodes.filter((item) => item.componentId === component.id);
-    const ribbedRadialFeature = componentNodes.some((node) => node.operation === "pattern" && node.inputNodeIds.some((id) => nodes.get(id)?.operation === "rib"));
-    const measuredTargetRadius = ribbedRadialFeature && Number.isFinite(measuredCapRatio) && measuredCapRatio > .25
+    // Some graphs encode the rib seed explicitly while others use a
+    // primitive+transform seed. The radial pattern is the stable feature
+    // contract in both cases; tying this to a display name or an optional rib
+    // node silently discarded valid image evidence.
+    const patternedRadialFeature = componentNodes.some((node) => node.operation === "pattern" && node.inputNodeIds.length >= 1);
+    const measuredTargetRadius = patternedRadialFeature && Number.isFinite(measuredCapRatio) && measuredCapRatio > .25
       ? Math.min(targetRadius, targetRadius * measuredCapRatio)
       : targetRadius;
     const outsideMaximum = envelope > targetRadius + 1e-6;
-    const measuredMismatch = ribbedRadialFeature && Math.abs(envelope - measuredTargetRadius) > .25;
+    const measuredMismatch = patternedRadialFeature && Math.abs(envelope - measuredTargetRadius) > .25;
     if (!Number.isFinite(envelope) || (!outsideMaximum && !measuredMismatch)) continue;
     const scale = (outsideMaximum ? targetRadius : measuredTargetRadius) / envelope;
     for (const node of componentNodes) node.parameters = scaleRadialParameters(node.parameters, scale);
