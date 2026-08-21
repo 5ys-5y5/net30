@@ -65,6 +65,121 @@ function interpolate(samples, zNorm) {
   return 0;
 }
 
+const BREP_GENERATORS = new Set(["revolve", "extrude", "primitive"]);
+
+function radialTranslation(parameters = {}) {
+  const value = parameters.transform?.translationMm ?? { x: 0, y: 0 };
+  return Math.hypot(Number(value.x ?? 0), Number(value.y ?? 0));
+}
+
+/** Return a conservative radial envelope for the subset of the graph that
+ * the static OCCT compiler currently supports.  This is deliberately based on
+ * feature semantics rather than component display names: a cap, ring, or any
+ * other axisymmetric component is treated identically. */
+function radialEnvelopeForNode(nodes, nodeId, cache = new Map()) {
+  if (cache.has(nodeId)) return cache.get(nodeId);
+  const node = nodes.get(nodeId);
+  if (!node) return null;
+  const params = node.parameters ?? {};
+  const inputs = node.inputNodeIds.map((input) => radialEnvelopeForNode(nodes, input, cache));
+  const finite = inputs.filter((value) => Number.isFinite(value));
+  let envelope = null;
+  if (node.operation === "revolve") {
+    envelope = Math.max(0, ...(params.profile ?? []).map((point) => Math.abs(Number(point.xMm ?? 0))));
+  } else if (node.operation === "primitive" || node.operation === "extrude") {
+    const dimensions = params.dimensionsMm;
+    envelope = params.radiusMm ?? (dimensions ? Math.max(Number(dimensions.x ?? 0), Number(dimensions.y ?? 0)) / 2 : null);
+  } else if (node.operation === "rib") {
+    const base = finite[0];
+    if (Number.isFinite(base)) {
+      // cad-worker.py places a rib centre at baseRadius + 0.15*depth and its
+      // half depth remains outside; the actual radial envelope is +0.65 depth.
+      const radialBase = Number.isFinite(params.radiusMm) ? Number(params.radiusMm) : base;
+      envelope = radialBase + .65 * Number(params.depthMm ?? params.thicknessMm ?? 0);
+    }
+  } else if (node.operation === "boolean") {
+    envelope = params.operation === "cut" ? finite[0] : finite.length ? Math.max(...finite) : null;
+  } else if (["shell", "pattern", "transform", "mate"].includes(node.operation)) {
+    envelope = finite.length ? Math.max(...finite) : null;
+  }
+  if (Number.isFinite(envelope)) envelope += radialTranslation(params);
+  cache.set(nodeId, envelope);
+  return envelope;
+}
+
+function scaleRadialParameters(parameters, scale) {
+  const next = structuredClone(parameters);
+  for (const key of ["radiusMm", "innerRadiusMm", "depthMm", "spacingMm"]) {
+    if (Number.isFinite(next[key])) next[key] = Number((next[key] * scale).toFixed(6));
+  }
+  if (next.dimensionsMm) {
+    next.dimensionsMm.x = Number((next.dimensionsMm.x * scale).toFixed(6));
+    next.dimensionsMm.y = Number((next.dimensionsMm.y * scale).toFixed(6));
+  }
+  if (next.profile) next.profile = next.profile.map((point) => ({ ...point, xMm: Number((point.xMm * scale).toFixed(6)) }));
+  if (next.transform?.translationMm) {
+    next.transform.translationMm.x = Number((next.transform.translationMm.x * scale).toFixed(6));
+    next.transform.translationMm.y = Number((next.transform.translationMm.y * scale).toFixed(6));
+  }
+  return next;
+}
+
+/**
+ * Bring a centred axisymmetric child inside the approved assembly envelope.
+ *
+ * This is a pre-review deterministic curve/feature fit, not an assembly-scale
+ * shortcut: it rewrites the same graph parameters that OCCT, the review UI,
+ * and the B-Rep preview consume.  We only change components that are centred
+ * on the assembly axis and whose compiled operation graph has a calculable
+ * radial extent.  Off-axis, non-radial, and arbitrary geometry remain a
+ * reviewer question rather than being distorted automatically.
+ */
+export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null) {
+  const targetDiameter = Math.min(Number(approvedDimensions?.widthMm), Number(approvedDimensions?.depthMm));
+  if (!Number.isFinite(targetDiameter) || targetDiameter <= 0) return { graph, applied: false, adjustments: [] };
+  const targetRadius = targetDiameter / 2;
+  const next = structuredClone(graph); const nodes = new Map(next.nodes.map((node) => [node.id, node]));
+  const adjustments = [];
+  for (const component of next.components) {
+    if (component.representation !== "brep_solid") continue;
+    const translation = component.transform?.translationMm ?? {};
+    const rotation = component.transform?.rotationDeg ?? {};
+    // The component-local convention makes radial fitting unambiguous only
+    // for centred, z-axis components.  Preserve any other assembly placement.
+    if (Math.hypot(Number(translation.x ?? 0), Number(translation.y ?? 0)) > 1e-6 || Math.abs(Number(rotation.x ?? 0)) > 1e-6 || Math.abs(Number(rotation.y ?? 0)) > 1e-6) continue;
+    const cache = new Map();
+    const envelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, cache)).filter(Number.isFinite));
+    if (!Number.isFinite(envelope) || envelope <= targetRadius + 1e-6) continue;
+    const scale = targetRadius / envelope;
+    for (const node of next.nodes.filter((item) => item.componentId === component.id)) node.parameters = scaleRadialParameters(node.parameters, scale);
+    adjustments.push({ componentId: component.id, sourceRadiusMm: envelope, targetRadiusMm: targetRadius, scale, source: "approved_assembly_envelope" });
+  }
+  return { graph: next, applied: adjustments.length > 0, adjustments };
+}
+
+/** Keep every child B-Rep in component-local coordinates.  Some vision plans
+ * place an entire ring/profile at an absolute assembly Z while leaving its
+ * component transform at zero.  Rebase that unambiguous single-root case and
+ * store the placement on the parent-owned component transform instead. */
+export function normaliseComponentLocalCoordinates(graph) {
+  const next = structuredClone(graph); const adjustments = [];
+  for (const component of next.components) {
+    if (component.representation !== "brep_solid") continue;
+    const transform = component.transform ?? {};
+    const translation = transform.translationMm ?? { x: 0, y: 0, z: 0 };
+    if (Math.abs(Number(translation.z ?? 0)) > 1e-6 || component.rootNodeIds.length !== 1) continue;
+    const root = next.nodes.find((node) => node.id === component.rootNodeIds[0]);
+    const profile = root?.parameters?.profile;
+    if (!BREP_GENERATORS.has(root?.operation) || !Array.isArray(profile) || profile.length < 4) continue;
+    const minZ = Math.min(...profile.map((point) => Number(point.zMm)));
+    if (!Number.isFinite(minZ) || minZ <= 1e-6) continue;
+    root.parameters.profile = profile.map((point) => ({ ...point, zMm: Number((point.zMm - minZ).toFixed(6)) }));
+    component.transform = { ...transform, translationMm: { ...translation, z: Number(minZ.toFixed(6)) } };
+    adjustments.push({ componentId: component.id, sourceZMm: minZ, source: "component_local_coordinate_normalization" });
+  }
+  return { graph: next, applied: adjustments.length > 0, adjustments };
+}
+
 /** Apply the primary-image body contour only to the largest revolved solid.
  * This uses no component-name heuristic: the selected target is the largest
  * B-Rep profile in the graph. */
