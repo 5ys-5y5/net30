@@ -14,21 +14,28 @@ function cadqueryBin() {
 
 function run(command, args, timeoutMs) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
+    const startedAt = Date.now();
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; let stderr = "";
     let timedOut = false;
+    let forceTimer = null;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
+      // OCCT can be inside a native operation when the soft signal arrives.
+      // A bounded preflight must still settle; otherwise one malformed graph
+      // keeps the draft in "analyzing" forever and hides the real cause.
+      forceTimer = setTimeout(() => child.kill("SIGKILL"), 2_000);
     }, timeoutMs);
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
     child.once("error", (error) => {
-      clearTimeout(timer);
-      resolve({ ok: false, status: null, stderr: error.message, timedOut });
+      clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer);
+      resolve({ ok: false, status: null, signal: null, stdout, stderr: error.message, timedOut, timeoutMs, elapsedMs: Date.now() - startedAt });
     });
-    child.once("close", (status) => {
-      clearTimeout(timer);
-      resolve({ ok: status === 0, status, stderr: stderr.trim(), timedOut });
+    child.once("close", (status, signal) => {
+      clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer);
+      resolve({ ok: status === 0, status, signal, stdout: stdout.trim(), stderr: stderr.trim(), timedOut, timeoutMs, elapsedMs: Date.now() - startedAt });
     });
   });
 }
@@ -38,7 +45,10 @@ function diagnostic(component, report, execution) {
     return {
       componentId: component.id,
       code: execution.timedOut ? "cad_preflight_timeout" : "cad_preflight_failed",
-      message: execution.stderr || "CadQuery 사전검사가 보고서를 생성하지 못했습니다.",
+      message: execution.timedOut
+        ? `CadQuery 사전검사가 ${Math.round(execution.timeoutMs / 1000)}초 제한을 넘었습니다 (signal=${execution.signal ?? "none"}, elapsed=${execution.elapsedMs}ms).`
+        : execution.stderr || execution.stdout || "CadQuery 사전검사가 보고서를 생성하지 못했습니다.",
+      execution: { timedOut: execution.timedOut, timeoutMs: execution.timeoutMs, elapsedMs: execution.elapsedMs, status: execution.status, signal: execution.signal, stdout: execution.stdout.slice(-2_000), stderr: execution.stderr.slice(-2_000) },
     };
   }
   const failures = [];
@@ -56,6 +66,7 @@ function diagnostic(component, report, execution) {
     solidCount: Number(report.solidCount),
     shellCount: Number(report.shellCount),
     boundsMm: report.boundsMm,
+    execution: { timedOut: execution.timedOut, timeoutMs: execution.timeoutMs, elapsedMs: execution.elapsedMs, status: execution.status, signal: execution.signal, stdout: execution.stdout.slice(-2_000), stderr: execution.stderr.slice(-2_000) },
   };
 }
 

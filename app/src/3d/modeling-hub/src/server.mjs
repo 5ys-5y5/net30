@@ -55,6 +55,7 @@ async function writeAnalysisDossier(draft, { status, error = null } = {}) {
   if (draft.modelingGraph) await dossier.writeSnapshot("graph/modeling-graph.json", draft.modelingGraph);
   if (draft.modelingGraphV3) await dossier.writeSnapshot("graph/modeling-graph-v3.json", draft.modelingGraphV3);
   if (draft.fit) await dossier.writeSnapshot("validation/curve-fit.json", draft.fit);
+  if (draft.brepPreflightDiagnostics) await dossier.writeSnapshot("validation/brep-preflight.json", draft.brepPreflightDiagnostics);
   if (draft.qualityReport) await dossier.writeSnapshot("validation/quality-gates.json", draft.qualityReport);
   await dossier.writeSnapshot("decisions/proposed-decisions.json", { questions: draft.questions ?? [], iterations: draft.iterations ?? [] });
   const decisions = await drafts.readDecisions(draft.id);
@@ -209,7 +210,7 @@ app.post("/api/modeling/drafts",async(req,res)=>{ if(!authorized(req)) return re
   void (async()=>{ try {
     await progressDraft(draft,{operation:"analysis",stage:"이미지 업로드 확인",state:"complete",completed:payload.imageIds.length,total:payload.imageIds.length,unit:"files",message:"모델링 입력 이미지를 확인했습니다."});
     await progressDraft(draft,{operation:"analysis",stage:"제품·조립 분석",state:"running",message:"제품과 공통 조립 기준을 분석 중입니다."});
-    const inference=[]; const imageInputs=await storage.imageInputs(payload.imageIds); const analysis=await analyseDraft(payload,imageInputs,{onOpenAiStatus:async({id,status})=>progressDraft(draft,{operation:"analysis",stage:"OpenAI ModelingGraph",state:["failed","cancelled","incomplete"].includes(status)?"failed":status==="completed"?"complete":"running",message:`OpenAI 응답 ${id} · ${status}`}),onOpenAiComplete:async(record)=>{inference.push(record);draft.inference=inference;await drafts.save(draft);},onGraphRepair:async({componentKey,state,message})=>progressDraft(draft,{operation:"analysis",stage:"컴포넌트 그래프 복구",state,message:`${componentKey} · ${message}`,completed:state==="complete"?1:0,total:1,unit:"components"})});
+    const inference=[]; const imageInputs=await storage.imageInputs(payload.imageIds); const analysis=await analyseDraft(payload,imageInputs,{onOpenAiStatus:async({id,status})=>progressDraft(draft,{operation:"analysis",stage:"OpenAI ModelingGraph",state:["failed","cancelled","incomplete"].includes(status)?"failed":status==="completed"?"complete":"running",message:`OpenAI 응답 ${id} · ${status}`}),onOpenAiComplete:async(record)=>{inference.push(record);draft.inference=inference;await drafts.save(draft);},onGraphRepair:async({componentKey,state,message})=>progressDraft(draft,{operation:"analysis",stage:"컴포넌트 그래프 복구",state,message:`${componentKey} · ${message}`,completed:state==="complete"?1:0,total:1,unit:"components"}),onBrepPreflight:async(diagnostics)=>{draft.brepPreflightDiagnostics=diagnostics;await drafts.save(draft);}});
     if(parent) await bindAssemblyRefinementTargets(payload,parent.id,analysis);
     draft.input=payload; await drafts.save(draft);
     await progressDraft(draft,{operation:"analysis",stage:"제품·조립 분석",state:"complete",message:"공통 기준 분석이 완료되었습니다."});
@@ -273,7 +274,10 @@ app.post("/api/modeling/drafts/:id/reanalyze",async(req,res)=>{
       const components=modelingGraphComponents(canonical.graph);
       analysis={product,components,modelingGraph:canonical.graph,modelingGraphHash:canonical.graphHash,questions:modelingGraphQuestions(product,components,canonical.graph),stickerSlots:draft.stickerSlots?.length?draft.stickerSlots:[{sourceGraphicId:"korean-product-information",status:"proposed"},{sourceGraphicId:"full-price-structure",status:"proposed"}]};
       await progressDraft(draft,{operation:"analysis",stage:"컴포넌트 graph repair",state:"complete",completed:components.length,total:components.length,unit:"components",message:"저장된 응답을 현재 compiler capability로 복구해 OpenAI 재호출을 생략했습니다."});
-    } else analysis=await analyseDraft(draft.input,await storage.imageInputs(draft.input.imageIds));
+    } else {
+      const inference=[];
+      analysis=await analyseDraft(draft.input,await storage.imageInputs(draft.input.imageIds),{onOpenAiStatus:async({id,status})=>progressDraft(draft,{operation:"analysis",stage:"OpenAI ModelingGraph",state:["failed","cancelled","incomplete"].includes(status)?"failed":status==="completed"?"complete":"running",message:`OpenAI 응답 ${id} · ${status}`}),onOpenAiComplete:async(record)=>{inference.push(record);draft.inference=inference;await drafts.save(draft);},onGraphRepair:async({componentKey,state,message})=>progressDraft(draft,{operation:"analysis",stage:"컴포넌트 그래프 복구",state,message:`${componentKey} · ${message}`,completed:state==="complete"?1:0,total:1,unit:"components"}),onBrepPreflight:async(diagnostics)=>{draft.brepPreflightDiagnostics=diagnostics;await drafts.save(draft);}});
+    }
     const accepted=new Map(draft.questions.filter((item)=>["accepted","overridden"].includes(item.status)).map((item)=>[item.path,item]));
     draft.product=analysis.product; draft.components=analysis.components; draft.modelingGraph=analysis.modelingGraph; draft.modelingGraphHash=analysis.modelingGraphHash; await refreshBrepSketch(draft);
     draft.questions=analysis.questions.map((item)=>{const prior=accepted.get(item.path); return prior?{...item,status:prior.status,userValue:prior.userValue}:item;}); draft.stickerSlots=analysis.stickerSlots;

@@ -524,6 +524,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   let brepPreflight = null; let compiledClosureDatum = { adjustments: [] }; const compiledContourFits = [];
   if (process.env.NET30_MODELING_DRAFT_FIXTURE !== "true") {
     const preflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 } });
+    await runtime.onBrepPreflight?.(preflight.diagnostics);
     const failed = preflight.diagnostics.filter((item) => item.code !== "ok");
     if (failed.length) {
       const byCanonicalId = new Map(canonical.graph.components.map((component, index) => [component.id, raw.components[index]?.componentKey]));
@@ -544,6 +545,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
       canonical.graph = validateGraph(compiledClosureDatum.graph);
       canonical.graphHash = graphHash(canonical.graph);
       brepPreflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 } });
+      await runtime.onBrepPreflight?.(brepPreflight.diagnostics);
       const compiledDatumFailures = brepPreflight.diagnostics.filter((item) => item.code !== "ok");
       if (compiledDatumFailures.length) throw new Error(`analysis_incomplete: ${compiledDatumFailures.map((item) => `${item.componentId}: ${item.message}`).join("; ")}`);
     }
@@ -559,6 +561,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
       const candidate = fitCompiledAssemblyContour(canonical.graph, brepPreflight, imageEvidence, primaryImageId);
       if (!candidate.applied) { compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: candidate.reason ?? "no_observable_axisymmetric_adjustment" }); break; }
       const candidateGraph = validateGraph(candidate.graph); const candidatePreflight = await preflightBrepGraph(candidateGraph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 } });
+      await runtime.onBrepPreflight?.(candidatePreflight.diagnostics);
       const candidateFailures = candidatePreflight.diagnostics.filter((item) => item.code !== "ok");
       if (candidateFailures.length) {
         compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: "candidate_brep_invalid", adjustments: candidate.adjustments, diagnostics: candidateFailures });
