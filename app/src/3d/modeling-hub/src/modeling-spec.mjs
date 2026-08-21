@@ -14,7 +14,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
-import { compareAxisymmetricContour, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { compareAxisymmetricContour, fitAxialAssemblyEnvelope, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
 export const JOB_STATES = ["researching", "awaiting_input", "planning", "building_components", "validating", "assembling", "refining", "review_required", "complete", "failed"];
@@ -392,17 +392,19 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   if (!canonical) throw new Error("analysis_incomplete: 컴포넌트 그래프 복구 횟수를 초과했습니다.");
   const evidenceScoped = enforceEvidenceScopes(canonical.graph, evidenceManifest);
   const primaryImageId = evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null;
+  const approvedDimensions = { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm };
   const locallyNormalised = normaliseComponentLocalCoordinates(evidenceScoped.graph);
-  const fitted = fitPrimaryAxisymmetricComponent(locallyNormalised.graph, imageEvidence, primaryImageId, canonical.product.dimensionsMm);
-  const envelopeFit = fitRadialAssemblyEnvelope(fitted.graph, canonical.product.dimensionsMm);
-  canonical.graph = validateGraph(envelopeFit.graph);
+  const fitted = fitPrimaryAxisymmetricComponent(locallyNormalised.graph, imageEvidence, primaryImageId, approvedDimensions);
+  const envelopeFit = fitRadialAssemblyEnvelope(fitted.graph, approvedDimensions);
+  const placementFit = fitAxialAssemblyEnvelope(envelopeFit.graph, approvedDimensions);
+  canonical.graph = validateGraph(placementFit.graph);
   canonical.graphHash = graphHash(canonical.graph);
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
   const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest, imageEvidence);
   const contour = compareAxisymmetricContour(canonical.graph, imageEvidence, primaryImageId);
   const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, assemblyEnvelope: envelopeFit.adjustments }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {

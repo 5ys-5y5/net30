@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
-import { fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { fitAxialAssemblyEnvelope, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -42,4 +42,10 @@ const localFit = normaliseComponentLocalCoordinates(localGraph);
 assert.equal(localFit.applied, true, "absolute feature coordinates must be rebased into a component-local child B-Rep");
 assert.equal(Math.min(...localFit.graph.nodes[0].parameters.profile.map((point) => point.zMm)), 0);
 assert.equal(localFit.graph.components[0].transform.translationMm.z, 83);
+
+const tallPlacement = structuredClone(radialGraph);
+tallPlacement.components[0].transform.translationMm.z = 90;
+const axialFit = fitAxialAssemblyEnvelope(tallPlacement, { heightMm: 100 });
+assert.equal(axialFit.applied, true, "a local component placed beyond the approved assembly height must be moved into the z-up datum");
+assert.equal(axialFit.graph.components[0].transform.translationMm.z, 0);
 console.log("image evidence measurement and primary silhouette fitting proof passed");

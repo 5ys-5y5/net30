@@ -107,6 +107,35 @@ function radialEnvelopeForNode(nodes, nodeId, cache = new Map()) {
   return envelope;
 }
 
+function axialEnvelopeForNode(nodes, nodeId, cache = new Map()) {
+  if (cache.has(nodeId)) return cache.get(nodeId);
+  const node = nodes.get(nodeId);
+  if (!node) return null;
+  const params = node.parameters ?? {};
+  const inputRanges = node.inputNodeIds.map((input) => axialEnvelopeForNode(nodes, input, cache)).filter(Boolean);
+  let range = null;
+  if (node.operation === "revolve") {
+    const values = (params.profile ?? []).map((point) => Number(point.zMm));
+    if (values.length) range = { min: Math.min(...values), max: Math.max(...values) };
+  } else if (node.operation === "primitive" || node.operation === "extrude") {
+    const height = Number(params.heightMm ?? params.dimensionsMm?.z);
+    if (Number.isFinite(height)) range = { min: 0, max: height };
+  } else if (node.operation === "rib") {
+    const height = Number(params.heightMm);
+    const z = Number(params.zMm ?? params.transform?.translationMm?.z ?? 0);
+    if (Number.isFinite(height)) range = { min: z, max: z + height };
+  } else if (node.operation === "boolean") {
+    range = params.operation === "cut" ? inputRanges[0] : inputRanges.length ? { min: Math.min(...inputRanges.map((item) => item.min)), max: Math.max(...inputRanges.map((item) => item.max)) } : null;
+  } else if (inputRanges.length) {
+    range = { min: Math.min(...inputRanges.map((item) => item.min)), max: Math.max(...inputRanges.map((item) => item.max)) };
+  }
+  if (range && ["transform", "mate"].includes(node.operation)) {
+    const z = Number(params.transform?.translationMm?.z ?? 0); range = { min: range.min + z, max: range.max + z };
+  }
+  cache.set(nodeId, range);
+  return range;
+}
+
 function scaleRadialParameters(parameters, scale) {
   const next = structuredClone(parameters);
   for (const key of ["radiusMm", "innerRadiusMm", "depthMm", "spacingMm"]) {
@@ -153,6 +182,31 @@ export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null) {
     const scale = targetRadius / envelope;
     for (const node of next.nodes.filter((item) => item.componentId === component.id)) node.parameters = scaleRadialParameters(node.parameters, scale);
     adjustments.push({ componentId: component.id, sourceRadiusMm: envelope, targetRadiusMm: targetRadius, scale, source: "approved_assembly_envelope" });
+  }
+  return { graph: next, applied: adjustments.length > 0, adjustments };
+}
+
+/** Fit centred component placement to the approved z-up overall-height datum.
+ * It never rescales a solid vertically: a part taller than the approved
+ * product is left for review.  This only corrects an otherwise valid local
+ * component that a planner positioned outside the declared assembly bounds. */
+export function fitAxialAssemblyEnvelope(graph, approvedDimensions = null) {
+  const targetHeight = Number(approvedDimensions?.heightMm);
+  if (!Number.isFinite(targetHeight) || targetHeight <= 0) return { graph, applied: false, adjustments: [] };
+  const next = structuredClone(graph); const nodes = new Map(next.nodes.map((node) => [node.id, node]));
+  const adjustments = [];
+  for (const component of next.components) {
+    if (component.representation !== "brep_solid") continue;
+    const transform = component.transform ?? {}; const translation = transform.translationMm ?? { x: 0, y: 0, z: 0 };
+    const ranges = component.rootNodeIds.map((id) => axialEnvelopeForNode(nodes, id, new Map())).filter(Boolean);
+    if (!ranges.length) continue;
+    const local = { min: Math.min(...ranges.map((item) => item.min)), max: Math.max(...ranges.map((item) => item.max)) };
+    const height = local.max - local.min; const global = { min: local.min + Number(translation.z ?? 0), max: local.max + Number(translation.z ?? 0) };
+    if (height > targetHeight + 1e-6 || global.max <= targetHeight + 1e-6 || Math.abs(Number(translation.z ?? 0)) < 1e-6) continue;
+    const targetZ = targetHeight - local.max;
+    if (targetZ + local.min < -1e-6) continue;
+    component.transform = { ...transform, translationMm: { ...translation, z: Number(targetZ.toFixed(6)) } };
+    adjustments.push({ componentId: component.id, sourceMinZMm: global.min, sourceMaxZMm: global.max, targetMinZMm: targetZ + local.min, targetMaxZMm: targetHeight, source: "approved_assembly_height" });
   }
   return { graph: next, applied: adjustments.length > 0, adjustments };
 }
