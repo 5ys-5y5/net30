@@ -32,7 +32,7 @@ export const modelingGraphV3Schema = z.object({
   capabilityVersion: z.literal("net30-occt-v3"),
 }).strict();
 
-export const qualityGateReportSchema = z.object({ version: z.literal("net30.quality-gates.v1"), graphHash: z.string().length(64), gates: z.array(z.object({ id: z.enum(["silhouette_iou", "contour_rms_mm", "hausdorff95_mm", "landmarks_mm", "brep_valid", "closed_shell", "free_edges", "assembly_clearance", "step_roundtrip", "evidence" ]), state: z.enum(["pass", "fail", "blocked", "not_measured"]), value: z.number().nullable(), threshold: z.number().nullable(), message: z.string() }).strict()), manufacturingStatus: z.enum(["visual_verified", "dimensional_candidate", "manufacturing_review_required", "manufacturing_released"]) }).strict();
+export const qualityGateReportSchema = z.object({ version: z.literal("net30.quality-gates.v1"), graphHash: z.string().length(64), gates: z.array(z.object({ id: z.enum(["silhouette_iou", "contour_rms_mm", "hausdorff95_mm", "landmarks_mm", "brep_valid", "closed_shell", "single_intended_solid", "free_edges", "assembly_clearance", "step_roundtrip", "evidence" ]), state: z.enum(["pass", "fail", "blocked", "not_measured"]), value: z.number().nullable(), threshold: z.number().nullable(), message: z.string() }).strict()), manufacturingStatus: z.enum(["visual_verified", "dimensional_candidate", "manufacturing_review_required", "manufacturing_released"]) }).strict();
 
 export function stableHash(value) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 
@@ -102,6 +102,7 @@ export function qualityGates({ graphHash, contour = null, landmarks = null, brep
     { id: "landmarks_mm", state: landmarks?.maxMm <= .5 ? "pass" : landmarks ? "fail" : "not_measured", value: value(landmarks?.maxMm), threshold: .5, message: "Approved landmark deviation" },
     { id: "brep_valid", state: brep?.valid ? "pass" : brep ? "fail" : "not_measured", value: null, threshold: null, message: "OCCT B-Rep validity" },
     { id: "closed_shell", state: brep?.closed ? "pass" : brep ? "fail" : "not_measured", value: null, threshold: null, message: "Closed shell" },
+    { id: "single_intended_solid", state: brep?.solidCount === 1 ? "pass" : brep?.solidCount !== undefined ? "fail" : "not_measured", value: value(brep?.solidCount), threshold: 1, message: "One connected manufacturing solid per B-Rep component" },
     { id: "free_edges", state: brep?.freeEdges === 0 ? "pass" : brep?.freeEdges !== undefined ? "fail" : "not_measured", value: value(brep?.freeEdges), threshold: 0, message: "Free edges" },
     { id: "assembly_clearance", state: brep?.interferenceCount === 0 ? "pass" : brep?.interferenceCount !== undefined ? "fail" : "not_measured", value: value(brep?.interferenceCount), threshold: 0, message: "Forbidden interference" },
     { id: "step_roundtrip", state: step?.boundsDeltaMm <= .01 && step?.volumeDeltaRatio <= .001 ? "pass" : step ? "fail" : "not_measured", value: value(step?.boundsDeltaMm), threshold: .01, message: "STEP round-trip bounds and volume" },

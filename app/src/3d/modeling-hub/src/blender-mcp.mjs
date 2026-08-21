@@ -67,7 +67,7 @@ async function cadExports(spec, cadDir, quality) {
   await fs.writeFile(assemblyRequest, JSON.stringify({ name: spec.contract.product.name, components: Object.entries(sources).map(([id, item]) => ({ id, brep: item.brep, transform: spec.modelingGraph?.components.find((component) => component.id === id)?.transform ?? null })), paths: assemblyPaths, toleranceMm: .01 }));
   await run(python, [path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cad-assembly-worker.py"), assemblyRequest], 4 * 60 * 1000);
   const assemblyValidation = JSON.parse(await fs.readFile(assemblyPaths.report, "utf8"));
-  const geometryBlockers = Object.entries(validation).flatMap(([id, report]) => [report.valid ? null : `${id}: B-Rep validity failure`, report.closed ? null : `${id}: open shell/free edge review required`].filter(Boolean));
+  const geometryBlockers = Object.entries(validation).flatMap(([id, report]) => [report.valid ? null : `${id}: B-Rep validity failure`, report.closed ? null : `${id}: open shell/free edge review required`, report.solidCount === 1 ? null : `${id}: expected one connected manufacturing solid, found ${report.solidCount}`].filter(Boolean));
   const blockers = [...spec.contract.unresolved, ...geometryBlockers];
   return { available: true, sources, validation, assembly: { ...assemblyPaths, validation: assemblyValidation }, tessellation: profile, manufacturingStatus: blockers.length ? "manufacturing_review_required" : "dimensional_candidate", blockers };
 }
@@ -107,7 +107,7 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   // explicitly not-measured until that analyser is available.
   const primaryImageId = payload.approvedDraft?.evidenceManifest?.items?.find((item) => item.role === "primary_product")?.imageId ?? null;
   const contour = modelingSpec.modelingGraph ? compareAxisymmetricContour(modelingSpec.modelingGraph, payload.approvedDraft?.imageEvidence, primaryImageId) : null;
-  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
+  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed), solidCount: Math.max(...Object.values(cad.validation).map((item) => item.solidCount ?? Infinity)) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
   await dossier.writeSnapshot("validation/quality-gates.json", qualityReport);
   dossier.record("quality.gates", qualityReport);
   const dossierManifest = await dossier.finalize({ status: cad.manufacturingStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers, qualityReport });
