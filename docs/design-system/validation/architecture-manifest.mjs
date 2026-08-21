@@ -84,7 +84,6 @@ export const ARCHITECTURE = Object.freeze({
     "modelingResult",
     "modelingError",
     "modelingHint",
-    "modelingLibraryHeader",
     "modelingLibrarySelection",
     "modelingLibrarySelectionMeta",
     "modelingLibraryActions",

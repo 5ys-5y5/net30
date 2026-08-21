@@ -1051,7 +1051,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         </AssetLibraryCard>)}
       </AssetLibraryGrid>
       {editingName ? <InlineAssetEditor onSubmit={(event) => { event.preventDefault(); void saveModelName(); }}><FormField label={editingName.kind === "parent" ? "조립 파일 이름" : "구성요소 이름"}><input className={CLASS.modelingControl} value={editingName.value} onChange={(event) => setEditingName((current) => current ? { ...current, value: event.target.value } : current)} /></FormField><ActionButton className={CLASS.modelingAction} type="submit" disabled={assetActionPending === editingName.id}>저장</ActionButton></InlineAssetEditor> : null}
-      {activeParentTree ? <ModelingLibraryTree>
+      {activeParentTree ? <ModelingLibraryTree aria-label={`${activeParentTree.name} 조립 파일과 구성요소`}>
         <Atom className={CLASS.modelingParentToolbar}><AssetIdentity><strong>{activeParentTree.name}</strong><small>최신 r{activeParentTree.currentRevision?.ordinal ?? 0} · 게시 {activeParentTree.publishedRevision ? `r${activeParentTree.publishedRevision.ordinal}` : "없음"} · {activeParentTree.status}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} onClick={() => beginAssetRefine(activeParentTree)}>조립 파일 보완</ActionButton><ActionButton className={CLASS.modelingAction} onClick={() => beginAddChild(activeParentTree)}>구성요소 추가</ActionButton></AssetNodeActions></Atom>
         {flatAssetNodes.length ? <AssetLibraryGrid aria-label={`${activeParentTree.name} 구성요소 카드 목록`}>{flatAssetNodes.map((node) => {
           const item = node.child.model; const included = includedNodePaths.includes(node.path);
@@ -1064,15 +1064,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
             {childDeleteTarget?.childRefId === node.child.id ? <DestructiveActionGate><Label>구성요소 삭제</Label><Copy>{childDeleteTarget.childName}을(를) 현재 조립 파일에서 제외하고 보관합니다. 과거 리비전과 게시 artifact는 보존됩니다.</Copy><AssetNodeActions><ActionButton className={CLASS.modelingAction} onClick={() => setChildDeleteTarget(null)}>취소</ActionButton><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === node.child.id} onClick={() => void confirmChildDelete()}>삭제 확인</ActionButton></AssetNodeActions></DestructiveActionGate> : null}
           </AssetLibraryCard>;
         })}</AssetLibraryGrid> : <AssetEmptyState><Label>구성요소 없음</Label><Copy>OpenAI × Blender 보완에서 첫 구성요소를 추가할 수 있습니다.</Copy></AssetEmptyState>}
-      </ModelingLibraryTree> : null}
-      {activeParentTree ? <><Atom className={CLASS.modelingLibraryHeader}>
-        <Label>조립 선택</Label>
-        <Copy>선택한 조립 파일의 현재 구성요소만 조립합니다. 다른 조립 파일의 전역 버전은 이 조립에 섞이지 않습니다.</Copy>
-      </Atom>
       <Atom className={CLASS.modelingLibrarySelection}>
         <Atom className={CLASS.modelingLibrarySelectionMeta}>
-          <Label>{studio.assetLibrary.selectionTitle}</Label>
-          <Copy>{includedNodePaths.length ? `${includedNodePaths.length}개 구성요소 선택 · 활성 조립 파일: ${activeParentTree?.name ?? "선택 필요"}` : "구성요소 카드에서 조립할 항목을 선택하세요."}</Copy>
+          <Label>{activeParentTree.name} · {studio.assetLibrary.selectionTitle}</Label>
+          <Copy>{includedNodePaths.length ? `${includedNodePaths.length}개 구성요소 선택` : "구성요소 카드를 선택해 이 조립 파일의 부분 조립을 만드세요."}</Copy>
         </Atom>
         <Atom className={CLASS.modelingLibraryActions} role="group" aria-label="선택한 자산 작업">
           <ActionButton className={CLASS.modelingAction} disabled={!activeParentTree || includedNodePaths.length === 0 || libraryPreviewPending} onClick={() => void requestTreePreview()}>{studio.assetLibrary.previewLabel}</ActionButton>
@@ -1081,7 +1076,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         {libraryPreviewPending && libraryPreviewModel ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.previewPendingMessage}</Copy> : null}
         {libraryError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{libraryError}</Atom> : null}
       </Atom>
-      {archivedParents.length ? <DecisionHistoryDisclosure label={`삭제된 조립 파일 ${archivedParents.length}개`}><AssetHierarchy>{archivedParents.map((item) => <AssetHierarchyItem key={item.id}><AssetIdentity><strong>{item.name}</strong><small>보관됨 · 마지막 리비전 r{item.currentRevision?.ordinal ?? 0}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === item.id} onClick={() => void restoreParent(item)}>복원</ActionButton></AssetNodeActions></AssetHierarchyItem>)}</AssetHierarchy></DecisionHistoryDisclosure> : null}</> : null}
+      </ModelingLibraryTree> : null}
+      {activeParentTree && archivedParents.length ? <DecisionHistoryDisclosure label={`삭제된 조립 파일 ${archivedParents.length}개`}><AssetHierarchy>{archivedParents.map((item) => <AssetHierarchyItem key={item.id}><AssetIdentity><strong>{item.name}</strong><small>보관됨 · 마지막 리비전 r{item.currentRevision?.ordinal ?? 0}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === item.id} onClick={() => void restoreParent(item)}>복원</ActionButton></AssetNodeActions></AssetHierarchyItem>)}</AssetHierarchy></DecisionHistoryDisclosure> : null}
       {modelListError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{modelListError}</Atom> : null}
     </ModelingLibraryWorkspace>}
     <ModelingOutputSections>
