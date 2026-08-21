@@ -97,6 +97,22 @@ try {
   const loftReport = JSON.parse(await fs.readFile(`${loftStem}.validation.json`, "utf8"));
   assert.equal(loftReport.valid, true); assert.equal(loftReport.closed, true); assert.equal(loftReport.solidCount, 1, "a generic multi-profile loft must become one canonical B-Rep solid");
   assert.ok(Math.abs(loftReport.boundsMm.z - 30) <= .01, "the loft's component-local axial datum must survive persisted B-Rep export");
+  const housingOutput = fixtureGraphOutput({ product: { name: "extruded housing proof" }, prompt: "rectangular housing", requestedComponents: ["하우징"], imageIds: [] });
+  const housingBase = housingOutput.components[0].features[0];
+  housingBase.key = "housing-extrude"; housingBase.operation = "extrude"; housingBase.inputKeys = [];
+  housingBase.parameters = {
+    ...housingBase.parameters,
+    primitive: null, curveSegments: null, profiles: null,
+    profile: [{ xMm: -20, yMm: -15, zMm: 0 }, { xMm: 20, yMm: -15, zMm: 0 }, { xMm: 20, yMm: 15, zMm: 0 }, { xMm: -20, yMm: 15, zMm: 0 }],
+    dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: 18, thicknessMm: null, count: null, spacingMm: null, depthMm: null,
+  };
+  const housingCanonical = canonicalizeGraph(housingOutput, ["하우징"], []); const housingComponent = housingCanonical.graph.components[0]; const housingStem = path.join(temporary, housingComponent.id); const housingRequest = path.join(temporary, "housing.request.json");
+  await fs.writeFile(housingRequest, JSON.stringify({ graphComponent: housingComponent, graphNodes: housingCanonical.graph.nodes, paths: { step: `${housingStem}.step`, brep: `${housingStem}.brep`, stl: `${housingStem}.stl`, report: `${housingStem}.validation.json` }, tessellation: { chordMm: .05, angularDeg: 7 } }));
+  const housingRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), housingRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(housingRun.status, 0, `${housingRun.stdout}\n${housingRun.stderr}`);
+  const housingReport = JSON.parse(await fs.readFile(`${housingStem}.validation.json`, "utf8"));
+  assert.equal(housingReport.valid, true); assert.equal(housingReport.closed, true); assert.equal(housingReport.solidCount, 1, "an approved XY sketch must compile as an extrusion, not a substitute cylinder");
+  assert.ok(Math.abs(housingReport.boundsMm.x - 40) <= .01 && Math.abs(housingReport.boundsMm.y - 30) <= .01 && Math.abs(housingReport.boundsMm.z - 18) <= .01, "the extrusion must retain the approved sketch dimensions");
   const roofedOutput = fixtureGraphOutput({ product: { name: "roofed closure proof" }, prompt: "tapered ribbed closure", requestedComponents: ["마개"], imageIds: [] });
   const roofBase = roofedOutput.components[0].features[0];
   roofBase.key = "roof-base"; roofBase.operation = "revolve"; roofBase.inputKeys = [];

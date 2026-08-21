@@ -180,6 +180,17 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       return source ? { ...feature, inputKeys: feature.inputKeys.filter((key) => key !== source.key), parameters: { ...feature.parameters, profile: source.parameters.profile } } : feature;
     });
     features = features.map((feature) => {
+      // A revolve is described by a radial XZ generating curve.  An extrude
+      // uses the same shared point schema but its profile is an XY sketch at
+      // one local Z datum.  Reinterpreting every profile's larger Y span as an
+      // axial ordinate silently turns a rectangular housing into a vertical
+      // strip before OCCT sees it.  Keep the coordinate conversion confined
+      // to the operation whose contract actually defines it.
+      // Legacy annular extrusions use a radial/axial profile plus explicit
+      // inner radius; preserve that compatibility contract. New arbitrary
+      // extrusions have no inner radius and retain their literal XY sketch.
+      const usesAxisymmetricProfile = feature.operation === "revolve" || (feature.operation === "extrude" && feature.parameters.innerRadiusMm !== null);
+      if (!usesAxisymmetricProfile) return feature;
       const rawProfile = feature.parameters.profile;
       if (!rawProfile?.length) return feature;
       /* The vision schema carries a three-axis point for reuse by sweep/loft,
@@ -199,6 +210,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     // instead of the neck. This is a component-coordinate conversion, not a
     // product-name rule or an inferred geometric alteration.
     const profileAxisWasY = component.features.some((feature) => {
+      if (feature.operation !== "revolve" && !(feature.operation === "extrude" && feature.parameters.innerRadiusMm !== null)) return false;
       const profile = feature.parameters.profile ?? []; if (profile.length < 2) return false;
       const ySpan = Math.max(...profile.map((point) => point.yMm)) - Math.min(...profile.map((point) => point.yMm));
       const zSpan = Math.max(...profile.map((point) => point.zMm)) - Math.min(...profile.map((point) => point.zMm));
@@ -211,6 +223,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     });
     const componentZ = Number(component.transform?.translationMm?.z ?? 0);
     features = features.map((feature) => {
+      if (feature.operation !== "revolve" && !(feature.operation === "extrude" && feature.parameters.innerRadiusMm !== null)) return feature;
       const profile = feature.parameters.profile;
       if (!profile?.length || Math.abs(componentZ) < 1e-6) return feature;
       const minZ = Math.min(...profile.map((point) => point.zMm));

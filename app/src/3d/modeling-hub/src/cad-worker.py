@@ -232,6 +232,38 @@ def primitive(params):
     return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).extrude(height)
 
 
+def extrude(params):
+    """Extrude an approved planar sketch, never a generic cylinder fallback.
+
+    ``profile`` is an ordered component-local XY wire.  A circular/annular
+    sketch can alternatively use the explicit radius fields; that is still an
+    analytical extrusion, not a replacement for an unknown arbitrary profile.
+    """
+    height = float(params.get("heightMm") or (params.get("dimensionsMm") or {}).get("z") or 0)
+    if height <= 1e-8:
+        raise RuntimeError("graph_invalid: extrude requires positive heightMm")
+    raw = params.get("profile") or []
+    if raw:
+        points = [(float(point["xMm"]), float(point["yMm"]), float(point["zMm"])) for point in raw]
+        if len(points) < 3:
+            raise RuntimeError("graph_invalid: extrude profile needs at least three ordered points")
+        z_values = [point[2] for point in points]; z = z_values[0]
+        if any(abs(value - z) > 1e-6 for value in z_values):
+            raise RuntimeError("graph_invalid: extrude profile must be planar in component-local XY")
+        planar = [(point[0], point[1]) for point in points]
+        if math.dist(planar[0], planar[-1]) <= 1e-8: planar.pop()
+        if len(planar) < 3:
+            raise RuntimeError("graph_invalid: extrude profile collapses after closing-point normalization")
+        return cq.Workplane("XY").workplane(offset=z).moveTo(*planar[0]).polyline(planar[1:]).close().extrude(height)
+    radius = params.get("radiusMm")
+    if radius is None:
+        raise RuntimeError("graph_invalid: extrude requires a profile or explicit radiusMm")
+    workplane = cq.Workplane("XY").circle(float(radius))
+    if params.get("innerRadiusMm") is not None:
+        workplane = workplane.circle(float(params["innerRadiusMm"]))
+    return workplane.extrude(height)
+
+
 def loft(params):
     """Create a component-local solid from two or more explicit planar wires.
 
@@ -449,7 +481,8 @@ def compile_graph(graph_component, graph_nodes):
         op, params = node["operation"], node.get("parameters") or {}; inputs = [copy_workplane(results[item]) for item in node.get("inputNodeIds", []) if item in results]
         if op == "revolve": shape = revolve(params)
         elif op == "loft": shape = loft(params)
-        elif op in ("primitive", "extrude"): shape = primitive(params)
+        elif op == "primitive": shape = primitive(params)
+        elif op == "extrude": shape = extrude(params)
         elif op == "boolean":
             if len(inputs) < 2: raise RuntimeError(f"graph_invalid: boolean node {node['id']} requires two inputs")
             mode = params.get("operation")
