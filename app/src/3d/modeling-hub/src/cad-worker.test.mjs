@@ -78,6 +78,25 @@ try {
   assert.equal(capReport.valid, true); assert.equal(capReport.closed, true); assert.equal(capReport.solidCount, 1, "a patterned ribbed closure must be fused into one B-Rep solid");
   const preflight = await preflightBrepGraph(capCanonical.graph);
   assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
+  const loftOutput = fixtureGraphOutput({ product: { name: "lofted nozzle proof" }, prompt: "tapered square nozzle", requestedComponents: ["노즐"] , imageIds: [] });
+  const loftBase = loftOutput.components[0].features[0];
+  loftBase.key = "nozzle-loft"; loftBase.operation = "loft"; loftBase.inputKeys = [];
+  loftBase.parameters = {
+    ...loftBase.parameters,
+    primitive: null, profile: null, curveSegments: null,
+    profiles: [
+      [{ xMm: -20, yMm: -15, zMm: 0 }, { xMm: 20, yMm: -15, zMm: 0 }, { xMm: 20, yMm: 15, zMm: 0 }, { xMm: -20, yMm: 15, zMm: 0 }],
+      [{ xMm: -10, yMm: -8, zMm: 30 }, { xMm: 10, yMm: -8, zMm: 30 }, { xMm: 10, yMm: 8, zMm: 30 }, { xMm: -10, yMm: 8, zMm: 30 }],
+    ],
+    dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null, thicknessMm: null, count: null, spacingMm: null, depthMm: null,
+  };
+  const loftCanonical = canonicalizeGraph(loftOutput, ["노즐"], []); const loftComponent = loftCanonical.graph.components[0]; const loftStem = path.join(temporary, loftComponent.id); const loftRequest = path.join(temporary, "loft.request.json");
+  await fs.writeFile(loftRequest, JSON.stringify({ graphComponent: loftComponent, graphNodes: loftCanonical.graph.nodes, paths: { step: `${loftStem}.step`, brep: `${loftStem}.brep`, stl: `${loftStem}.stl`, report: `${loftStem}.validation.json` }, tessellation: { chordMm: .05, angularDeg: 7 } }));
+  const loftRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), loftRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(loftRun.status, 0, `${loftRun.stdout}\n${loftRun.stderr}`);
+  const loftReport = JSON.parse(await fs.readFile(`${loftStem}.validation.json`, "utf8"));
+  assert.equal(loftReport.valid, true); assert.equal(loftReport.closed, true); assert.equal(loftReport.solidCount, 1, "a generic multi-profile loft must become one canonical B-Rep solid");
+  assert.ok(Math.abs(loftReport.boundsMm.z - 30) <= .01, "the loft's component-local axial datum must survive persisted B-Rep export");
   const roofedOutput = fixtureGraphOutput({ product: { name: "roofed closure proof" }, prompt: "tapered ribbed closure", requestedComponents: ["마개"], imageIds: [] });
   const roofBase = roofedOutput.components[0].features[0];
   roofBase.key = "roof-base"; roofBase.operation = "revolve"; roofBase.inputKeys = [];

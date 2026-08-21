@@ -19,7 +19,7 @@ export const FEATURE_OPERATIONS = Object.freeze([
   "hole", "groove", "rib", "thread", "pattern", "fillet", "chamfer", "transform", "mate",
   "uv_projection", "surface_decal", "surface_artwork", "volume", "instance_distribution",
 ]);
-export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "primitive", "shell", "boolean", "rib", "pattern", "transform", "mate", "surface_decal", "surface_artwork", "volume", "instance_distribution"]);
+export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "loft", "primitive", "shell", "boolean", "rib", "pattern", "transform", "mate", "surface_decal", "surface_artwork", "volume", "instance_distribution"]);
 const NORMALIZED_MODIFIER_OPERATIONS = new Set();
 export const ANALYSIS_OPERATIONS = Object.freeze(["profile", ...COMPILED_OPERATIONS]);
 
@@ -67,7 +67,7 @@ const featureKey = z.array(z.string().min(1).max(100));
 // Zod's ordinary union emits the former while retaining the same exhaustive
 // operation/input-cardinality validation when the response is parsed.
 const featureOutput = z.union([
-  ...["profile", "primitive", "revolve", "extrude", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
+  ...["profile", "primitive", "revolve", "extrude", "loft", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
   ...["shell", "rib", "transform", "mate"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.min(1).max(1) }).strict()),
   z.object({ ...featureOutputBase, operation: z.literal("pattern"), inputKeys: featureKey.min(2).max(2) }).strict(),
   z.object({ ...featureOutputBase, operation: z.literal("boolean"), inputKeys: featureKey.min(2).max(32) }).strict(),

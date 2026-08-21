@@ -232,6 +232,40 @@ def primitive(params):
     return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).extrude(height)
 
 
+def loft(params):
+    """Create a component-local solid from two or more explicit planar wires.
+
+    A loft is a manufacturing feature, not a triangulated visual shortcut.  A
+    graph profile is an ordered closed XY wire at one Z datum; each datum is
+    checked here instead of silently flattening arbitrary three-dimensional
+    point clouds.  OCCT owns the resulting B-Rep, and the same persisted B-Rep
+    subsequently produces STEP and the display tessellation.
+    """
+    profiles = params.get("profiles") or []
+    if len(profiles) < 2:
+        raise RuntimeError("graph_invalid: loft requires at least two planar profiles")
+    workplane = cq.Workplane("XY")
+    previous_z = 0.0
+    for index, raw_profile in enumerate(profiles):
+        points = [(float(point["xMm"]), float(point["yMm"]), float(point["zMm"])) for point in raw_profile]
+        if len(points) < 3:
+            raise RuntimeError("graph_invalid: loft profile needs at least three ordered points")
+        z_values = [point[2] for point in points]
+        z = z_values[0]
+        if any(abs(value - z) > 1e-6 for value in z_values):
+            raise RuntimeError("graph_invalid: each loft profile must be planar at one component-local Z datum")
+        if index and z <= previous_z + 1e-6:
+            raise RuntimeError("graph_invalid: loft profiles must be strictly ordered along component-local Z")
+        planar = [(point[0], point[1]) for point in points]
+        if math.dist(planar[0], planar[-1]) <= 1e-8:
+            planar.pop()
+        if len(planar) < 3:
+            raise RuntimeError("graph_invalid: loft profile collapses after closing-point normalization")
+        workplane = workplane.workplane(offset=z - previous_z).moveTo(*planar[0]).polyline(planar[1:]).close()
+        previous_z = z
+    return workplane.loft(combine=True)
+
+
 def radial_pattern(shape, count):
     if count is None or int(count) < 1:
         raise RuntimeError("graph_invalid: radial pattern requires a positive count")
@@ -414,6 +448,7 @@ def compile_graph(graph_component, graph_nodes):
     for node in graph_nodes:
         op, params = node["operation"], node.get("parameters") or {}; inputs = [copy_workplane(results[item]) for item in node.get("inputNodeIds", []) if item in results]
         if op == "revolve": shape = revolve(params)
+        elif op == "loft": shape = loft(params)
         elif op in ("primitive", "extrude"): shape = primitive(params)
         elif op == "boolean":
             if len(inputs) < 2: raise RuntimeError(f"graph_invalid: boolean node {node['id']} requires two inputs")
