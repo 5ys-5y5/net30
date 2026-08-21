@@ -141,6 +141,12 @@ assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).componen
 const incompleteArtworkOutput = fixtureGraphOutput({ product: { name: "부착값 없는 인쇄" }, prompt: "print", requestedComponents: ["body", "front print"], imageIds: ["image-1"] });
 incompleteArtworkOutput.components[1].features[0].parameters.dimensionsMm = null;
 assert.throws(() => canonicalizeGraph(incompleteArtworkOutput, ["body", "front print"], ["image-1"]), /graph_repair_required: component-2\.surfaceArtworkPlacement/, "a print missing its mm placement must be repaired locally instead of becoming an arbitrary flat band");
+const closureWithClearance = fixtureGraphOutput({ product: { name: "내부 clearance 뚜껑" }, prompt: "hollow closure", requestedComponents: ["뚜껑"], imageIds: [] });
+const closureBase = closureWithClearance.components[0].features[0];
+const clearanceTool = { ...structuredClone(closureBase), key: "closure-clearance", operation: "primitive", inputKeys: [], parameters: { ...structuredClone(closureBase.parameters), primitive: "cylinder", profile: null, curveSegments: null, dimensionsMm: null, radiusMm: 12, heightMm: 18, transform: { translationMm: { x: 0, y: 0, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
+const clearanceCut = { ...structuredClone(closureBase), key: "closure-final-cut", operation: "boolean", inputKeys: [closureBase.key, clearanceTool.key], parameters: { ...structuredClone(closureBase.parameters), primitive: null, profile: null, curveSegments: null, dimensionsMm: null, radiusMm: null, heightMm: null, transform: null, operation: "cut" } };
+closureWithClearance.components[0].features = [closureBase, clearanceTool, clearanceCut];
+assert.doesNotThrow(() => canonicalizeGraph(closureWithClearance, ["뚜껑"], []), "a contained cylindrical clearance must be validated by the host profile rather than forcing an LLM repair");
 const preCurveFieldResponse = fixtureGraphOutput({ product: { name: "기존 응답" }, prompt: "compatibility", requestedComponents: ["유리병"], imageIds: [] });
 delete preCurveFieldResponse.components[0].features[0].parameters.curveSegments;
 assert.doesNotThrow(() => canonicalizeGraph(preCurveFieldResponse, ["유리병"], []), "stored responses from before curveSegments must remain refinable");

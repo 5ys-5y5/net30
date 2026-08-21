@@ -425,13 +425,20 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
           // crossing both ends or beginning outside the host remains invalid.
           const exitCount = (exitsLower ? 1 : 0) + (exitsUpper ? 1 : 0);
           if (exitCount === 0) {
-            // A fully contained concentric bore is still a valid B-Rep
-            // feature (for example a pouring ring or a sealed internal
-            // passage). It is not an open vessel mouth, so manufacturing
-            // evidence must later establish how it is made, but geometry
-            // validation must not replace it with a fabricated shell or
-            // reject it before OCCT can verify the actual Boolean.
-            return outer?.operation === "revolve" && cutter?.operation === "revolve" ? null : item;
+            // A fully contained bore is a normal manufacturing feature for
+            // both an inner revolve *and* a cylindrical / extruded clearance
+            // tool (for example a closure cavity).  The former condition
+            // accidentally accepted only a second revolve, which made a
+            // geometrically contained cap cut trigger an expensive LLM
+            // repair.  Sample the approved host profile instead of checking
+            // the feature label.  OCCT remains the authority for the exact
+            // Boolean result afterwards.
+            if (!outer?.parameters.profile?.length || !Number.isFinite(item.radius)) return item;
+            const samples = [item.zMin, (item.zMin + item.zMax) / 2, item.zMax];
+            return samples.some((z) => {
+              const hostRadius = interpolateRadius(outer.parameters.profile, z);
+              return hostRadius === null || item.radius >= hostRadius - .01;
+            }) ? item : null;
           }
           if (exitCount !== 1) return item;
           if (!outer?.parameters.profile?.length) return item;
