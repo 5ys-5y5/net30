@@ -121,6 +121,21 @@ def apply_graph_transform(objects, value):
         obj.location.x+=float(translation.get("x",0))*MM; obj.location.y+=float(translation.get("y",0))*MM; obj.location.z+=float(translation.get("z",0))*MM
         obj.rotation_euler.x+=math.radians(float(rotation.get("x",0))); obj.rotation_euler.y+=math.radians(float(rotation.get("y",0))); obj.rotation_euler.z+=math.radians(float(rotation.get("z",0)))
         obj.scale.x*=float(scale.get("x",1)); obj.scale.y*=float(scale.get("y",1)); obj.scale.z*=float(scale.get("z",1))
+def import_brep_tessellation(component, source, target):
+    """Import the OCCT tessellation; never recreate the approved solid in Blender."""
+    before=set(bpy.data.objects); stl=pathlib.Path(source["stl"])
+    if not stl.is_file(): raise RuntimeError(f"Missing canonical B-Rep tessellation: {stl}")
+    if hasattr(bpy.ops.wm,"stl_import"): bpy.ops.wm.stl_import(filepath=str(stl))
+    else: bpy.ops.import_mesh.stl(filepath=str(stl))
+    imported=[obj for obj in bpy.data.objects if obj not in before and obj.type=="MESH"]
+    if not imported: raise RuntimeError(f"No mesh imported from canonical B-Rep tessellation: {stl}")
+    material=graph_material(component["id"]+"Material",component["material"])
+    for obj in imported:
+        # OCCT/STL coordinates are millimetres; Blender and glTF use metres.
+        # Without this conversion a 56 mm bottle becomes a 56 m object and is
+        # clipped entirely by the web viewer camera.
+        obj.scale=(MM,MM,MM); obj.name=component["requestedName"]; link(obj,target); obj.data.materials.append(material); smooth(obj,0)
+        obj["net30_geometry_source"]="opencascade-brep"; obj["net30_component_id"]=component["id"]
 def build_graph_component(component, nodes, contract, image_inputs, job_dir, target):
     before=set(target.objects); base_material=graph_material(component["id"]+"Material",component["material"]); d=contract["dimensionsMm"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM
     for node in nodes:
@@ -195,10 +210,11 @@ def main():
     request=json.loads(request_path().read_text())
     if request.get("mode")=="assemble-library": return assemble_library(request)
     paths=request["paths"]; clear(); assembly=col("ASSEMBLY")
-    graph=request["spec"].get("modelingGraph"); graph_components={item["id"]:item for item in (graph or {}).get("components",[])}; graph_nodes=(graph or {}).get("nodes",[])
+    graph=request["spec"].get("modelingGraph"); graph_components={item["id"]:item for item in (graph or {}).get("components",[])}; graph_nodes=(graph or {}).get("nodes",[]); cad_sources=request.get("cadSources",{})
     for component in request["spec"]["components"]:
         instance_id=component.get("componentInstanceId",component["component"]); part=col("PART_"+instance_id)
-        if instance_id in graph_components: build_graph_component(graph_components[instance_id],[node for node in graph_nodes if node["componentId"]==instance_id],request["spec"]["contract"],request.get("imageInputs",[]),paths["jobDir"],part)
+        if instance_id in cad_sources: import_brep_tessellation(graph_components[instance_id],cad_sources[instance_id],part)
+        elif instance_id in graph_components: build_graph_component(graph_components[instance_id],[node for node in graph_nodes if node["componentId"]==instance_id],request["spec"]["contract"],request.get("imageInputs",[]),paths["jobDir"],part)
         else: build_component(component,request["spec"]["contract"],part)
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(instance_id+".glb"))
         for obj in list(part.objects): link(obj,assembly)

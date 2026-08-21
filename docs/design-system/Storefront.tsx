@@ -67,6 +67,8 @@ import {
   ParameterGroup,
   ParameterQuestionCard,
   ParameterValue,
+  ParameterValueField,
+  GraphBindingSummary,
   BuildGate,
   BuildProgressPanel,
   ModelResultPanel,
@@ -123,7 +125,7 @@ type MarkupSemantic = "shape" | "dimension" | "material" | "assembly";
 type SketchPlan = { width: number; height: number; title: string; views?: readonly { id: string; label: string }[]; components: readonly { id: string; label: string; color: string; note?: string; points: readonly { x: number; y: number }[] }[]; annotations: readonly { label: string; x: number; y: number }[] };
 type SketchStroke = { id: string; semantic: MarkupSemantic; color: string; width: number; note: string; componentId: string | null; nodeId: string | null; viewId: string; points: readonly { x: number; y: number }[] };
 type SketchIteration = { id: string; ordinal: number; status: "proposed" | "approved" | "superseded"; prompt: string; markup?: readonly SketchStroke[]; markupRevision?: number; resultGraphHash?: string; plan: SketchPlan };
-type ModelingDraft = { id: string; revision: number; state: string; message: string; modelingGraphHash?: string; parentModelId?: string; input: { operation?: string; parentModelId?: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; iterations?: readonly SketchIteration[]; activeIterationId?: string | null; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean }; sketchReady?: boolean } };
+type ModelingDraft = { id: string; revision: number; state: string; message: string; jobId?: string | null; modelingGraphHash?: string; parentModelId?: string; input: { operation?: string; parentModelId?: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; iterations?: readonly SketchIteration[]; activeIterationId?: string | null; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean }; sketchReady?: boolean } };
 type ProductModel = { id: string; name: string; kind: "assembly" | "component"; parentId?: string | null; revision: number; linkedSkuId: string | null; currentRevision: { id: string; ordinal: number; state: string; childCount: number; assetPath?: string | null } | null; publishedRevision: { id: string; ordinal: number } | null; directChildren: number; descendantCount: number; status: "empty" | "ready" | "unpublished" | "published" | "failed" | "archived" | string; archivedAt?: string | null; updatedAt: string };
 type ProductModelTree = ProductModel & { selectedRevision: { id: string; ordinal: number; assetPath?: string | null; childCount: number }; children: readonly { id: string; path: string; modelId: string; revisionId: string; order: number; transform: unknown; visible: boolean; model: ProductModelTree }[] };
 type AssetEditTarget = { mode: "refine-assembly" | "refine-node" | "add-child"; rootModelId: string; baseRootRevisionId: string; targetModelId?: string; baseTargetRevisionId?: string; targetChildRefIds?: readonly string[]; label: string };
@@ -197,16 +199,30 @@ function groupDraftQuestions(draft: ModelingDraft, questions = draft.questions) 
   return [...groups.values()];
 }
 
-function DraftQuestionGroups({ draft, questions, readOnly = false, decisionPending = false, onDecision }: { draft: ModelingDraft; questions?: readonly ModelingDraftQuestion[]; readOnly?: boolean; decisionPending?: boolean; onDecision?: (question: ModelingDraftQuestion, action: "accept" | "override" | "needs_evidence", value?: unknown) => void }) {
+type PendingDraftEdit = { dirty: boolean; valid: boolean; value?: unknown };
+function DraftQuestionGroups({ draft, questions, readOnly = false, decisionPending = false, onDecision, onEditStateChange }: { draft: ModelingDraft; questions?: readonly ModelingDraftQuestion[]; readOnly?: boolean; decisionPending?: boolean; onDecision?: (question: ModelingDraftQuestion, action: "accept" | "override" | "needs_evidence", value?: unknown) => void; onEditStateChange?: (questionId: string, edit: PendingDraftEdit) => void }) {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const editor = (question: ModelingDraftQuestion) => {
     const value = edits[question.id] ?? editableParameterValue(question);
-    const change = (next: string) => { setEdits((current) => ({ ...current, [question.id]: next })); setEditErrors((current) => ({ ...current, [question.id]: "" })); };
+    const change = (next: string) => {
+      setEdits((current) => ({ ...current, [question.id]: next }));
+      const dirty = next !== editableParameterValue(question);
+      try { const parsed = parseEditableParameter(question, next); setEditErrors((current) => ({ ...current, [question.id]: "" })); onEditStateChange?.(question.id, { dirty, valid: true, value: parsed }); }
+      catch (error) { const message = error instanceof Error ? error.message : String(error); setEditErrors((current) => ({ ...current, [question.id]: message })); onEditStateChange?.(question.id, { dirty, valid: false }); }
+    };
     if (question.valueType === "boolean") return <select className={CLASS.modelingControl} value={value} onChange={(event) => change(event.target.value)}><option value="true">예</option><option value="false">아니요</option></select>;
     if (question.valueType === "number") return <input className={CLASS.modelingControl} type="number" step="any" value={value} onChange={(event) => change(event.target.value)} />;
     if (question.valueType === "color") return <input className={CLASS.modelingControl} type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#000000"} onChange={(event) => change(event.target.value)} />;
-    if (["vector", "profile", "curve", "material"].includes(question.valueType)) return <textarea className={joinClasses(CLASS.modelingControl, CLASS.modelingTextarea)} value={value} spellCheck={false} onChange={(event) => change(event.target.value)} />;
+    if (["vector", "material"].includes(question.valueType)) {
+      let object: Record<string, unknown> = {}; try { object = JSON.parse(value) as Record<string, unknown>; } catch { object = {}; }
+      const fields = question.valueType === "material" ? ["name", "baseColor", "roughness", "metallic", "transmission", "ior", "opacity"] : Object.keys(object);
+      return <FieldGroup label={question.valueType === "material" ? "재질 속성" : "벡터 속성"}>{fields.map((key) => <FormField key={key} label={key}><input className={CLASS.modelingControl} type={typeof object[key] === "number" ? "number" : "text"} step="any" value={String(object[key] ?? "")} onChange={(event) => change(JSON.stringify({ ...object, [key]: typeof object[key] === "number" ? Number(event.target.value) : event.target.value }))} /></FormField>)}</FieldGroup>;
+    }
+    if (["profile", "curve"].includes(question.valueType)) {
+      let points: readonly Record<string, unknown>[] = []; try { const parsed = JSON.parse(value); points = Array.isArray(parsed) ? parsed : []; } catch { points = []; }
+      return <FieldGroup label="단면 제어점">{points.map((point, index) => <Atom key={index}>{Object.entries(point).map(([key, current]) => <FormField key={key} label={`${index + 1} · ${key}`}><input className={CLASS.modelingControl} type="number" step="any" value={String(current)} onChange={(event) => { const next = points.map((item, pointIndex) => pointIndex === index ? { ...item, [key]: Number(event.target.value) } : item); change(JSON.stringify(next)); }} /></FormField>)}</Atom>)}</FieldGroup>;
+    }
     return <input className={CLASS.modelingControl} type={question.valueType === "file" ? "text" : "text"} value={value} onChange={(event) => change(event.target.value)} />;
   };
   return <ParameterEditor>{groupDraftQuestions(draft, questions).map((group) => <ParameterGroup label={group.label} key={group.label}>{group.questions.map((question) => <ParameterQuestionCard status={question.status} key={question.id}>
@@ -214,14 +230,13 @@ function DraftQuestionGroups({ draft, questions, readOnly = false, decisionPendi
       <Label>{question.criticality} · {question.status}</Label>
       <h3>{parameterLabel(question)}</h3>
       <Copy>{question.rationale}</Copy>
-      <ParameterValue>{parameterValue(question)}</ParameterValue>
+      {readOnly ? <ParameterValue>{parameterValue(question)}</ParameterValue> : null}
       {question.evidence?.length ? <EvidencePreview>{question.evidence.map((item) => <Copy key={`${question.id}-${item.kind}-${item.label}`}>{item.kind} · {item.label}</Copy>)}</EvidencePreview> : null}
       <details><summary>내부 기준 경로</summary><code>{question.path}</code></details>
     </div>
     {!readOnly && onDecision ? <DecisionActions>
-      <ActionButton className={CLASS.modelingAction} disabled={decisionPending || ["accepted", "overridden"].includes(question.status)} onClick={() => onDecision(question, "accept")}>승인</ActionButton>
-      <FormField className={CLASS.modelingField} label={`수정값 · ${question.valueType}`}>{editor(question)}{editErrors[question.id] ? <Copy className={CLASS.modelingError}>{editErrors[question.id]}</Copy> : null}</FormField>
-      <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => { try { onDecision(question, "override", parseEditableParameter(question, edits[question.id] ?? editableParameterValue(question))); } catch (error) { setEditErrors((current) => ({ ...current, [question.id]: error instanceof Error ? error.message : String(error) })); } }}>수정 저장</ActionButton>
+      <ParameterValueField state={edits[question.id] !== undefined && edits[question.id] !== editableParameterValue(question) ? "modified" : editErrors[question.id] ? "invalid" : question.status === "overridden" ? "overridden" : "pristine"}>{editor(question)}{editErrors[question.id] ? <Copy className={CLASS.modelingError}>{editErrors[question.id]}</Copy> : null}</ParameterValueField>
+      <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => { try { const source = edits[question.id]; onDecision(question, source !== undefined && source !== editableParameterValue(question) ? "override" : "accept", source !== undefined ? parseEditableParameter(question, source) : undefined); } catch (error) { setEditErrors((current) => ({ ...current, [question.id]: error instanceof Error ? error.message : String(error) })); } }}>이 값 승인</ActionButton>
       <ActionButton className={CLASS.modelingAction} disabled={decisionPending} onClick={() => onDecision(question, "needs_evidence")}>근거 요청</ActionButton>
     </DecisionActions> : null}
   </ParameterQuestionCard>)}</ParameterGroup>)}</ParameterEditor>;
@@ -580,9 +595,11 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [finish, setFinish] = useState(defaults.finish);
   const [prompt, setPrompt] = useState(defaults.prompt);
   const [productName, setProductName] = useState(studio.workspace.productName);
+  const [qualityProfile, setQualityProfile] = useState<"speed" | "balanced" | "quality">("balanced");
   const [draft, setDraft] = useState<ModelingDraft | null>(null);
   const [activeReviewScope, setActiveReviewScope] = useState("assembly");
   const [draftDecisionPending, setDraftDecisionPending] = useState(false);
+  const [draftEdits, setDraftEdits] = useState<Record<string, PendingDraftEdit>>({});
   const [buildInProgress, setBuildInProgress] = useState(false);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState("");
@@ -615,6 +632,18 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       setModels(choices);
       setModel((current) => current || body.defaultModel || choices[0]?.id || "");
     }).catch(() => undefined);
+    return () => controller.abort();
+  }, [studio.endpoint]);
+
+  useEffect(() => {
+    const draftId = new URL(window.location.href).searchParams.get("draft");
+    if (!draftId) return;
+    const controller = new AbortController();
+    void fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${encodeURIComponent(draftId)}`, { signal: controller.signal }).then(async (response) => {
+      const body = await response.json() as { ok?: boolean; draft?: ModelingDraft; error?: string };
+      if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "진행 중인 초안을 복원하지 못했습니다.");
+      setDraft(body.draft); setProgress(body.draft.message); setActiveReviewScope("assembly");
+    }).catch((requestError) => { if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : String(requestError)); });
     return () => controller.abort();
   }, [studio.endpoint]);
 
@@ -666,6 +695,18 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     const fallback = window.setInterval(() => void refresh(), 4000);
     return () => { events.close(); window.clearInterval(fallback); };
   }, [draft?.id, studio.endpoint]);
+
+  useEffect(() => {
+    if (!draft?.jobId || !["complete", "review_required"].includes(draft.state)) return;
+    const controller = new AbortController();
+    void fetch(`${studio.endpoint}/${encodeURIComponent(draft.jobId)}`, { signal: controller.signal }).then(async (response) => {
+      const body = await response.json() as { ok?: boolean; job?: { result?: { artifact?: { assemblyGlb?: string; report?: string } } } };
+      const artifact = body.job?.result?.artifact;
+      if (!response.ok || !body.ok || !artifact?.assemblyGlb) return;
+      setPreviewModel(artifact.assemblyGlb); setPreviewRevision(draft.revision.toString()); setResultArtifacts(artifact); setDownloadReady(true); setResult(draft.message);
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [draft?.jobId, draft?.revision, draft?.state, studio.endpoint]);
 
   const refreshVersions = async (componentIds: readonly string[]) => {
     const entries = await Promise.all(componentIds.map(async (component) => {
@@ -836,6 +877,17 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     if (!requestedComponents.length || requestedComponents.length > 30 || requestedComponents.some((name) => Array.from(name).length > 60) || new Set(requestedComponents).size !== requestedComponents.length) {
       setError("컴포넌트는 쉼표로 구분한 1~30개의 고유한 이름(각 60자 이하)이어야 합니다."); return;
     }
+    if (analysisFailed && draft) {
+      setPending(true); setError(""); setProgress("저장된 OpenAI 응답의 컴포넌트 graph repair 중");
+      try {
+        const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/reanalyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision }) });
+        const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft };
+        if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "분석 결과를 복구하지 못했습니다.");
+        setDraft(body.draft); setProgress(body.draft.message); setActiveReviewScope("assembly");
+      } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
+      finally { setPending(false); }
+      return;
+    }
     setPending(true);
     setDraft(null);
     setPreviewModel("");
@@ -855,7 +907,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          version: "net30.modeling-draft.v8", operation, model: model || undefined, imageIds, prompt, componentInput,
+          version: "net30.modeling-draft.v8", qualityProfile, operation, model: model || undefined, imageIds, prompt, componentInput,
           target: editTarget ? { rootModelId: editTarget.rootModelId, baseRootRevisionId: editTarget.baseRootRevisionId, mode: editTarget.mode, targetModelId: editTarget.targetModelId, baseTargetRevisionId: editTarget.baseTargetRevisionId, targetChildRefIds: editTarget.targetChildRefIds ?? [] } : undefined,
           expectedRootRevision: editTarget ? productModels.find((item) => item.id === editTarget.rootModelId)?.revision : undefined,
           revisionBaseRefs: Object.fromEntries(Object.entries(parentVersionId).map(([component, versionId]) => [component, { versionId }])),
@@ -866,6 +918,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft; parentModel?: ProductModel; statusUrl?: string };
       if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? `초안 요청 실패 (${response.status})`);
       setDraft(body.draft); if (body.parentModel?.id) setActiveParentModelId(body.parentModel.id); setActiveReviewScope("assembly"); setProgress(body.draft.message); void refreshProductModels();
+      const currentUrl = new URL(window.location.href); currentUrl.searchParams.set("draft", body.draft.id); window.history.replaceState(null, "", currentUrl);
       const statusUrl = body.statusUrl ?? `${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${body.draft.id}`;
       for (;;) {
         await new Promise((resolve) => window.setTimeout(resolve, 1200));
@@ -886,10 +939,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     const value = action === "override" ? overrideValue : undefined;
     setDraftDecisionPending(true); setError("");
     try {
-      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, decisions: [{ questionId: question.id, action, value }] }) });
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, expectedGraphHash: draft.modelingGraphHash, decisions: [{ questionId: question.id, action, value }] }) });
       const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft };
       if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "결정을 저장하지 못했습니다.");
-      setDraft(body.draft); setProgress(body.draft.message);
+      setDraft(body.draft); setDraftEdits((current) => { const next = { ...current }; delete next[question.id]; return next; }); setProgress(body.draft.message);
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
     finally { setDraftDecisionPending(false); }
   };
@@ -901,19 +954,23 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     return draft.questions.filter((question) => question.scope === "component" && question.componentInstanceId === activeReviewScope);
   }, [activeReviewScope, draft]);
   const activeScopeLinkedQuestions = useMemo(() => !draft || ["assembly", "graphics"].includes(activeReviewScope) ? [] : draft.questions.filter((question) => ["assembly", "interface"].includes(question.scope) && question.appliesToComponentIds?.includes(activeReviewScope)), [activeReviewScope, draft]);
-  const approveCurrentScope = async () => {
+  const approveQuestions = async (questions: readonly ModelingDraftQuestion[]) => {
     if (!draft) return;
-    const proposed = activeScopeQuestions.filter((question) => question.status === "proposed");
+    const proposed = questions.filter((question) => question.status === "proposed");
     if (!proposed.length) return;
+    const invalid = proposed.filter((question) => draftEdits[question.id]?.dirty && !draftEdits[question.id]?.valid);
+    if (invalid.length) { setError(`수정값을 확인하세요: ${invalid.map(parameterLabel).join(", ")}`); return; }
     setDraftDecisionPending(true); setError("");
     try {
-      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, decisions: proposed.map((question) => ({ questionId: question.id, action: "accept" })) }) });
+      const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, expectedGraphHash: draft.modelingGraphHash, decisions: proposed.map((question) => draftEdits[question.id]?.dirty ? ({ questionId: question.id, action: "override", value: draftEdits[question.id].value }) : ({ questionId: question.id, action: "accept" })) }) });
       const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft };
       if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "현재 범위의 승인을 저장하지 못했습니다.");
-      setDraft(body.draft); setProgress(body.draft.message);
+      setDraft(body.draft); setDraftEdits((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !proposed.some((question) => question.id === id)))); setProgress(body.draft.message);
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
     finally { setDraftDecisionPending(false); }
   };
+  const approveCurrentScope = () => approveQuestions(activeScopeQuestions);
+  const approveWholeDraft = () => approveQuestions(draft?.questions ?? []);
   const saveSketchMarkup = async (iteration: SketchIteration, strokes: readonly SketchStroke[]) => {
     if (!draft) return; setDraftDecisionPending(true); setError("");
     try { const response = await fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${draft.id}/iterations/${iteration.id}/markup`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: draft.revision, expectedMarkupRevision: iteration.markupRevision ?? 0, strokes }) }); const body = await response.json() as { ok?: boolean; error?: string; draft?: ModelingDraft }; if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "스케치 주석을 저장하지 못했습니다."); setDraft(body.draft); setProgress(body.draft.message); }
@@ -996,6 +1053,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
             <FormField className={CLASS.modelingField} label="제품명"><input className={CLASS.modelingControl} value={productName} onChange={(event) => setProductName(event.target.value)} /></FormField>
+            <FormField className={CLASS.modelingField} label="품질 프로필"><select className={CLASS.modelingControl} value={qualityProfile} onChange={(event) => setQualityProfile(event.target.value as "speed" | "balanced" | "quality")}><option value="speed">속도 · 첫 스케치 목표 45초</option><option value="balanced">균형 · 기본</option><option value="quality">품질 · 정밀 테셀레이션</option></select></FormField>
             <FormField className={joinClasses(CLASS.modelingField, CLASS.modelingFieldWide)} label="모델링할 컴포넌트">
               <input className={CLASS.modelingControl} required value={componentInput} onChange={(event) => setComponentInput(event.target.value)} placeholder="예: 유리병, 뚜껑, 밀봉 라이너" />
               <Copy className={CLASS.modelingHint}>쉼표로 구분합니다. 입력한 항목만 분석·승인·생성하며, 뚜껑만 입력하면 뚜껑만 새 버전으로 생성합니다.</Copy>
@@ -1026,6 +1084,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </ModelResultPanel> : draft ? <ReviewWorkspace>
         <ReviewWorkspaceHeader><Label>{buildFailed ? "OPENAI × BLENDER · Blender 생성 실패" : "OPENAI × BLENDER · 승인 워크플로"}</Label><ReviewStatus>{buildFailed ? "재실행 가능" : draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
         <WorkflowStepper>{MODELING_WORKFLOW_STEPS.map((step, index) => <WorkflowStep status={index < activeWorkflowIndex ? "completed" : index === activeWorkflowIndex ? "current" : "upcoming"} key={step}>{index + 1}. {step}</WorkflowStep>)}</WorkflowStepper>
+        <GraphBindingSummary><span>working graph · {draft.modelingGraphHash?.slice(0, 12) ?? "분석 중"}</span><span>범위 · {reviewScopes.find((scope) => scope.id === activeReviewScope)?.label ?? "제품·조립"}</span><span>승인값과 스케치는 같은 hash만 표시</span></GraphBindingSummary>
         <ReviewProgress>{draft.approval?.ready ? "모든 값 승인됨" : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</ReviewProgress>
         <ReviewScopeNavigator onKeyDown={(event) => { if (!reviewScopes.length || !["ArrowLeft", "ArrowRight"].includes(event.key)) return; event.preventDefault(); const index = reviewScopes.findIndex((scope) => scope.id === activeReviewScope); setActiveReviewScope(reviewScopes[(index + (event.key === "ArrowRight" ? 1 : reviewScopes.length - 1)) % reviewScopes.length].id); }}>
           {reviewScopes.map((scope) => { const questions = scope.id === "assembly" ? draft.questions.filter((question) => ["product", "assembly", "interface"].includes(question.scope)) : scope.id === "graphics" ? draft.questions.filter((question) => question.scope === "sticker-slot") : draft.questions.filter((question) => question.componentInstanceId === scope.id); const outstanding = questions.filter((question) => !["accepted", "overridden"].includes(question.status)).length; return <ReviewScopeControl active={activeReviewScope === scope.id} key={scope.id} onClick={() => setActiveReviewScope(scope.id)}>{scope.label} · {questions.length - outstanding}/{questions.length}</ReviewScopeControl>; })}
@@ -1033,8 +1092,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         {activeReviewScope === "assembly" && draft.product ? <ProposalCard><Label>제품·조립 기준</Label><Copy>{draft.product.name} · {draft.product.intendedUse ?? "제품 용도 확인 필요"}</Copy></ProposalCard> : null}
         {!(["assembly", "graphics"].includes(activeReviewScope)) ? <ProposalCard><Label>선택한 구성 부품</Label><Copy>{draft.components.find((component) => component.id === activeReviewScope)?.summary ?? "지정된 컴포넌트의 형상·재질·결합값을 확인합니다."}</Copy>{activeScopeLinkedQuestions.map((question) => <Copy key={question.id}>연결된 제품·조립 기준 · {parameterLabel(question)}: {parameterValue(question)}</Copy>)}</ProposalCard> : null}
         {draft.components.length > 0 && activeReviewScope === "assembly" ? <ProposalCard><Label>지정한 구성 부품</Label>{draft.components.map((component) => <Copy key={component.id}>{component.displayName} · {component.semanticRole} · {component.recipe} · {component.quantity}개</Copy>)}</ProposalCard> : null}
-        {!["assembly", "graphics"].includes(activeReviewScope) ? <ScopedApprovalBar><Copy>이 컴포넌트의 아직 수정하지 않은 권장값 {activeScopeQuestions.filter((question) => question.status === "proposed").length}개만 한 번에 승인합니다.</Copy><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeScopeQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveCurrentScope()}>현재 컴포넌트 권장값 일괄 승인</ActionButton></ScopedApprovalBar> : null}
-        <DraftQuestionGroups draft={draft} questions={activeScopeQuestions} decisionPending={draftDecisionPending} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
+        <ScopedApprovalBar><Copy>현재 범위 {activeScopeQuestions.filter((question) => question.status === "proposed").length}개 · 전체 초안 {draft.questions.filter((question) => question.status === "proposed").length}개 승인 대기</Copy><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeScopeQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveCurrentScope()}>현재 범위 일괄 승인</ActionButton><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || draft.questions.every((question) => question.status !== "proposed")} onClick={() => void approveWholeDraft()}>전체 초안 일괄 승인</ActionButton></AssetNodeActions></ScopedApprovalBar>
+        <DraftQuestionGroups draft={draft} questions={activeScopeQuestions} decisionPending={draftDecisionPending} onEditStateChange={(questionId, edit) => setDraftEdits((current) => ({ ...current, [questionId]: edit }))} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
         <BuildGate><Copy>{buildFailed ? "승인값과 스케치는 보존되었습니다. Blender 생성을 다시 실행할 수 있습니다." : draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : buildFailed ? "Blender 생성 다시 실행" : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
       </ReviewWorkspace> : <ModelingLibraryWorkspace>
       <ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY</Label><Atom as="h2">{studio.assetLibrary.title}</Atom><Copy>{studio.assetLibrary.copy}</Copy></ModelingWorkspaceIntro>

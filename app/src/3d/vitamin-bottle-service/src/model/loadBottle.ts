@@ -1,4 +1,4 @@
-import { Box3, Color, DoubleSide, Group, Material, Mesh, MeshStandardMaterial, Object3D, Vector3 } from "three";
+import { Box3, Color, DoubleSide, Group, Material, Mesh, Object3D, Vector3 } from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 export type LoadedBottle = {
@@ -30,15 +30,13 @@ function normaliseMaterial(material: Material, meshName: string) {
   // Some exporters write a generic white material for every part. Only then
   // add semantic fallback colour; authored non-white materials are preserved.
   const color = isGenericWhite && isGlass ? 0xc7deeb : isGenericWhite && isCap ? 0x083da9 : sourceColor;
-  const viewerMaterial = new MeshStandardMaterial({
-    color,
-    roughness: isGenericWhite ? (isGlass ? 0.2 : 0.48) : (source.roughness ?? (isGlass ? 0.2 : 0.48)),
-    metalness: isGenericWhite ? 0 : (source.metalness ?? 0),
-    opacity: source.opacity ?? 1,
-    transparent: source.transparent ?? false,
-    alphaTest: source.alphaTest ?? 0,
-  });
-  viewerMaterial.name = material.name;
+  /* Keep the exporter-authored physical material. Replacing it with a plain
+   * MeshStandardMaterial discarded transmission, IOR, normal/alpha maps and
+   * artwork textures, making valid glass GLBs appear blank or opaque. */
+  const viewerMaterial = material.clone() as Material & typeof source;
+  if (viewerMaterial.color) viewerMaterial.color.setHex(color);
+  if (isGenericWhite && viewerMaterial.roughness !== undefined) viewerMaterial.roughness = isGlass ? 0.2 : 0.48;
+  if (isGenericWhite && viewerMaterial.metalness !== undefined) viewerMaterial.metalness = 0;
   viewerMaterial.side = DoubleSide;
   viewerMaterial.needsUpdate = true;
   return viewerMaterial;
@@ -74,7 +72,6 @@ export async function loadBottle(
   const root = new Group();
   const stickerSlots: Record<string, Mesh> = {};
   root.name = sourceRoot.name;
-  root.position.copy(sourceRoot.position);
 
   sourceRoot.traverse((node) => {
     if (!isMesh(node)) return;
@@ -86,9 +83,9 @@ export async function loadBottle(
       : normaliseMaterial(node.material, node.name);
     const displayMesh = new Mesh(node.geometry, material);
     displayMesh.name = node.name;
-    displayMesh.position.copy(node.position);
-    displayMesh.quaternion.copy(node.quaternion);
-    displayMesh.scale.copy(node.scale);
+    /* Preserve the full imported hierarchy, including parent transforms. */
+    displayMesh.matrix.copy(node.matrixWorld);
+    displayMesh.matrixAutoUpdate = false;
     displayMesh.frustumCulled = false;
     displayMesh.castShadow = true;
     displayMesh.receiveShadow = true;

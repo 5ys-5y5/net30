@@ -1,57 +1,115 @@
-"""CadQuery/OpenCascade compiler for the restricted NET30 container DSL.
+"""Canonical CadQuery/OpenCascade compiler for NET30 ModelingGraph.
 
-This worker deliberately accepts JSON only; it never evaluates LLM-generated Python.
+Only this static interpreter creates product solids. Blender consumes its
+tessellation and never re-interprets model-authored geometry instructions.
 """
-import json, pathlib, sys
+import json, math, pathlib, sys, time
 
 try:
     import cadquery as cq
 except ImportError as error:
-    raise SystemExit("CadQuery is not installed; visual GLB can be produced but STEP requires CadQuery/OpenCascade.") from error
+    raise SystemExit("cad_runtime_unavailable: install the pinned CadQuery/OCP runtime before modeling") from error
+
+
+def vec(value, fallback=(0.0, 0.0, 0.0)):
+    value = value or {}
+    return (float(value.get("x", fallback[0])), float(value.get("y", fallback[1])), float(value.get("z", fallback[2])))
+
+
+def transform_shape(shape, transform):
+    if not transform: return shape
+    rotation = vec(transform.get("rotationDeg")); translation = vec(transform.get("translationMm"))
+    for axis, angle in (((1, 0, 0), rotation[0]), ((0, 1, 0), rotation[1]), ((0, 0, 1), rotation[2])):
+        if abs(angle) > 1e-9: shape = shape.rotate((0, 0, 0), axis, angle)
+    if any(abs(item) > 1e-9 for item in translation): shape = shape.translate(translation)
+    return shape
+
+
+def revolve(params):
+    raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or [])]
+    points = []
+    for point in raw:
+        if not points or math.dist(point, points[-1]) > 1e-8: points.append(point)
+    if len(points) > 2 and math.dist(points[0], points[-1]) <= 1e-8: points.pop()
+    if len(points) < 2: raise RuntimeError("graph_invalid: revolve profile requires at least two points")
+    wire = cq.Workplane("XZ").moveTo(*points[0]).spline(points[1:]).close()
+    return wire.revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
+
+
+def primitive(params):
+    dimensions = params.get("dimensionsMm") or {"x": float(params.get("radiusMm") or 10) * 2, "y": float(params.get("radiusMm") or 10) * 2, "z": float(params.get("heightMm") or 10)}
+    kind = params.get("primitive") or "cylinder"; x, y, z = vec(dimensions, (20, 20, 20))
+    if params.get("innerRadiusMm") is not None: return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).circle(float(params["innerRadiusMm"])).extrude(float(params.get("heightMm") or z)).translate((0, 0, -float(params.get("heightMm") or z) / 2))
+    if kind == "box": return cq.Workplane("XY").box(x, y, z)
+    if kind == "sphere": return cq.Workplane("XY").sphere(x / 2)
+    if kind == "cone": return cq.Workplane("XY").circle(x / 2).workplane(offset=z).circle(max(.01, y / 2)).loft(combine=True).translate((0, 0, -z / 2))
+    if kind == "torus": return cq.Workplane("XY").transformed(offset=(x / 2, 0, 0)).circle(max(.01, y / 2)).revolve(360, (0, 0, 0), (0, 0, 1))
+    return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).extrude(float(params.get("heightMm") or z)).translate((0, 0, -float(params.get("heightMm") or z) / 2))
+
+
+def radial_pattern(shape, count):
+    count = max(1, min(512, int(count or 1))); result = None
+    for index in range(count):
+        instance = shape.rotate((0, 0, 0), (0, 0, 1), 360 * index / count)
+        result = instance if result is None else result.union(instance)
+    return result
+
+
+def compile_graph(graph_component, graph_nodes):
+    results = {}
+    for node in graph_nodes:
+        op, params = node["operation"], node.get("parameters") or {}; inputs = [results[item] for item in node.get("inputNodeIds", []) if item in results]
+        if op == "revolve": shape = revolve(params)
+        elif op in ("primitive", "extrude"): shape = primitive(params)
+        elif op == "boolean":
+            if len(inputs) < 2: raise RuntimeError(f"graph_invalid: boolean node {node['id']} requires two inputs")
+            shape = inputs[0]; mode = params.get("operation")
+            for operand in inputs[1:]: shape = shape.cut(operand) if mode == "cut" else shape.intersect(operand) if mode == "intersect" else shape.union(operand)
+        elif op == "shell":
+            if len(inputs) != 1: raise RuntimeError(f"graph_invalid: shell node {node['id']} requires one input")
+            thickness = float(params.get("thicknessMm") or 0)
+            if thickness <= 0: raise RuntimeError(f"graph_invalid: shell node {node['id']} requires positive thicknessMm")
+            shape = cq.Workplane(obj=inputs[0].val()).faces("<Z").shell(-thickness)
+        elif op == "pattern":
+            if len(inputs) not in (1, 2): raise RuntimeError(f"graph_invalid: pattern node {node['id']} requires a seed, optionally preceded by its base solid")
+            patterned = radial_pattern(inputs[-1], params.get("count"))
+            shape = inputs[0].union(patterned) if len(inputs) == 2 else patterned
+        elif op == "rib":
+            if len(inputs) < 1: raise RuntimeError(f"graph_invalid: rib node {node['id']} requires baseSolidNodeId input")
+            width = max(.05, float(params.get("spacingMm") or 1)); depth = max(.05, float(params.get("depthMm") or 1)); height = max(.05, float(params.get("heightMm") or 10))
+            rib = cq.Workplane("XY").box(width, depth, height).translate((float(params.get("radiusMm") or 1) + depth / 2, 0, height / 2))
+            shape = inputs[0].union(radial_pattern(rib, params.get("count")))
+        elif op in ("transform", "mate"):
+            if len(inputs) != 1: raise RuntimeError(f"graph_invalid: {op} node {node['id']} requires one input")
+            shape = transform_shape(inputs[0], params.get("transform"))
+        elif op in ("surface_decal", "surface_artwork", "volume", "instance_distribution"): continue
+        else: raise RuntimeError(f"unsupported_operation: {node['id']}.{op}")
+        shape = transform_shape(shape, params.get("transform"))
+        legacy_boolean = params.get("operation")
+        if legacy_boolean in ("cut", "union", "intersect") and inputs:
+            base = inputs[0]; shape = base.cut(shape) if legacy_boolean == "cut" else base.intersect(shape) if legacy_boolean == "intersect" else base.union(shape)
+        results[node["id"]] = shape
+    roots = [results[item] for item in graph_component.get("rootNodeIds", []) if item in results]
+    if not roots: raise RuntimeError("graph_invalid: component has no compiled B-Rep root")
+    shape = roots[0]
+    for addition in roots[1:]: shape = shape.union(addition)
+    return transform_shape(shape, graph_component.get("transform"))
+
 
 def main():
-    request = json.loads(pathlib.Path(sys.argv[1]).read_text())
-    component, graph_component, graph_nodes, contract, output = request["component"], request.get("graphComponent"), request.get("graphNodes", []), request["contract"], pathlib.Path(request["output"])
-    d = contract["dimensionsMm"]; radius = max(d["widthMm"], d["depthMm"]) / 2
-    if graph_component and graph_component.get("representation") == "brep_solid":
-        shapes = []
-        for node in graph_nodes:
-            params, operation = node["parameters"], node["operation"]
-            if operation == "revolve":
-                points = [(point["xMm"], point["zMm"]) for point in (params.get("profile") or [])]
-                if len(points) < 2: raise RuntimeError("Approved revolve profile needs at least two points")
-                outer = cq.Workplane("XZ").moveTo(*points[0]).spline(points[1:]).lineTo(0, points[-1][1]).lineTo(0, points[0][1]).close().revolve(360, (0, 0, 0), (0, 1, 0))
-                thickness = float(params.get("thicknessMm") or 0)
-                if thickness > 0:
-                    inner_points = [(max(.1, x - thickness), z) for x, z in points]
-                    inner = cq.Workplane("XZ").moveTo(*inner_points[0]).spline(inner_points[1:]).lineTo(0, inner_points[-1][1]).lineTo(0, inner_points[0][1]).close().revolve(360, (0, 0, 0), (0, 1, 0)); outer = outer.cut(inner)
-                shapes.append(outer)
-            elif operation in ["extrude", "primitive"]:
-                dimensions = params.get("dimensionsMm") or {"x": float(params.get("radiusMm") or 10) * 2, "y": float(params.get("radiusMm") or 10) * 2, "z": float(params.get("heightMm") or 10)}
-                primitive = params.get("primitive") or "cylinder"
-                if params.get("innerRadiusMm") is not None: shape = cq.Workplane("XY").circle(float(params.get("radiusMm") or dimensions["x"] / 2)).circle(float(params["innerRadiusMm"])).extrude(float(params.get("heightMm") or dimensions["z"]))
-                elif primitive == "box": shape = cq.Workplane("XY").box(float(dimensions["x"]), float(dimensions["y"]), float(dimensions["z"]))
-                elif primitive == "sphere": shape = cq.Workplane("XY").sphere(float(dimensions["x"]) / 2)
-                else: shape = cq.Workplane("XY").circle(float(params.get("radiusMm") or dimensions["x"] / 2)).extrude(float(params.get("heightMm") or dimensions["z"]))
-                shapes.append(shape)
-        if not shapes: return
-        shape = shapes[0]
-        for addition in shapes[1:]: shape = shape.union(addition)
-    elif component["component"] == "bottle":
-        # Separate outer/inner solids: this is a manufacturable B-Rep wall, not a Blender modifier.
-        points = [(point["radiusRatio"] * radius, point["zRatio"] * d["heightMm"]) for point in component["profile"]]
-        outer = cq.Workplane("XZ").moveTo(*points[0]).spline(points[1:]).lineTo(0, d["heightMm"]).lineTo(0, 0).close().revolve(360, (0, 0, 0), (0, 1, 0))
-        inner = cq.Workplane("XY").workplane(offset=d["wallMm"]).circle(max(.2, radius - d["wallMm"])).extrude(d["heightMm"] - d["wallMm"])
-        shape = outer.cut(inner)
-    elif component["component"] == "cap":
-        height = component["features"]["skirtHeightMm"] or 25
-        shape = cq.Workplane("XY").circle(radius * .965).extrude(height).cut(cq.Workplane("XY").workplane(offset=1.2).circle(radius * .62).extrude(height))
-    elif component["component"] == "pouringRing":
-        shape = cq.Workplane("XY").circle(radius * .68).circle(radius * .58).extrude(7)
-    elif component["component"] == "liner":
-        shape = cq.Workplane("XY").circle(radius * .59).extrude(1.6)
-    else:
-        return
-    if not shape.val().isValid(): raise RuntimeError("CAD B-Rep validity check failed")
-    output.parent.mkdir(parents=True, exist_ok=True); cq.exporters.export(shape, str(output))
+    started = time.perf_counter(); request = json.loads(pathlib.Path(sys.argv[1]).read_text())
+    graph_component, graph_nodes = request.get("graphComponent"), request.get("graphNodes", [])
+    if not graph_component or graph_component.get("representation") != "brep_solid": raise SystemExit("not_brep_component: component does not define a B-Rep solid")
+    print("CAD_PHASE=compile", flush=True); shape = compile_graph(graph_component, graph_nodes); print("CAD_PHASE=validate", flush=True); solid = shape.val()
+    if not solid.isValid(): raise RuntimeError("brep_invalid: OpenCascade validity check failed")
+    paths = request.get("paths") or {"step": request["output"]}; step = pathlib.Path(paths["step"]); step.parent.mkdir(parents=True, exist_ok=True)
+    brep = pathlib.Path(paths.get("brep", step.with_suffix(".brep"))); stl = pathlib.Path(paths.get("stl", step.with_suffix(".stl"))); report = pathlib.Path(paths.get("report", step.with_suffix(".validation.json")))
+    print("CAD_PHASE=step", flush=True); cq.exporters.export(shape, str(step)); print("CAD_PHASE=brep", flush=True); solid.exportBrep(str(brep))
+    tolerance = float(request.get("tessellation", {}).get("chordMm", .05)); angular = math.radians(float(request.get("tessellation", {}).get("angularDeg", 7)))
+    print("CAD_PHASE=tessellate", flush=True); cq.exporters.export(shape, str(stl), tolerance=tolerance, angularTolerance=angular)
+    shells = solid.Shells(); closed = bool(shells) and all(item.Closed() for item in shells)
+    box = solid.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(solid.Solids()), "shellCount": len(shells), "volumeMm3": solid.Volume(), "surfaceAreaMm2": solid.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
+    report.write_text(json.dumps(payload, indent=2) + "\n")
+
+
 if __name__ == "__main__": main()

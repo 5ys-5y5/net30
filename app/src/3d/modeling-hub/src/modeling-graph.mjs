@@ -10,11 +10,11 @@ const material = z.object({ name: z.string().min(1).max(120), baseColor: color, 
 export const FEATURE_OPERATIONS = Object.freeze([
   "profile", "primitive", "revolve", "extrude", "loft", "sweep", "shell", "boolean",
   "hole", "groove", "rib", "thread", "pattern", "fillet", "chamfer", "transform", "mate",
-  "uv_projection", "surface_decal", "volume", "instance_distribution",
+  "uv_projection", "surface_decal", "surface_artwork", "volume", "instance_distribution",
 ]);
-export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "primitive", "surface_decal", "volume", "instance_distribution"]);
-const NORMALIZED_MODIFIER_OPERATIONS = new Set(["shell", "rib", "pattern"]);
-export const ANALYSIS_OPERATIONS = Object.freeze(["profile", ...COMPILED_OPERATIONS, ...NORMALIZED_MODIFIER_OPERATIONS]);
+export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "primitive", "shell", "boolean", "rib", "pattern", "transform", "mate", "surface_decal", "surface_artwork", "volume", "instance_distribution"]);
+const NORMALIZED_MODIFIER_OPERATIONS = new Set();
+export const ANALYSIS_OPERATIONS = Object.freeze(["profile", ...COMPILED_OPERATIONS]);
 
 const featureParameters = z.object({
   primitive: z.enum(["box", "cylinder", "cone", "sphere", "torus"]).nullable(),
@@ -69,7 +69,7 @@ export const modelingGraphOutputSchema = z.object({
 }).strict();
 
 export const modelingGraphSchema = z.object({
-  version: z.literal("net30.modeling-graph.v1"), units: z.literal("mm"), axis: z.literal("z-up"),
+  version: z.enum(["net30.modeling-graph.v1", "net30.modeling-graph.v2"]), units: z.literal("mm"), axis: z.literal("z-up"),
   components: z.array(z.object({ id: z.string(), requestedName: z.string(), representation: z.enum(["brep_solid", "visual_surface", "volume", "instance_set", "legacy_mesh"]), rootNodeIds: z.array(z.string()), hostComponentId: z.string().nullable(), material, transform, summary: z.string() }).strict()).min(1).max(30),
   nodes: z.array(z.object({ id: z.string(), componentId: z.string(), operation: z.enum(FEATURE_OPERATIONS), inputNodeIds: z.array(z.string()), parameters: featureParameters, rationale: z.string(), confidence: z.number().min(0).max(1) }).strict()).min(1).max(2000),
   interfaces: z.array(z.object({ id: z.string(), componentIds: z.array(z.string()).min(2), kind: z.enum(["mate", "contact", "clearance", "thread", "seal"]), clearanceMm: z.number().nullable(), rationale: z.string() }).strict()).max(60),
@@ -133,34 +133,90 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       const source = feature.inputKeys.map((key) => byKey.get(key)).find((candidate) => candidate?.operation === "profile" && candidate.parameters.profile?.length);
       return source ? { ...feature, inputKeys: feature.inputKeys.filter((key) => key !== source.key), parameters: { ...feature.parameters, profile: source.parameters.profile } } : feature;
     });
-    const normalizedByKey = new Map(features.map((feature) => [feature.key, structuredClone(feature)]));
-    const findCompiledSource = (feature, seen = new Set()) => {
-      if (!feature || seen.has(feature.key)) return null; seen.add(feature.key);
-      if (COMPILED_OPERATIONS.includes(feature.operation)) return feature;
-      for (const key of feature.inputKeys) { const source = findCompiledSource(normalizedByKey.get(key), seen); if (source) return source; }
-      return null;
-    };
-    for (const modifier of features.filter((feature) => NORMALIZED_MODIFIER_OPERATIONS.has(feature.operation))) {
-      const source = findCompiledSource(modifier);
-      if (!source) throw new Error(`unsupported_operation: ${component.componentKey}.${modifier.operation}에 적용할 생성 연산이 없습니다.`);
-      for (const key of ["thicknessMm", "count", "spacingMm", "depthMm", "offsetMm"]) if (modifier.parameters[key] !== null) source.parameters[key] = modifier.parameters[key];
-    }
-    features = [...normalizedByKey.values()].filter((feature) => !NORMALIZED_MODIFIER_OPERATIONS.has(feature.operation)).map((feature) => ({ ...feature, inputKeys: feature.inputKeys.filter((key) => normalizedByKey.has(key) && !NORMALIZED_MODIFIER_OPERATIONS.has(normalizedByKey.get(key).operation)) }));
+    features = features.map((feature) => {
+      const rawProfile = feature.parameters.profile;
+      if (!rawProfile?.length) return feature;
+      /* The vision schema carries a three-axis point for reuse by sweep/loft,
+       * while an axisymmetric profile only has radius and one axial ordinate.
+       * Models may put that ordinate in yMm or zMm. Canonical B-Rep input is
+       * always XZ; select the varying ordinate once and persist it explicitly. */
+      const ySpan = Math.max(...rawProfile.map((point) => point.yMm)) - Math.min(...rawProfile.map((point) => point.yMm));
+      const zSpan = Math.max(...rawProfile.map((point) => point.zMm)) - Math.min(...rawProfile.map((point) => point.zMm));
+      const profile = rawProfile.map((point) => ({ ...point, yMm: 0, zMm: zSpan >= ySpan ? point.zMm : point.yMm }));
+      return { ...feature, parameters: { ...feature.parameters, profile } };
+    });
+    const componentZ = Number(component.transform?.translationMm?.z ?? 0);
+    features = features.map((feature) => {
+      const profile = feature.parameters.profile;
+      if (!profile?.length || Math.abs(componentZ) < 1e-6) return feature;
+      const minZ = Math.min(...profile.map((point) => point.zMm));
+      const maxZ = Math.max(...profile.map((point) => point.zMm));
+      const centreZ = (minZ + maxZ) / 2;
+      /* Vision sometimes reports an absolute assembly-height profile as well
+       * as the same component transform. Convert that profile to component-
+       * local coordinates so the transform is applied exactly once. */
+      if (Math.abs(centreZ - componentZ) > Math.max(10, (maxZ - minZ) * 2)) return feature;
+      return { ...feature, parameters: { ...feature.parameters, profile: profile.map((point) => ({ ...point, zMm: point.zMm - componentZ })) }, rationale: `${feature.rationale} (절대 높이 프로필을 component-local 좌표로 정규화함)` };
+    });
+    /* Structured output occasionally omits the edge from a modifier or a
+     * legacy inline boolean to the immediately preceding solid. Feature order
+     * is part of the component command sequence, so this edge is deterministic
+     * and can be repaired locally without re-running every OpenAI component. */
+    let precedingSolidKey = null;
+    features = features.map((feature) => {
+      const inlineBoolean = ["cut", "union", "intersect"].includes(feature.parameters?.operation);
+      const needsBase = ["rib", "pattern", "shell", "transform", "mate"].includes(feature.operation) || inlineBoolean;
+      let repaired = needsBase && !feature.inputKeys.length && precedingSolidKey
+        ? { ...feature, inputKeys: [precedingSolidKey], rationale: `${feature.rationale} (서버가 직전 B-Rep source 연결을 복구함)` }
+        : feature;
+      /* Some models label the first generating solid as `union`. There is no
+       * operand before it, so this means "start the result with this solid",
+       * not a missing dependency. Only later inline booleans need a base. */
+      if (inlineBoolean && !precedingSolidKey && !repaired.inputKeys.length && feature.parameters.operation === "union") repaired = { ...feature, parameters: { ...feature.parameters, operation: null }, rationale: `${feature.rationale} (첫 B-Rep solid로 정규화함)` };
+      const repairedNeedsBase = ["rib", "pattern", "shell", "transform", "mate"].includes(repaired.operation) || ["cut", "union", "intersect"].includes(repaired.parameters?.operation);
+      if (repairedNeedsBase && !repaired.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
+      if (["revolve", "extrude", "primitive", "boolean", "rib", "pattern", "shell", "transform", "mate"].includes(repaired.operation)) precedingSolidKey = repaired.key;
+      return repaired;
+    });
     if (!features.length) throw new Error(`unsupported_operation: ${component.componentKey}.profile에는 revolve·extrude 같은 생성 연산이 필요합니다.`);
     const featureHostKeys = [...new Set(features.map((feature) => feature.parameters.hostComponentKey).filter(Boolean))];
     if (featureHostKeys.length > 1 || (component.hostComponentKey && featureHostKeys.length && component.hostComponentKey !== featureHostKeys[0])) throw new Error(`graph_invalid: ${component.componentKey}의 부착 대상 참조가 충돌합니다.`);
     return { ...component, hostComponentKey: component.hostComponentKey ?? featureHostKeys[0] ?? null, features };
   });
-  const nodeKeyToId = new Map(); for (const component of normalizedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
-  const components = normalizedComponents.map((item, index) => ({ id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: item.features.map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }));
-  const nodes = normalizedComponents.flatMap((component) => component.features.map((feature) => ({ id: nodeKeyToId.get(feature.key), componentId: keyToId.get(component.componentKey), operation: feature.operation, inputNodeIds: feature.inputKeys.map((key) => nodeKeyToId.get(key)).filter(Boolean), parameters: { ...feature.parameters, hostComponentKey: feature.parameters.hostComponentKey ? keyToId.get(feature.parameters.hostComponentKey) ?? null : null }, rationale: feature.rationale, confidence: feature.confidence })));
-  const graph = modelingGraphSchema.parse({ version: "net30.modeling-graph.v1", units: "mm", axis: "z-up", components, nodes, interfaces: parsed.interfaces.map((item) => ({ id: `interface-${randomUUID().slice(0, 10)}`, componentIds: item.componentKeys.map((key) => keyToId.get(key)).filter(Boolean), kind: item.kind, clearanceMm: item.clearanceMm, rationale: item.rationale })), evidence: [{ id: `evidence-${randomUUID().slice(0, 10)}`, kind: imageIds.length ? "image" : "user", label: imageIds.length ? "사용자 모델링 입력 이미지" : "사용자 프롬프트", imageId: imageIds[0] ?? null }] });
+  const extent = (component) => {
+    const ranges = component.features.flatMap((feature) => {
+      const profile = feature.parameters.profile;
+      if (profile?.length) return [{ min: Math.min(...profile.map((point) => point.zMm)), max: Math.max(...profile.map((point) => point.zMm)) }];
+      if (!["primitive", "extrude"].includes(feature.operation)) return [];
+      const height = Number(feature.parameters.heightMm ?? feature.parameters.dimensionsMm?.z ?? 0);
+      if (!(height > 0)) return [];
+      const centre = Number(feature.parameters.transform?.translationMm?.z ?? 0);
+      return [{ min: centre - height / 2, max: centre + height / 2 }];
+    });
+    if (!ranges.length) return null;
+    const min = Math.min(...ranges.map((item) => item.min)); const max = Math.max(...ranges.map((item) => item.max));
+    return { min, max, span: max - min };
+  };
+  const baseComponent = [...normalizedComponents].filter((item) => item.representation === "brep_solid").sort((a, b) => (extent(b)?.span ?? 0) - (extent(a)?.span ?? 0))[0];
+  const threadHeight = Math.max(0, ...parsed.interfaces.filter((item) => item.kind === "thread" && item.componentKeys.includes(baseComponent?.componentKey)).flatMap((item) => item.componentKeys.filter((key) => key !== baseComponent.componentKey).map((key) => extent(normalizedComponents.find((component) => component.componentKey === key))?.span ?? 0)));
+  const placedComponents = normalizedComponents.map((component) => {
+    const range = extent(component); const translation = component.transform?.translationMm; const relation = parsed.interfaces.find((item) => item.componentKeys.includes(component.componentKey) && item.componentKeys.includes(baseComponent?.componentKey)); const linkedToBase = Boolean(relation);
+    if (!range || component === baseComponent || !linkedToBase || Math.abs(translation?.z ?? 0) > 1e-6 || range.min > 5 || range.span > (extent(baseComponent)?.span ?? Infinity) * .5) return component;
+    const targetTop = relation.kind === "thread" ? parsed.product.heightMm : Math.max(0, parsed.product.heightMm - threadHeight);
+    const z = Math.max(0, targetTop - range.max);
+    return { ...component, transform: { ...component.transform, translationMm: { ...component.transform.translationMm, z } }, summary: `${component.summary} (${relation.kind} 인터페이스 기준으로 z=${z.toFixed(3)} mm 배치)` };
+  });
+  const nodeKeyToId = new Map(); for (const component of placedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
+  const components = placedComponents.map((item, index) => { const referenced = new Set(item.features.flatMap((feature) => feature.inputKeys)); const roots = item.features.filter((feature) => !referenced.has(feature.key) && !["surface_decal", "surface_artwork", "volume", "instance_distribution"].includes(feature.operation)); return { id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: (roots.length ? roots : item.features).map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }; });
+  const nodes = placedComponents.flatMap((component) => component.features.map((feature) => ({ id: nodeKeyToId.get(feature.key), componentId: keyToId.get(component.componentKey), operation: feature.operation, inputNodeIds: feature.inputKeys.map((key) => nodeKeyToId.get(key)).filter(Boolean), parameters: { ...feature.parameters, hostComponentKey: feature.parameters.hostComponentKey ? keyToId.get(feature.parameters.hostComponentKey) ?? null : null }, rationale: feature.rationale, confidence: feature.confidence })));
+  const graph = modelingGraphSchema.parse({ version: "net30.modeling-graph.v2", units: "mm", axis: "z-up", components, nodes, interfaces: parsed.interfaces.map((item) => ({ id: `interface-${randomUUID().slice(0, 10)}`, componentIds: item.componentKeys.map((key) => keyToId.get(key)).filter(Boolean), kind: item.kind, clearanceMm: item.clearanceMm, rationale: item.rationale })), evidence: [{ id: `evidence-${randomUUID().slice(0, 10)}`, kind: imageIds.length ? "image" : "user", label: imageIds.length ? "사용자 모델링 입력 이미지" : "사용자 프롬프트", imageId: imageIds[0] ?? null }] });
   validateGraph(graph); return { product: parsed.product, graph, graphHash: graphHash(graph) };
 }
 
 export function validateGraph(graph) {
   const parsed = modelingGraphSchema.parse(graph); const components = new Set(parsed.components.map((item) => item.id)); const nodes = new Map(parsed.nodes.map((item) => [item.id, item]));
   for (const component of parsed.components) {
+    if (component.hostComponentId === component.id) throw new Error(`graph_invalid: ${component.id}은 자기 자신을 host로 사용할 수 없습니다.`);
     if (component.hostComponentId && !components.has(component.hostComponentId)) throw new Error(`graph_invalid: ${component.id}의 host component가 없습니다.`);
     if (component.representation === "visual_surface" && !component.hostComponentId) throw new Error(`graph_invalid: ${component.requestedName}에 부착 대상 표면이 필요합니다.`);
     for (const id of component.rootNodeIds) if (!nodes.has(id)) throw new Error(`graph_invalid: root node ${id}가 없습니다.`);
@@ -182,11 +238,33 @@ export function applyModelingPatch(graph, patch) {
 }
 
 export function graphSketchPlan(product, graph) {
-  const width = 1000, height = 680; const views = ["front", "side", "isometric"];
-  const components = graph.components.map((component, index) => {
-    const node = graph.nodes.find((item) => component.rootNodeIds.includes(item.id)); const profile = node?.parameters.profile ?? null; const dimensions = node?.parameters.dimensionsMm ?? { x: product.widthMm * .8, y: product.depthMm * .8, z: product.heightMm * .6 }; const columnWidth = width / views.length; const originX = index % 3 * columnWidth + columnWidth / 2; const baseY = 560 - Math.floor(index / 3) * 190;
-    const points = profile?.length ? [...profile.map((point) => ({ x: originX + point.xMm * 3.3, y: baseY - point.zMm * 3.3 })), ...[...profile].reverse().map((point) => ({ x: originX - point.xMm * 3.3, y: baseY - point.zMm * 3.3 }))] : [{ x: originX - dimensions.x * 1.5, y: baseY }, { x: originX + dimensions.x * 1.5, y: baseY }, { x: originX + dimensions.x * 1.5, y: baseY - dimensions.z * 3 }, { x: originX - dimensions.x * 1.5, y: baseY - dimensions.z * 3 }];
-    return { id: component.id, label: component.requestedName, representation: component.representation, nodeIds: component.rootNodeIds, points, color: component.material.baseColor, note: component.summary };
+  const width = 1000, height = 680; const views = ["front", "side", "isometric", "section", "exploded"];
+  const scale = Math.min((width - 180) / Math.max(1, product.widthMm), (height - 120) / Math.max(1, product.heightMm));
+  const originX = width / 2; const baseY = height - 46;
+  const project = (xMm, zMm) => ({ x: originX + xMm * scale, y: baseY - zMm * scale });
+  const components = graph.components.map((component) => {
+    const componentNodes = graph.nodes.filter((node) => node.componentId === component.id);
+    const transform = component.transform?.translationMm ?? { x: 0, y: 0, z: 0 };
+    const profileNode = componentNodes.find((node) => node.parameters.profile?.length);
+    const primitiveNode = componentNodes.find((node) => ["primitive", "extrude"].includes(node.operation));
+    let worldPoints = [];
+    if (profileNode) {
+      const nodeTranslation = profileNode.parameters.transform?.translationMm ?? { x: 0, y: 0, z: 0 };
+      const side = profileNode.parameters.profile.map((point) => ({ xMm: point.xMm + transform.x + nodeTranslation.x, zMm: point.zMm + transform.z + nodeTranslation.z }));
+      worldPoints = [...side, ...[...side].reverse().map((point) => ({ xMm: 2 * transform.x - point.xMm, zMm: point.zMm }))];
+    } else if (primitiveNode) {
+      const params = primitiveNode.parameters; const nodeTranslation = params.transform?.translationMm ?? { x: 0, y: 0, z: 0 };
+      const radius = Number(params.radiusMm ?? params.dimensionsMm?.x / 2 ?? product.widthMm * .25);
+      const nodeHeight = Number(params.heightMm ?? params.dimensionsMm?.z ?? product.heightMm * .25);
+      const cx = transform.x + nodeTranslation.x; const cz = transform.z + nodeTranslation.z;
+      worldPoints = [{ xMm: cx - radius, zMm: cz - nodeHeight / 2 }, { xMm: cx + radius, zMm: cz - nodeHeight / 2 }, { xMm: cx + radius, zMm: cz + nodeHeight / 2 }, { xMm: cx - radius, zMm: cz + nodeHeight / 2 }];
+    } else {
+      const host = graph.components.find((item) => item.id === component.hostComponentId);
+      const hostZ = host?.transform.translationMm.z ?? 0; const artwork = componentNodes.find((node) => ["surface_decal", "surface_artwork"].includes(node.operation));
+      const artworkHeight = Number(artwork?.parameters.heightMm ?? product.heightMm * .35); const radius = product.widthMm * .48;
+      worldPoints = [{ xMm: -radius, zMm: hostZ + product.heightMm * .25 }, { xMm: radius, zMm: hostZ + product.heightMm * .25 }, { xMm: radius, zMm: hostZ + product.heightMm * .25 + artworkHeight }, { xMm: -radius, zMm: hostZ + product.heightMm * .25 + artworkHeight }];
+    }
+    return { id: component.id, label: component.requestedName, representation: component.representation, nodeIds: componentNodes.map((node) => node.id), points: worldPoints.map((point) => project(point.xMm, point.zMm)), color: component.material.baseColor, note: component.summary };
   });
-  return { version: "net30.graph-sketch.v1", width, height, title: `${product.name} 실형상 그래프 검토`, views, components, annotations: [{ label: "현재 ModelingGraph의 형상·재질·결합값을 직접 투영한 검토 보기입니다.", x: 36, y: 42 }] };
+  return { version: "net30.graph-sketch.v2", graphHash: graphHash(graph), width, height, title: `${product.name} 조립 좌표 실형상 그래프 검토`, views, components, annotations: [{ label: "승인 대상 ModelingGraph의 동일 조립 좌표·재질·노드 경계를 투영한 전면 검토 보기입니다.", x: 36, y: 42 }] };
 }

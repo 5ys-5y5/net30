@@ -285,6 +285,7 @@ export function WorkflowStep({ status, className = "", ...props }: HTMLAttribute
 export function ParameterGroup({ label, children }: { label: ReactNode; children: ReactNode }) { return <section className={CLASS.parameterGroup}><Label>{label}</Label><div>{children}</div></section>; }
 export function ParameterQuestionCard({ status, className = "", ...props }: HTMLAttributes<HTMLElement> & { status: string }) { return <article className={joinClasses(CLASS.parameterQuestionCard, className)} data-status={status} {...props} />; }
 export function ParameterValue({ children }: { children: ReactNode }) { return <div className={CLASS.parameterValue}>{children}</div>; }
+export function ParameterValueField({ state = "pristine", className = "", ...props }: HTMLAttributes<HTMLDivElement> & { state?: "pristine" | "modified" | "saving" | "overridden" | "invalid" | "conflict" }) { return <div className={joinClasses(CLASS.parameterValueField, className)} data-value-state={state} {...props} />; }
 export function BuildGate({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={joinClasses(CLASS.buildGate, className)} {...props} />; }
 export function BuildProgressPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.buildProgressPanel, className)} aria-live="polite" {...props} />; }
 export function ModelResultPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.modelResultPanel, className)} {...props} />; }
@@ -292,16 +293,21 @@ export function DecisionHistoryDisclosure({ label, children }: { label: ReactNod
 /** Keyboard-operable scope navigation for the product/assembly and component approval panels. */
 export function ReviewScopeNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.reviewScopeNavigator} role="tablist" aria-label="승인 범위" {...props}>{children}</div>; }
 export function ReviewScopeControl({ active, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { active: boolean }) { return <ActionButton className={CLASS.reviewScopeControl} role="tab" aria-selected={active} data-active={active} {...props}>{children}</ActionButton>; }
+export function ReviewStageNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.reviewStageNavigator} role="tablist" aria-label="검토 단계" {...props}>{children}</div>; }
+export function ReviewStageControl({ active, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { active: boolean }) { return <ActionButton className={CLASS.reviewStageControl} role="tab" aria-selected={active} data-active={active} {...props}>{children}</ActionButton>; }
+export function GraphBindingSummary({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.graphBindingSummary} {...props}>{children}</div>; }
 /** Approves only the still-proposed questions in the currently visible scope. */
-export function ScopedApprovalBar({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.scopedApprovalBar} {...props} />; }
+export function ScopedApprovalBar({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.scopedApprovalBar} {...props}>{children}</div>; }
 /** Measured server stages; callers provide counts only when the work has a real count. */
-export function ProcessProgressPanel({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={CLASS.processProgressPanel} aria-live="polite" {...props} />; }
-export function ProgressStageList({ children, ...props }: HTMLAttributes<HTMLOListElement>) { return <ol className={CLASS.progressStageList} {...props} />; }
+export function ProcessProgressPanel({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={CLASS.processProgressPanel} aria-live="polite" {...props}>{children}</Surface>; }
+export function ProgressStageList({ children, ...props }: HTMLAttributes<HTMLOListElement>) { return <ol className={CLASS.progressStageList} {...props}>{children}</ol>; }
 export function ProgressStage({ state, children, ...props }: HTMLAttributes<HTMLLIElement> & { state: "queued" | "running" | "complete" | "failed" }) { return <li className={CLASS.progressStage} data-state={state} {...props}>{children}</li>; }
 /** Safe building blocks for a server-validated vector sketch and user markup. */
 export function SketchReviewPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.sketchReviewPanel, className)} {...props} />; }
 export function SketchCanvas({ className = "", ...props }: SVGAttributes<SVGSVGElement>) { return <svg className={joinClasses(CLASS.sketchCanvas, className)} {...props} />; }
 export function SketchAnnotationLayer({ children, ...props }: SVGAttributes<SVGGElement>) { return <g className={CLASS.sketchAnnotationLayer} {...props}>{children}</g>; }
+export function SketchViewNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.sketchViewNavigator} role="tablist" aria-label="B-Rep 검토 보기" {...props}>{children}</div>; }
+export function SketchComponentLegend({ children, ...props }: HTMLAttributes<HTMLUListElement>) { return <ul className={CLASS.sketchComponentLegend} {...props}>{children}</ul>; }
 export function PenToolbar({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.penToolbar} role="toolbar" aria-label="스케치 주석 도구" {...props}>{children}</div>; }
 export function IterationNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.iterationNavigator} aria-label="스케치 검토 이력" {...props}>{children}</div>; }
 
