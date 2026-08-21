@@ -24,6 +24,10 @@ export function createDraftStore(assetRoot) {
   async function get(id) { if (!existsSync(file(id))) return null; return JSON.parse(await fs.readFile(file(id), "utf8")); }
   async function save(value) { value.updatedAt = new Date().toISOString(); await write(value.id, value); return value; }
   async function appendDecision(id, decision) { await fs.mkdir(path.dirname(log(id)), { recursive: true }); await fs.appendFile(log(id), `${JSON.stringify({ at: new Date().toISOString(), ...decision })}\n`); }
+  async function readDecisions(id) {
+    if (!existsSync(log(id))) return [];
+    return (await fs.readFile(log(id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  }
   async function appendProgress(value, progress) { const event = { eventId: value.nextProgressEventId ?? 1, at: new Date().toISOString(), ...progress }; value.nextProgressEventId = event.eventId + 1; value.progress = [...(value.progress ?? []), event].slice(-240); await save(value); return event; }
-  return { initialise: () => fs.mkdir(root, { recursive: true }), create, get, save, appendDecision, appendProgress };
+  return { initialise: () => fs.mkdir(root, { recursive: true }), create, get, save, appendDecision, readDecisions, appendProgress };
 }

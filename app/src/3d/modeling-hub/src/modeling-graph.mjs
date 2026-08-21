@@ -5,6 +5,13 @@ const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const vector3 = z.object({ x: z.number(), y: z.number(), z: z.number() }).strict();
 const transform = z.object({ translationMm: vector3, rotationDeg: vector3, scale: vector3 }).strict();
 const profilePoint = z.object({ xMm: z.number(), yMm: z.number(), zMm: z.number() }).strict();
+const curvePoint = z.object({ xMm: z.number(), zMm: z.number() }).strict();
+const curveSegment = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("line"), points: z.tuple([curvePoint, curvePoint]), periodic: z.boolean() }).strict(),
+  z.object({ kind: z.literal("arc"), points: z.array(curvePoint).length(3), periodic: z.boolean() }).strict(),
+  z.object({ kind: z.literal("bezier"), points: z.array(curvePoint).length(4), periodic: z.boolean() }).strict(),
+  z.object({ kind: z.literal("nurbs"), poles: z.array(curvePoint).min(2).max(64), degree: z.number().int().min(1).max(5), weights: z.array(z.number().positive()).min(2).max(64), knots: z.array(z.number()).min(2).max(96), multiplicities: z.array(z.number().int().min(1).max(6)).min(2).max(96), periodic: z.boolean() }).strict(),
+]);
 const material = z.object({ name: z.string().min(1).max(120), baseColor: color, roughness: z.number().min(0).max(1), metallic: z.number().min(0).max(1), transmission: z.number().min(0).max(1), ior: z.number().min(1).max(3), opacity: z.number().min(0).max(1) }).strict();
 
 export const FEATURE_OPERATIONS = Object.freeze([
@@ -19,6 +26,7 @@ export const ANALYSIS_OPERATIONS = Object.freeze(["profile", ...COMPILED_OPERATI
 const featureParameters = z.object({
   primitive: z.enum(["box", "cylinder", "cone", "sphere", "torus"]).nullable(),
   profile: z.array(profilePoint).max(128).nullable(),
+  curveSegments: z.array(curveSegment).max(64).nullable(),
   profiles: z.array(z.array(profilePoint).max(128)).max(16).nullable(),
   dimensionsMm: vector3.nullable(),
   radiusMm: z.number().min(0).max(2000).nullable(),
@@ -129,7 +137,7 @@ export function fixtureGraphOutput(payload) {
       const representation = print ? "visual_surface" : content ? "instance_set" : "brep_solid";
       const op = print ? "surface_decal" : content ? "instance_distribution" : ring ? "extrude" : "revolve";
       const materialValue = print ? { name: "이미지에서 추출한 인쇄 잉크", baseColor: "#f4f4f0", roughness: .35, metallic: 0, transmission: 0, ior: 1.45, opacity: 1 } : closure || ring ? { name: "Polypropylene", baseColor: "#083da9", roughness: .34, metallic: 0, transmission: 0, ior: 1.49, opacity: 1 } : { name: "Borosilicate glass", baseColor: "#d7e8f6", roughness: .08, metallic: 0, transmission: .82, ior: 1.52, opacity: .32 };
-      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: defaultTransform() };
+      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: defaultTransform() };
       return { componentKey: key, representation, summary: `${name}의 이미지 기반 형상 그래프`, hostComponentKey: print ? bodyKey : null, material: materialValue, transform: defaultTransform(), features: [{ key: `${key}-root`, operation: op, inputKeys: [], parameters, rationale: `${name}의 시각적 실루엣과 재질을 표현합니다.`, confidence: .72 }] };
     }),
     interfaces: componentKeys.length > 1 ? [{ key: "closure-main", componentKeys: componentKeys.slice(0, Math.min(3, componentKeys.length)), kind: "mate", clearanceMm: .25, rationale: "공통 조립 축과 결합 간극" }] : [],
@@ -137,7 +145,15 @@ export function fixtureGraphOutput(payload) {
 }
 
 export function canonicalizeGraph(output, requestedNames, imageIds = []) {
-  const parsed = modelingGraphOutputSchema.parse(output);
+  // Existing immutable Vision responses predate v3's declared curve field.
+  // They did not say "no curve" incorrectly; the field simply did not exist.
+  // Normalize that one additive omission before strict parsing so a stored
+  // draft can be refined without re-running expensive multimodal analysis.
+  const compatibleOutput = structuredClone(output);
+  for (const component of compatibleOutput?.components ?? []) for (const feature of component?.features ?? []) {
+    if (feature?.parameters && feature.parameters.curveSegments === undefined) feature.parameters.curveSegments = null;
+  }
+  const parsed = modelingGraphOutputSchema.parse(compatibleOutput);
   if (parsed.components.length !== requestedNames.length) throw new Error("analysis_incomplete: 입력한 컴포넌트 수와 모델링 그래프가 일치하지 않습니다.");
   const keyToId = new Map(); parsed.components.forEach((item, index) => keyToId.set(item.componentKey, `cmp-${randomUUID().slice(0, 12)}-${index + 1}`));
   if (keyToId.size !== parsed.components.length) throw new Error("analysis_incomplete: 모델링 그래프의 컴포넌트 키가 중복되었습니다.");

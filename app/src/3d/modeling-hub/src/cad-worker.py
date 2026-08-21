@@ -37,7 +37,7 @@ def revolve(params):
     segments = params.get("curveSegments") or []
     raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or [])]
     if segments:
-        raw = []
+        declared = []
         for segment in segments:
             kind = segment.get("kind")
             if kind not in ("line", "arc", "bezier", "nurbs"):
@@ -47,8 +47,8 @@ def revolve(params):
                 points = segment.get("poles") or points
             for point in points:
                 pair = (float(point["xMm"]), float(point["zMm"]))
-                if not raw or math.dist(pair, raw[-1]) > 1e-8:
-                    raw.append(pair)
+                if not declared or math.dist(pair, declared[-1]) > 1e-8:
+                    declared.append(pair)
     points = []
     for point in raw:
         if not points or math.dist(point, points[-1]) > 1e-8: points.append(point)
@@ -62,7 +62,28 @@ def revolve(params):
     # as an exact OCCT wire. This is still a B-Rep surface of revolution, not a
     # polygon mesh; a later curve-fitting pass may replace this wire with its
     # validated NURBS declaration without changing the product datum.
-    wire = workplane.polyline(points[1:]).close()
+    # A declared v3 NURBS/Bézier segment is a manufacturing curve, not a
+    # display hint.  Preserve it as an OCCT B-spline edge before revolving;
+    # only legacy measured point samples remain a polyline to avoid inventing
+    # a curve that was never approved. CadQuery creates the OCCT edge, so the
+    # subsequent STEP and GLB tessellation still have one B-Rep source.
+    declared_curve = next((segment for segment in segments if segment.get("kind") in ("nurbs", "bezier")), None)
+    if declared_curve and len(declared) >= 2:
+        try:
+            # The NURBS declaration describes the *visible radial contour*.
+            # Keep the approved axial base/mouth closing edges from ``profile``
+            # linear; splining through the rotation axis would bow a flat base
+            # or invent a sealed mouth. This yields one exact OCCT B-Rep wire
+            # composed of axis/planar edges plus the measured spline edge.
+            radial = [point for point in declared if point[0] > 1e-8]
+            if len(radial) < 2: raise RuntimeError("declared curve has no visible radial contour")
+            axis_start = next((point for point in points if abs(point[0]) <= 1e-8), points[0])
+            axis_end = next((point for point in reversed(points) if abs(point[0]) <= 1e-8), points[-1])
+            wire = workplane.lineTo(*radial[0]).spline(radial[1:], periodic=bool(declared_curve.get("periodic", False)), includeCurrent=True).lineTo(*axis_end).close()
+        except Exception as error:
+            raise RuntimeError(f"graph_invalid: declared {declared_curve.get('kind')} profile cannot form an OCCT wire") from error
+    else:
+        wire = workplane.polyline(points[1:]).close()
     return wire.revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
 
 

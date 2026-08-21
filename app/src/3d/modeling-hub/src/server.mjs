@@ -16,6 +16,7 @@ import { createDraftStore } from "./draft-store.mjs";
 import { ModelingDossier } from "./modeling-dossier.mjs";
 import { analyseDraft, analyseGraphPatch, approvedDraftToLegacyPayload, approvalHash, applyQuestionValue, draftPayloadSchema, draftReady, modelingGraphComponents, modelingGraphQuestions } from "./modeling-spec.mjs";
 import { canonicalizeGraph, graphHash, graphSketchPlan } from "./modeling-graph.mjs";
+import { adaptGraphToV3 } from "./modeling-graph-v3.mjs";
 
 const app = express(); const token = (process.env.NET30_MODELING_HUB_TOKEN ?? "").trim();
 const origins = (process.env.NET30_MODELING_ALLOWED_ORIGINS ?? "http://127.0.0.1:5173").split(",").map((value) => value.trim()).filter(Boolean);
@@ -47,6 +48,9 @@ async function writeAnalysisDossier(draft, { status, error = null } = {}) {
   if (draft.fit) await dossier.writeSnapshot("validation/curve-fit.json", draft.fit);
   if (draft.qualityReport) await dossier.writeSnapshot("validation/quality-gates.json", draft.qualityReport);
   await dossier.writeSnapshot("decisions/proposed-decisions.json", { questions: draft.questions ?? [], iterations: draft.iterations ?? [] });
+  const decisions = await drafts.readDecisions(draft.id);
+  dossier.record("approval.decisions", { count: decisions.length, decisions });
+  await dossier.writeSnapshot("decisions/decision-history.json", decisions);
   await dossier.writeSnapshot("performance/spans.json", { progress: draft.progress ?? [] });
   await dossier.finalize({ status, graphHash: draft.modelingGraphHash, error });
 }
@@ -195,8 +199,40 @@ app.post("/api/modeling/drafts",async(req,res)=>{ if(!authorized(req)) return re
 app.get("/api/modeling/drafts/:id",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); return draft?res.json({ok:true,draft:publicDraft(draft)}):res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); });
 app.get("/api/modeling/drafts/:id/graph",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); if(!draft.modelingGraph) return res.status(404).json({ok:false,error:"이전 초안에는 ModelingGraph가 없습니다."}); return res.json({ok:true,graph:draft.modelingGraph,graphV3:draft.modelingGraphV3 ?? null,evidenceManifest:draft.evidenceManifest ?? null,imageEvidence:draft.imageEvidence ?? null,fit:draft.fit ?? null,qualityReport:draft.qualityReport ?? null,graphHash:draft.modelingGraphHash,compilerVersion:draft.compilerVersion,capabilityVersion:draft.capabilityVersion}); });
 app.get("/api/modeling/drafts/:id/events",async(req,res)=>{ if(!authorized(req)) return res.status(401).end(); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).end(); res.set({"content-type":"text/event-stream","cache-control":"no-cache",connection:"keep-alive"}); res.flushHeaders(); const after=Number(req.headers["last-event-id"]??0); for(const progress of (draft.progress??[]).filter((item)=>item.eventId>after)) res.write(`id: ${progress.eventId}\ndata: ${JSON.stringify({state:draft.state,message:draft.message,revision:draft.revision,progress})}\n\n`); res.write(`data: ${JSON.stringify({state:draft.state,message:draft.message,revision:draft.revision})}\n\n`); const clients=draftClients.get(draft.id)??new Set(); clients.add(res); draftClients.set(draft.id,clients); const heartbeat=setInterval(()=>res.write(": heartbeat\n\n"),15000); req.on("close",()=>{clearInterval(heartbeat);clients.delete(res);}); });
-app.post("/api/modeling/drafts/:id/answers",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); const {expectedRevision,expectedGraphHash,decisions=[]}=req.body??{}; if(expectedRevision!==draft.revision||expectedGraphHash&&expectedGraphHash!==draft.modelingGraphHash) return res.status(409).json({ok:false,error:"revision_conflict",draft:publicDraft(draft)}); try { if(!Array.isArray(decisions)||!decisions.length) throw new Error("저장할 승인 결정을 선택하세요."); const working=structuredClone(draft); const ledger=[]; for(const decision of decisions) { const item=working.questions.find((question)=>question.id===decision.questionId); if(!item) throw new Error("질문을 찾을 수 없습니다."); if(!["accept","override","reject","needs_evidence"].includes(decision.action)) throw new Error("지원하지 않는 결정입니다."); item.status=decision.action==="accept"?"accepted":decision.action==="override"?"overridden":decision.action==="reject"?"rejected":"needs_evidence"; if(decision.action==="override") item.userValue=decision.value; if(decision.action==="accept") item.userValue=item.recommendedValue; if(["accept","override"].includes(decision.action)) applyQuestionValue(working,item,item.userValue); ledger.push({questionId:item.id,action:decision.action,value:item.userValue,graphHash:working.modelingGraphHash}); } draft.questions=working.questions; draft.modelingGraph=working.modelingGraph; draft.modelingGraphHash=working.modelingGraphHash; for(const entry of ledger) await drafts.appendDecision(draft.id,entry);
-    const open=draft.questions.some((item)=>item.required&&!["accepted","overridden"].includes(item.status)); const productOpen=draft.questions.some((item)=>["product","assembly","interface"].includes(item.scope)&&!["accepted","overridden"].includes(item.status)); await saveDraft(draft,productOpen?"awaiting_product_review":open?"awaiting_parameter_review":"ready_to_build",productOpen?"제품·조립 기준값을 모두 확인하세요.":open?"컴포넌트별 기준값을 모두 확인하세요.":"모든 기준값이 승인되었습니다. Blender 생성을 실행할 수 있습니다."); await progressDraft(draft,{operation:"approval",stage:"승인 저장",state:"complete",completed:decisions.length,total:decisions.length,unit:"questions",message:"승인 상태를 저장했습니다."}); return res.json({ok:true,draft:publicDraft(draft)}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
+app.post("/api/modeling/drafts/:id/answers",async(req,res)=>{
+  if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."});
+  const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."});
+  const {expectedRevision,expectedGraphHash,decisions=[]}=req.body??{};
+  if(expectedRevision!==draft.revision||expectedGraphHash&&expectedGraphHash!==draft.modelingGraphHash) return res.status(409).json({ok:false,error:"revision_conflict",draft:publicDraft(draft)});
+  try {
+    if(!Array.isArray(decisions)||!decisions.length) throw new Error("저장할 승인 결정을 선택하세요.");
+    const working=structuredClone(draft); const beforeGraphHash=working.modelingGraphHash; const beforeProduct=JSON.stringify(working.product); const ledger=[];
+    for(const decision of decisions) {
+      const item=working.questions.find((question)=>question.id===decision.questionId); if(!item) throw new Error("질문을 찾을 수 없습니다.");
+      if(!["accept","override","reject","needs_evidence"].includes(decision.action)) throw new Error("지원하지 않는 결정입니다.");
+      item.status=decision.action==="accept"?"accepted":decision.action==="override"?"overridden":decision.action==="reject"?"rejected":"needs_evidence";
+      if(decision.action==="override") item.userValue=decision.value;
+      if(decision.action==="accept") item.userValue=item.recommendedValue;
+      if(["accept","override"].includes(decision.action)) applyQuestionValue(working,item,item.userValue);
+      ledger.push({questionId:item.id,action:decision.action,value:item.userValue,graphHash:working.modelingGraphHash});
+    }
+    const graphChanged=beforeGraphHash!==working.modelingGraphHash; const productChanged=beforeProduct!==JSON.stringify(working.product);
+    draft.questions=working.questions; draft.product=working.product; draft.modelingGraph=working.modelingGraph; draft.modelingGraphHash=working.modelingGraphHash; draft.stickerSlots=working.stickerSlots;
+    if(graphChanged&&draft.modelingGraph) {
+      draft.modelingGraphV3=adaptGraphToV3(draft.modelingGraph,draft.evidenceManifest??{version:"net30.evidence-manifest.v1",items:[]},draft.imageEvidence??null);
+      const active=activeIteration(draft); if(active?.status==="proposed") active.status="superseded";
+      createSketchIteration(draft,{prompt:"승인값 변경으로 갱신된 ModelingGraph",parentIterationId:active?.id??null,baseGraphHash:beforeGraphHash,patch:{kind:"approved-value-override",from:beforeGraphHash,to:draft.modelingGraphHash}});
+    }
+    if(draft.productModelingFile) draft.productModelingFile={...draft.productModelingFile,product:draft.product,graph:draft.modelingGraphV3??draft.modelingGraph,graphHash:draft.modelingGraphHash,questions:draft.questions,stickerSlots:draft.stickerSlots};
+    for(const entry of ledger) await drafts.appendDecision(draft.id,{...entry,productChanged,graphChanged});
+    const open=draft.questions.some((item)=>item.required&&!["accepted","overridden"].includes(item.status));
+    const productOpen=draft.questions.some((item)=>["product","assembly","interface"].includes(item.scope)&&!["accepted","overridden"].includes(item.status));
+    await saveDraft(draft,productOpen?"awaiting_product_review":open||graphChanged?"awaiting_parameter_review":"ready_to_build",productOpen?"제품·조립 기준값을 모두 확인하세요.":graphChanged?"변경된 ModelingGraph의 새 실형상 스케치를 승인하세요.":open?"컴포넌트별 기준값을 모두 확인하세요.":"모든 기준값이 승인되었습니다. Blender 생성을 실행할 수 있습니다.");
+    await progressDraft(draft,{operation:"approval",stage:"승인 저장",state:"complete",completed:decisions.length,total:decisions.length,unit:"questions",message:graphChanged?"승인값을 working ModelingGraph와 새 검토 스케치에 반영했습니다.":"승인 상태를 저장했습니다."});
+    await writeAnalysisDossier(draft,{status:draft.state});
+    return res.json({ok:true,draft:publicDraft(draft)});
+  } catch(error) { return res.status(400).json({ok:false,error:error.message}); }
+});
 app.put("/api/modeling/drafts/:id/component-tree",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); if(req.body?.expectedRevision!==draft.revision) return res.status(409).json({ok:false,error:"revision_conflict",draft:publicDraft(draft)}); if(!Array.isArray(req.body?.components)||req.body.components.length===0) return res.status(400).json({ok:false,error:"컴포넌트를 하나 이상 선택하세요."}); draft.components=req.body.components; draft.questions=draft.questions.map((item)=>item.scope==="component"?{...item,status:"stale"}:item); await saveDraft(draft,"awaiting_parameter_review","컴포넌트 트리가 변경되어 관련 기준값을 다시 확인해야 합니다."); return res.json({ok:true,draft:publicDraft(draft)}); });
 app.post("/api/modeling/drafts/:id/reanalyze",async(req,res)=>{
   if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."});

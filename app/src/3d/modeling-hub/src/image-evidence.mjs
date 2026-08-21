@@ -276,11 +276,21 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   const compact = rows.length <= 62 ? rows : Array.from({ length: 62 }, (_, index) => rows[Math.round(index * (rows.length - 1) / 61)]);
   const fitted = [{ xMm: 0, yMm: 0, zMm: zMin }, ...compact.map((item) => ({ xMm: Number((Math.max(0.01, item.radiusNorm * maxRadius)).toFixed(5)), yMm: 0, zMm: Number((zMin + item.zNorm * (zMax - zMin)).toFixed(5)) })), { xMm: 0, yMm: 0, zMm: zMax }];
   const next = structuredClone(graph); const node = next.nodes.find((item) => item.id === target.id);
-  // V2 graphs remain readable during migration; their profile is the same
-  // sampled curve.  The full NURBS declaration and provenance live in the
-  // v3 envelope created from this graph, rather than weakening the existing
-  // Strict Structured Outputs schema with an opaque optional field.
   node.parameters.profile = fitted;
+  // Keep the axis-closing edges explicit in ``profile`` and declare only the
+  // observed outer contour as a NURBS. The OCCT compiler joins those approved
+  // straight edges to this curve, so no polygon mesh or LLM-invented control
+  // point becomes the manufacturing source.
+  const poles = fitted.filter((point) => point.xMm > 1e-8).map(({ xMm, zMm }) => ({ xMm, zMm }));
+  // OCCT's current inner-cavity routine derives its cutter from the exact
+  // measured profile. A naive spline outer wall plus a separately polyline
+  // offset can create a null Boolean on a hollow vessel. Keep that closed
+  // shell on its validated measured-wire path until the fitter also supplies
+  // a matched rational inner offset; the v3 product envelope still records
+  // the fitted NURBS and its provenance for review. Solid (non-shell)
+  // revolutions can use the declared NURBS directly today.
+  const shellBacked = next.nodes.some((candidate) => candidate.componentId === node.componentId && candidate.operation === "shell");
+  node.parameters.curveSegments = shellBacked ? null : [{ kind: "nurbs", poles, degree: Math.min(3, poles.length - 1), weights: poles.map(() => 1), knots: poles.map((_, index) => index), multiplicities: poles.map(() => 1), periodic: false }];
   return {
     graph: next,
     applied: true,
@@ -293,6 +303,7 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
       targetDiameterMm: maxRadius * 2,
       source: Number.isFinite(targetHeightMm) && targetHeightMm > 0 && Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? "approved_dimensions" : "graph_extent",
     },
+    curveCompilation: shellBacked ? "measured_polyline_pending_matched_inner_nurbs_offset" : "declared_nurbs",
   };
 }
 

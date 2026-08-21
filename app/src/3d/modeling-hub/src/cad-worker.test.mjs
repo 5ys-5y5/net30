@@ -21,6 +21,16 @@ try {
   const report = JSON.parse(await fs.readFile(`${stem}.validation.json`, "utf8"));
   assert.equal(report.valid, true); assert.equal(report.closed, true); assert.ok(report.volumeMm3 > 0); assert.ok(report.boundsMm.z > 90);
   for (const suffix of ["step", "brep", "stl"]) assert.ok((await fs.stat(`${stem}.${suffix}`)).size > 100);
+  const curvedGraph = structuredClone(canonical.graph);
+  const curvedNode = curvedGraph.nodes.find((node) => node.componentId === component.id && node.parameters.profile?.length >= 4);
+  const poles = curvedNode.parameters.profile.filter((point, index, all) => index === 0 || index === all.length - 1 || index % 2 === 0).map(({ xMm, zMm }) => ({ xMm, zMm }));
+  curvedNode.parameters.curveSegments = [{ kind: "nurbs", poles, degree: Math.min(3, poles.length - 1), weights: poles.map(() => 1), knots: poles.map((_, index) => index), multiplicities: poles.map(() => 1), periodic: false }];
+  const curveStem = path.join(temporary, `${component.id}-nurbs`); const curveRequest = path.join(temporary, "nurbs.request.json");
+  await fs.writeFile(curveRequest, JSON.stringify({ graphComponent: component, graphNodes: curvedGraph.nodes, paths: { step: `${curveStem}.step`, brep: `${curveStem}.brep`, stl: `${curveStem}.stl`, report: `${curveStem}.validation.json` }, tessellation: { chordMm: .2, angularDeg: 15 } }));
+  const curveRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), curveRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(curveRun.status, 0, `${curveRun.stdout}\n${curveRun.stderr}`);
+  const curveReport = JSON.parse(await fs.readFile(`${curveStem}.validation.json`, "utf8"));
+  assert.equal(curveReport.valid, true); assert.equal(curveReport.closed, true); assert.ok(curveReport.volumeMm3 > 0, "a declared NURBS generating curve must compile into a closed OCCT B-Rep");
   const capOutput = fixtureGraphOutput({ product: { name: "ribbed closure proof" }, prompt: "ribbed closure", requestedComponents: ["뚜껑"], imageIds: [] });
   const base = capOutput.components[0].features[0];
   base.key = "cap-base"; base.operation = "primitive"; base.inputKeys = [];

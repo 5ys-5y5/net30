@@ -244,40 +244,6 @@ export function draftAnalysisJsonSchema() {
   assertOpenAiStrictSchema(schema);
   return schema;
 }
-function inferredRecipe(name) {
-  const normalized = name.toLowerCase();
-  if (/병|바이알|용기|bottle|vial|container/.test(normalized)) return { semanticRole: "containerBody", recipe: "revolveShell" };
-  if (/뚜껑|마개|캡|cap|lid|closure/.test(normalized)) return { semanticRole: "closure", recipe: "closure" };
-  if (/라이너|실링|seal|liner/.test(normalized)) return { semanticRole: "seal", recipe: "ring" };
-  if (/링|pour|spout|ring/.test(normalized)) return { semanticRole: "insert", recipe: "ring" };
-  if (/내용물|액체|분말|정제|캡슐|contents|liquid|powder|tablet|capsule/.test(normalized)) return { semanticRole: "content", recipe: "contents" };
-  return null;
-}
-function exactRequestedComponents(requested, analysed) {
-  const result = new Map(analysed.map((component) => [component.displayName.normalize("NFKC"), component]));
-  if (result.size !== analysed.length || result.size !== requested.length || requested.some((name) => !result.has(name))) throw new Error("analysis_incomplete: 입력한 컴포넌트가 누락·중복·추가되었습니다.");
-  return requested.map((requestedName, index) => {
-    const component = result.get(requestedName); const supported = inferredRecipe(requestedName);
-    if (!supported || !component) throw new Error(`needs_custom_recipe: ${requestedName}에 지원되는 형상 레시피가 없습니다.`);
-    return { ...component, requestedName, displayName: requestedName, semanticRole: supported.semanticRole, recipe: supported.recipe, id: `cmp-${randomUUID().slice(0, 12)}`, parentId: null, assemblyOrder: index };
-  });
-}
-function makeDraftQuestions(product, components) {
-  const productQuestions = [
-    question({ scope: "product", path: "product.name", category: "제품", valueType: "text", recommendedValue: product.name, rationale: "제품 식별을 확인하세요.", criticality: "assembly" }),
-    question({ scope: "product", path: "product.intendedUse", category: "제품", valueType: "text", recommendedValue: product.intendedUse, rationale: "사용 목적을 확인하세요." }),
-    ...Object.entries(product.dimensionsMm).map(([key, value]) => question({ scope: "assembly", appliesToComponentIds: components.map((item) => item.id), path: `product.dimensionsMm.${key}`, category: "전체 치수", valueType: "number", unit: "mm", recommendedValue: value, rationale: "전체 조립 기준 치수를 확인하세요.", criticality: "assembly" })),
-  ];
-  const stickerQuestions = [];
-  for (const [index, sourceGraphicId] of ["korean-product-information", "full-price-structure"].entries()) {
-    for (const key of ["hostComponentId", "physicalWidthMm", "physicalHeightMm", "wrapDegrees", "surfaceOffsetMm"]) {
-      const recommendedValue = key === "hostComponentId" ? (components.find((item) => item.semanticRole === "containerBody")?.id ?? components[0].id) : key === "physicalWidthMm" ? 38 : key === "physicalHeightMm" ? 52 : key === "wrapDegrees" ? 105 : .15;
-      stickerQuestions.push(question({ scope: "sticker-slot", path: `stickerSlots.${sourceGraphicId}.${key}`, category: "고정 HTML 그래픽 위치", valueType: key === "hostComponentId" ? "text" : "number", unit: key === "hostComponentId" ? undefined : "mm", recommendedValue, rationale: `${index === 0 ? "한글표시사항" : "전체 가격 구조"}의 실제 HTML 부착 영역을 확인하세요.` }));
-    }
-  }
-  return [...productQuestions, ...components.flatMap((component) => recipeQuestions(component, product)), ...stickerQuestions];
-}
-
 function graphValueType(key, value) {
   if (["profile", "profiles"].includes(key)) return key === "profile" ? "profile" : "curve";
   if (key === "transform" || key === "dimensionsMm") return "vector";
@@ -307,16 +273,70 @@ export function modelingGraphQuestions(product, components, graph) {
 }
 
 export function applyQuestionValue(draft, item, value) {
-  if (!draft.modelingGraph) return false;
-  const graph = structuredClone(draft.modelingGraph); let changed = false;
+  const graph = draft.modelingGraph ? structuredClone(draft.modelingGraph) : null; let changed = false;
+  let productChanged = false;
+  const product = draft.product ? structuredClone(draft.product) : null;
+  const positiveNumber = (candidate, path) => {
+    const parsed = Number(candidate);
+    if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`question_value_invalid: ${path}`);
+    return parsed;
+  };
+  const scaleGraphForAssemblyDimensions = (nextDimensions) => {
+    if (!graph || !product) return;
+    const prior = { widthMm: positiveNumber(product.widthMm, "product.widthMm"), heightMm: positiveNumber(product.heightMm, "product.heightMm"), depthMm: positiveNumber(product.depthMm, "product.depthMm") };
+    const radialScale = (nextDimensions.widthMm / prior.widthMm + nextDimensions.depthMm / prior.depthMm) / 2;
+    const axialScale = nextDimensions.heightMm / prior.heightMm;
+    const scaleVector = (vector) => ({ x: Number(vector?.x ?? 0) * radialScale, y: Number(vector?.y ?? 0) * radialScale, z: Number(vector?.z ?? 0) * axialScale });
+    for (const component of graph.components) component.transform = { ...component.transform, translationMm: scaleVector(component.transform?.translationMm), scale: { x: Number(component.transform?.scale?.x ?? 1) * radialScale, y: Number(component.transform?.scale?.y ?? 1) * radialScale, z: Number(component.transform?.scale?.z ?? 1) * axialScale } };
+    for (const node of graph.nodes) {
+      const params = node.parameters;
+      if (Array.isArray(params.profile)) params.profile = params.profile.map((point) => ({ ...point, xMm: Number(point.xMm) * radialScale, yMm: Number(point.yMm) * radialScale, zMm: Number(point.zMm) * axialScale }));
+      if (Array.isArray(params.curveSegments)) params.curveSegments = params.curveSegments.map((segment) => ({ ...segment, ...(Array.isArray(segment.points) ? { points: segment.points.map((point) => ({ ...point, xMm: Number(point.xMm) * radialScale, zMm: Number(point.zMm) * axialScale })) } : {}), ...(Array.isArray(segment.poles) ? { poles: segment.poles.map((point) => ({ ...point, xMm: Number(point.xMm) * radialScale, zMm: Number(point.zMm) * axialScale })) } : {}) }));
+      if (Array.isArray(params.profiles)) params.profiles = params.profiles.map((profile) => profile.map((point) => ({ ...point, xMm: Number(point.xMm) * radialScale, yMm: Number(point.yMm) * radialScale, zMm: Number(point.zMm) * axialScale })));
+      if (params.dimensionsMm) params.dimensionsMm = scaleVector(params.dimensionsMm);
+      for (const key of ["radiusMm", "innerRadiusMm", "thicknessMm", "depthMm", "offsetMm", "spacingMm"]) if (params[key] !== null) params[key] = Number(params[key]) * radialScale;
+      if (params.heightMm !== null) params.heightMm = Number(params.heightMm) * axialScale;
+      if (params.transform) params.transform = { ...params.transform, translationMm: scaleVector(params.transform.translationMm), scale: { x: Number(params.transform.scale?.x ?? 1) * radialScale, y: Number(params.transform.scale?.y ?? 1) * radialScale, z: Number(params.transform.scale?.z ?? 1) * axialScale } };
+    }
+  };
+  const productMatch = /^product\.(name|intendedUse)$/.exec(item.path);
+  const dimensionMatch = /^product\.dimensionsMm\.(widthMm|heightMm|depthMm)$/.exec(item.path);
+  if (product && productMatch) {
+    const next = String(value ?? "").trim();
+    if (!next) throw new Error(`question_value_invalid: ${item.path}`);
+    product[productMatch[1]] = next; productChanged = true;
+  }
+  if (product && dimensionMatch) {
+    const nextDimensions = { widthMm: Number(product.widthMm), heightMm: Number(product.heightMm), depthMm: Number(product.depthMm) };
+    nextDimensions[dimensionMatch[1]] = positiveNumber(value, item.path);
+    scaleGraphForAssemblyDimensions(nextDimensions);
+    Object.assign(product, nextDimensions); productChanged = true; changed = Boolean(graph);
+  }
+  if (!graph) {
+    if (productChanged) draft.product = product;
+    return productChanged;
+  }
   let match = /^graph\.nodes\.([^.]+)\.parameters\.([^.]+)$/.exec(item.path);
   if (match) { const node = graph.nodes.find((candidate) => candidate.id === match[1]); if (!node || !(match[2] in node.parameters)) throw new Error("graph_path_invalid: node parameter"); node.parameters[match[2]] = value; changed = true; }
   match = /^graph\.components\.([^.]+)\.(material|transform|hostComponentId)$/.exec(item.path);
   if (match) { const component = graph.components.find((candidate) => candidate.id === match[1]); if (!component) throw new Error("graph_path_invalid: component"); component[match[2]] = value; changed = true; }
   match = /^graph\.interfaces\.([^.]+)\.clearanceMm$/.exec(item.path);
   if (match) { const contract = graph.interfaces.find((candidate) => candidate.id === match[1]); if (!contract) throw new Error("graph_path_invalid: interface"); contract.clearanceMm = value; changed = true; }
+  const stickerMatch = /^stickerSlots\.([^.]+)\.([^.]+)$/.exec(item.path);
+  if (stickerMatch) {
+    const [, sourceGraphicId, key] = stickerMatch;
+    const slots = structuredClone(draft.stickerSlots ?? []); const slot = slots.find((candidate) => candidate.sourceGraphicId === sourceGraphicId);
+    if (!slot) throw new Error("sticker_slot_invalid");
+    if (["physicalWidthMm", "physicalHeightMm", "wrapDegrees", "surfaceOffsetMm"].includes(key)) slot[key] = positiveNumber(value, item.path);
+    else if (key === "hostComponentId") {
+      if (!graph.components.some((component) => component.id === value)) throw new Error("sticker_slot_invalid_host");
+      slot[key] = value;
+    } else throw new Error("sticker_slot_invalid");
+    draft.stickerSlots = slots;
+  }
+  if (productChanged) draft.product = product;
   if (changed) { draft.modelingGraph = validateGraph(graph); draft.modelingGraphHash = graphHash(draft.modelingGraph); }
-  return changed;
+  return changed || productChanged || Boolean(stickerMatch);
 }
 
 export function modelingGraphComponents(graph) {
@@ -506,7 +526,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     solidCount: Math.max(...brepPreflight.diagnostics.map((item) => item.solidCount ?? Infinity)),
   } : null;
   const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {

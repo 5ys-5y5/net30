@@ -7,6 +7,7 @@ import {
   draftReady,
   normaliseComponentInput,
   normaliseAxisymmetricCavityFeatures,
+  applyQuestionValue,
   responseJson,
 } from "./modeling-spec.mjs";
 import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
@@ -92,12 +93,23 @@ draft.state = "awaiting_parameter_review";
 const spec = compileApprovedDraftToModelingSpec(draft);
 assert.deepEqual(spec.components.map((component) => component.component), ["cap"]);
 assert.deepEqual(spec.components.map((component) => component.componentInstanceId), [analysis.components[0].id]);
+const workingDraft = structuredClone(draft);
+const widthQuestion = workingDraft.questions.find((question) => question.path === "product.dimensionsMm.widthMm");
+const graphHashBeforeDimensionOverride = workingDraft.modelingGraphHash;
+applyQuestionValue(workingDraft, widthQuestion, 70);
+assert.equal(workingDraft.product.widthMm, 70, "an approved overall-width override updates the product file immediately");
+assert.notEqual(workingDraft.modelingGraphHash, graphHashBeforeDimensionOverride, "an overall assembly dimension override updates the working graph rather than waiting for final build");
+const scaledProfile = workingDraft.modelingGraph.nodes.find((node) => node.parameters.profile?.length)?.parameters.profile;
+assert.ok(Math.max(...scaledProfile.map((point) => point.xMm)) > Math.max(...analysis.modelingGraph.nodes.find((node) => node.parameters.profile?.length).parameters.profile.map((point) => point.xMm)), "the graph geometry is scaled with the approved assembly dimension");
 const printCanonical = canonicalizeGraph(fixtureGraphOutput({ product: { name: "인쇄 병" }, prompt: "사진의 전면 인쇄를 재현", requestedComponents: ["유리병", "전면 인쇄"], imageIds: ["image-1"] }), ["유리병", "전면 인쇄"], ["image-1"]);
 const printComponent = printCanonical.graph.components.find((item) => item.requestedName === "전면 인쇄");
 const printNode = printCanonical.graph.nodes.find((item) => item.componentId === printComponent.id);
 assert.equal(printComponent.representation, "visual_surface");
 assert.equal(printNode.operation, "surface_decal");
 assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).components[0].points.length >= 4);
+const preCurveFieldResponse = fixtureGraphOutput({ product: { name: "기존 응답" }, prompt: "compatibility", requestedComponents: ["유리병"], imageIds: [] });
+delete preCurveFieldResponse.components[0].features[0].parameters.curveSegments;
+assert.doesNotThrow(() => canonicalizeGraph(preCurveFieldResponse, ["유리병"], []), "stored responses from before curveSegments must remain refinable");
 const nodeHostedPrint = fixtureGraphOutput({ product: { name: "노드 host 인쇄" }, prompt: "test", requestedComponents: ["유리병", "전면 인쇄"], imageIds: ["image-1"] });
 nodeHostedPrint.components[1].hostComponentKey = null;
 const nodeHostedCanonical = canonicalizeGraph(nodeHostedPrint, ["유리병", "전면 인쇄"], ["image-1"]);
