@@ -59,6 +59,7 @@ railway variable set \
   HOST=0.0.0.0 \
   PORT=8788 \
   RAILWAY_DOCKERFILE_PATH=app/src/3d/modeling-hub/Dockerfile \
+  RAILWAY_DEPLOYMENT_DRAINING_SECONDS=30 \
   NET30_REPO=/app \
   NET30_3D_ASSET_ROOT=/data \
   "NET30_MODELING_ALLOWED_ORIGINS=$PUBLIC_URL" \
