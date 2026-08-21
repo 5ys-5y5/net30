@@ -92,21 +92,41 @@ function binaryStlAxisymmetricContour(bytes, bins = 64) {
   if (bytes.length < 84) return null;
   const count = bytes.readUInt32LE(80);
   if (84 + count * 50 > bytes.length) return null;
-  let zMin = Infinity; let zMax = -Infinity; const vertices = [];
+  let zMin = Infinity; let zMax = -Infinity; const triangles = [];
   for (let index = 0; index < count; index += 1) {
     const offset = 84 + index * 50 + 12;
-    for (const delta of [0, 12, 24]) {
+    const triangle = [0, 12, 24].map((delta) => {
       const x = bytes.readFloatLE(offset + delta); const y = bytes.readFloatLE(offset + delta + 4); const z = bytes.readFloatLE(offset + delta + 8);
-      vertices.push({ r: Math.hypot(x, y), z }); zMin = Math.min(zMin, z); zMax = Math.max(zMax, z);
+      zMin = Math.min(zMin, z); zMax = Math.max(zMax, z); return { x, y, z };
+    });
+    triangles.push(triangle);
+  }
+  if (!triangles.length || !(zMax > zMin)) return null;
+  // Bucketed STL vertices under-measure sloped walls when a section contains
+  // no vertex. Intersect every tessellation triangle with each axial section
+  // instead, so the gate measures the compiled B-Rep exterior rather than
+  // an accidental vertex distribution.
+  const maxima = Array.from({ length: bins }, (_, index) => {
+    const z = zMin + (zMax - zMin) * index / Math.max(1, bins - 1); let radius = 0;
+    for (const triangle of triangles) {
+      for (const [start, end] of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
+        const low = Math.min(start.z, end.z), high = Math.max(start.z, end.z);
+        if (z < low - 1e-7 || z > high + 1e-7) continue;
+        const dz = end.z - start.z;
+        if (Math.abs(dz) <= 1e-9) {
+          if (Math.abs(z - start.z) <= 1e-7) radius = Math.max(radius, Math.hypot(start.x, start.y), Math.hypot(end.x, end.y));
+          continue;
+        }
+        const ratio = (z - start.z) / dz;
+        if (ratio < -1e-7 || ratio > 1 + 1e-7) continue;
+        const x = start.x + (end.x - start.x) * ratio; const y = start.y + (end.y - start.y) * ratio;
+        radius = Math.max(radius, Math.hypot(x, y));
+      }
     }
-  }
-  if (!vertices.length || !(zMax > zMin)) return null;
-  const maxima = Array.from({ length: bins }, () => 0);
-  for (const point of vertices) {
-    const index = Math.max(0, Math.min(bins - 1, Math.round((point.z - zMin) / (zMax - zMin) * (bins - 1)))); maxima[index] = Math.max(maxima[index], point.r);
-  }
+    return radius;
+  });
   const maxRadius = Math.max(...maxima); if (!(maxRadius > 1e-8)) return null;
-  return maxima.map((radius, index) => ({ zNorm: index / Math.max(1, bins - 1), radiusNorm: radius / maxRadius })).filter((point, index, all) => point.radiusNorm > 1e-6 || index === 0 || index === all.length - 1);
+  return maxima.map((radius, index) => ({ zNorm: index / Math.max(1, bins - 1), radiusNorm: radius / maxRadius }));
 }
 
 function projected(point, view, explodedOffset = 0) {
@@ -167,6 +187,8 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
       let report = null;
       try { report = JSON.parse(await readFile(reportPath, "utf8")); } catch { /* execution diagnostic below */ }
       diagnostics[index] = diagnostic(component, report, execution);
+      diagnostics[index].transform = component.transform ?? { translationMm: { x: 0, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+      diagnostics[index].material = component.material ?? null;
       let stl = null;
       if (execution.ok && diagnostics[index].code === "ok") {
         try { stl = await readFile(`${stem}.stl`); diagnostics[index].silhouette = binaryStlAxisymmetricContour(stl); } catch { /* the B-Rep diagnostic stays authoritative */ }

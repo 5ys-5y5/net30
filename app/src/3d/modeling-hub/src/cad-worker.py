@@ -603,22 +603,34 @@ def stl_axisymmetric_contour(stl, bins=64):
     if len(raw) < 84: return None
     count = struct.unpack_from("<I", raw, 80)[0]
     if 84 + count * 50 > len(raw): return None
-    points = []
+    triangles = []
+    z_min, z_max = math.inf, -math.inf
     for index in range(count):
         offset = 84 + index * 50 + 12
-        for delta in (0, 12, 24):
-            x, y, z = struct.unpack_from("<fff", raw, offset + delta)
-            points.append((math.hypot(x, y), z))
-    if not points: return None
-    z_min = min(point[1] for point in points); z_max = max(point[1] for point in points)
-    if z_max <= z_min: return None
-    maxima = [0.0] * bins
-    for radius, z in points:
-        index = max(0, min(bins - 1, round((z - z_min) / (z_max - z_min) * (bins - 1))))
-        maxima[index] = max(maxima[index], radius)
+        triangle = [struct.unpack_from("<fff", raw, offset + delta) for delta in (0, 12, 24)]
+        triangles.append(triangle)
+        for _, _, z in triangle:
+            z_min, z_max = min(z_min, z), max(z_max, z)
+    if not triangles or z_max <= z_min: return None
+    maxima = []
+    for index in range(bins):
+        z = z_min + (z_max - z_min) * index / max(1, bins - 1); radius = 0.0
+        for triangle in triangles:
+            for start, end in ((triangle[0], triangle[1]), (triangle[1], triangle[2]), (triangle[2], triangle[0])):
+                low, high = min(start[2], end[2]), max(start[2], end[2])
+                if z < low - 1e-7 or z > high + 1e-7: continue
+                dz = end[2] - start[2]
+                if abs(dz) <= 1e-9:
+                    if abs(z - start[2]) <= 1e-7: radius = max(radius, math.hypot(start[0], start[1]), math.hypot(end[0], end[1]))
+                    continue
+                ratio = (z - start[2]) / dz
+                if ratio < -1e-7 or ratio > 1 + 1e-7: continue
+                x = start[0] + (end[0] - start[0]) * ratio; y = start[1] + (end[1] - start[1]) * ratio
+                radius = max(radius, math.hypot(x, y))
+        maxima.append(radius)
     max_radius = max(maxima)
     if max_radius <= 1e-9: return None
-    return [{"zNorm": index / max(1, bins - 1), "radiusNorm": radius / max_radius} for index, radius in enumerate(maxima) if radius > 1e-8 or index in (0, bins - 1)]
+    return [{"zNorm": index / max(1, bins - 1), "radiusNorm": radius / max_radius} for index, radius in enumerate(maxima)]
 
 
 def main():

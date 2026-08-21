@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, fitAxisymmetricProfile, qualityGates } from "./modeling-graph-v3.mjs";
 import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
-import { compareBrepAxisymmetricContour } from "./image-evidence.mjs";
+import { compareBrepAssemblyContour, compareBrepAxisymmetricContour } from "./image-evidence.mjs";
 
 const evidence = buildEvidenceManifest([
   { id: "primary", filename: "Duran laboratory bottles 100.jpg" },
@@ -29,4 +29,6 @@ assert.equal(gates.manufacturingStatus, "manufacturing_released");
 const measured = { images: [{ ok: true, measurement: { imageId: "primary", bodySilhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: .8 + index / 150 })) } }] };
 const actual = compareBrepAxisymmetricContour({ diagnostics: [{ componentId: "short", boundsMm: { x: 20, z: 20 }, silhouette: measured.images[0].measurement.bodySilhouette }, { componentId: "body", boundsMm: { x: 56, z: 100 }, silhouette: measured.images[0].measurement.bodySilhouette }] }, measured, "primary");
 assert.equal(actual?.source, "occt_brep_tessellation"); assert.equal(actual?.componentId, "body"); assert.ok(actual?.iou > .999, "compiled B-Rep contours must be measured from the emitted tessellation rather than the graph profile");
+const assemblyActual = compareBrepAssemblyContour({ diagnostics: [{ componentId: "base", boundsMm: { x: 40, z: 80 }, transform: { translationMm: { z: 0 } }, silhouette: measured.images[0].measurement.bodySilhouette }, { componentId: "closure", boundsMm: { x: 56, z: 20 }, transform: { translationMm: { z: 80 } }, silhouette: measured.images[0].measurement.bodySilhouette }] }, { images: [{ ok: true, measurement: { imageId: "primary", silhouette: Array.from({ length: 32 }, (_, index) => ({ zNorm: index / 31, radiusNorm: index < 26 ? .8 + (index / 31) / 150 : 1 })) } }] }, "primary");
+assert.equal(assemblyActual?.source, "occt_brep_assembly_tessellation"); assert.deepEqual(assemblyActual?.componentIds, ["base", "closure"]);
 console.log("v3 evidence, fitting, local-coordinate and quality-gate proof passed.");

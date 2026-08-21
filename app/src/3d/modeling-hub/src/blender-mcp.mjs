@@ -9,7 +9,7 @@ import { z } from "zod";
 import { COMPONENTS, fallbackComponent, fallbackContract, modelingSpecSchema } from "./modeling-spec.mjs";
 import { ModelingDossier } from "./modeling-dossier.mjs";
 import { qualityGates } from "./modeling-graph-v3.mjs";
-import { compareAxisymmetricContour, compareBrepAxisymmetricContour } from "./image-evidence.mjs";
+import { compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour } from "./image-evidence.mjs";
 import { normaliseGraphCompatibility } from "./modeling-graph.mjs";
 
 const componentSchema = z.string().trim().min(1).max(100);
@@ -114,7 +114,8 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   // explicitly not-measured until that analyser is available.
   const primaryImageId = payload.approvedDraft?.evidenceManifest?.items?.find((item) => item.role === "primary_product")?.imageId ?? null;
   const graphContour = modelingSpec.modelingGraph ? compareAxisymmetricContour(modelingSpec.modelingGraph, payload.approvedDraft?.imageEvidence, primaryImageId) : null;
-  const contour = compareBrepAxisymmetricContour({ diagnostics: Object.entries(cad.validation).map(([componentId, item]) => ({ componentId, ...item })) }, payload.approvedDraft?.imageEvidence, primaryImageId) ?? graphContour;
+  const compiledDiagnostics = Object.entries(cad.validation).map(([componentId, item]) => { const component = modelingSpec.modelingGraph?.components.find((candidate) => candidate.id === componentId); return { componentId, ...item, transform: component?.transform, material: component?.material }; });
+  const contour = compareBrepAssemblyContour({ diagnostics: compiledDiagnostics }, payload.approvedDraft?.imageEvidence, primaryImageId) ?? compareBrepAxisymmetricContour({ diagnostics: compiledDiagnostics }, payload.approvedDraft?.imageEvidence, primaryImageId) ?? graphContour;
   const expectedDimensions = modelingSpec.contract.dimensionsMm;
   const actualBounds = cad.assembly.validation.sourceBoundsMm;
   const dimensions = { toleranceMm: .5, maxDeltaMm: Math.max(Math.abs(actualBounds.x - expectedDimensions.widthMm), Math.abs(actualBounds.y - expectedDimensions.depthMm), Math.abs(actualBounds.z - expectedDimensions.heightMm)) };

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { fitAxialAssemblyEnvelope, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { fitAxialAssemblyEnvelope, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -29,6 +29,7 @@ assert.equal(analysis.fit.applied, true, "the largest revolved component must us
 assert.equal(analysis.fit.contour.imageId, "fixture-image-1", "no-cap and PYREX evidence must not replace the primary silhouette");
 assert.ok(analysis.fit.contour.rmsMm <= .35, "measured profile must meet the contour fitting gate");
 assert.equal(analysis.modelingGraphV3.components[0].curves[0].provenance.source, "image_measurement");
+assert.ok(analysis.fit.primaryBodyCalibration.visibleBodyHeightMm <= analysis.fit.primaryBodyCalibration.targetHeightMm, "a primary image fit must never extend a measured contour beyond the approved local B-Rep datum");
 
 const radialOutput = fixtureGraphOutput({ product: { name: "radial envelope" }, prompt: "closure", requestedComponents: ["closure"] });
 radialOutput.components[0].features[0].parameters.profile.forEach((point) => { point.xMm *= 1.12; });
@@ -57,6 +58,9 @@ const closureProfiles = capAssemblyFit.graph.nodes.filter((node) => node.compone
 assert.ok(Math.max(...closureProfiles.map((point) => point.zMm)) + fittedClosure.transform.translationMm.z <= 100.01, "closure local B-Rep and assembly transform must remain inside the approved overall-height datum");
 assert.ok(capAssemblyFit.graph.nodes.some((node) => node.componentId === fittedClosure.id && node.operation === "revolve" && node.parameters.curveSegments?.length), "the measured closure outline must be declared as OCCT Bézier curves, not a display-only polyline");
 assert.equal(typeof graphHash(capAssemblyFit.graph), "string", "a fitted Bézier closure must remain serialisable by the strict graph schema");
+const compiledDatumFit = fitCompiledClosureDatum(capAssemblyFit.graph, { diagnostics: [{ componentId: fittedClosure.id, code: "ok", boundsMm: { z: 24.5 } }] }, { heightMm: 100 });
+assert.equal(compiledDatumFit.applied, true, "the assembly datum must use the actual compiled child B-Rep height when it differs from the conservative graph envelope");
+assert.equal(compiledDatumFit.graph.components[0].transform.translationMm.z, 75.5);
 
 const localGraph = structuredClone(radialGraph);
 localGraph.nodes[0].parameters.profile.forEach((point) => { point.zMm += 83; });

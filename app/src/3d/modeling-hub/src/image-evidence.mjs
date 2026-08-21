@@ -412,6 +412,30 @@ export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, pri
   return { graph: next, applied: true, closureBottomZMm: closureBottomZ, closureHeightMm: targetClosureHeight, adjustments };
 }
 
+/** Align a patterned closure to the approved assembly top from the B-Rep that
+ * OCCT actually compiled. Curve segments, shelling, and Boolean topology can
+ * make its exact local extent differ slightly from the graph's conservative
+ * feature envelope. The XDE placement must follow the compiled child rather
+ * than pretending that the graph estimate is the physical datum. */
+export function fitCompiledClosureDatum(graph, preflight, approvedDimensions = null) {
+  const targetHeight = Number(approvedDimensions?.heightMm);
+  const candidate = patternedRadialComponent(graph);
+  if (!candidate || !Number.isFinite(targetHeight) || targetHeight <= 0) return { graph, applied: false, adjustments: [] };
+  const diagnostic = (preflight?.diagnostics ?? []).find((item) => item.componentId === candidate.component.id && item.code === "ok");
+  const compiledHeight = Number(diagnostic?.boundsMm?.z);
+  if (!Number.isFinite(compiledHeight) || compiledHeight <= 0 || compiledHeight > targetHeight + 1e-6) return { graph, applied: false, adjustments: [] };
+  const current = Number(candidate.component.transform?.translationMm?.z ?? 0);
+  const targetZ = targetHeight - compiledHeight;
+  if (Math.abs(current - targetZ) <= 1e-5) return { graph, applied: false, adjustments: [] };
+  const next = structuredClone(graph); const closure = next.components.find((component) => component.id === candidate.component.id);
+  const transform = closure.transform ?? {}; const translation = transform.translationMm ?? {};
+  closure.transform = { ...transform, translationMm: { ...translation, z: Number(targetZ.toFixed(6)) } };
+  return {
+    graph: next, applied: true,
+    adjustments: [{ componentId: closure.id, source: "compiled_brep_top_datum", previousZMm: current, targetZMm: targetZ, compiledHeightMm: compiledHeight, assemblyTopMm: targetHeight }],
+  };
+}
+
 /**
  * Bring a centred axisymmetric child inside the approved assembly envelope.
  *
@@ -526,16 +550,18 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // component-local B-Rep with a reproducible, reviewable mm envelope.
   const targetHeightMm = Number(approvedDimensions?.heightMm);
   const targetWidthMm = Number(approvedDimensions?.widthMm);
-  // The primary body contour starts below the separately measured cap band,
-  // but a closure commonly overlaps the bottle neck. A front image alone
-  // cannot distinguish that overlap from a shorter glass body. Therefore the
-  // approved height remains the body B-Rep datum; the cap-band measurement is
-  // used by fitMeasuredClosureAssembly() only to position and size the
-  // patterned closure. This avoids silently shortening an approved vessel and
-  // creating an invalid inner shell at its neck.
+  // The measured body contour begins below a separately measured opaque
+  // closure band. Fitting that visible contour across the *whole* approved
+  // assembly height stretches shoulders and heels into the hidden neck, which
+  // produces a smooth but visibly wrong product. Fit only the visible span.
+  // The existing approved tail is retained as explicitly inferred, hidden
+  // geometry so the child B-Rep remains full-height and its physical neck is
+  // not silently discarded. This rule relies on measured closure evidence and
+  // radial pattern topology, never on a component name.
   const closure = patternedRadialComponent(graph);
   const capRatio = Number(measured.cap?.heightNorm);
-  const bodyTargetHeight = targetHeightMm;
+  const canReserveClosure = Boolean(closure) && Number.isFinite(capRatio) && capRatio > .04 && capRatio < .6 && Number.isFinite(targetHeightMm) && targetHeightMm > 0;
+  const bodyTargetHeight = canReserveClosure ? targetHeightMm * (1 - capRatio) : targetHeightMm;
   const zMin = Number.isFinite(bodyTargetHeight) && bodyTargetHeight > 0 ? 0 : sourceZMin;
   const zMax = Number.isFinite(bodyTargetHeight) && bodyTargetHeight > 0 ? bodyTargetHeight : sourceZMax;
   const maxRadius = Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? targetWidthMm / 2 : sourceMaxRadius;
@@ -548,14 +574,31 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // precisely the bottle heel/neck landmarks that carry the strongest visual
   // evidence, inflating the calibrated RMS despite having the measurements.
   const compact = rows.length <= 64 ? rows : Array.from({ length: 64 }, (_, index) => rows[Math.round(index * (rows.length - 1) / 63)]);
-  const fitted = [{ xMm: 0, yMm: 0, zMm: zMin }, ...compact.map((item) => ({ xMm: Number((Math.max(0.01, item.radiusNorm * maxRadius)).toFixed(5)), yMm: 0, zMm: Number((zMin + item.zNorm * (zMax - zMin)).toFixed(5)) })), { xMm: 0, yMm: 0, zMm: zMax }];
+  const observedOuter = compact.map((item) => ({ xMm: Number((Math.max(0.01, item.radiusNorm * maxRadius)).toFixed(5)), yMm: 0, zMm: Number((zMin + item.zNorm * (zMax - zMin)).toFixed(5)) }));
+  const inferredTail = [];
+  if (canReserveClosure && targetHeightMm > zMax + 1e-6 && sourceZMax > sourceZMin + 1e-6) {
+    const sourceVisibleZ = sourceZMin + (sourceZMax - sourceZMin) * (zMax - zMin) / targetHeightMm;
+    const sourceVisibleRadius = radiusFromProfile(source, sourceVisibleZ);
+    const boundaryRadius = observedOuter.at(-1)?.xMm ?? maxRadius;
+    const tailScale = Number.isFinite(sourceVisibleRadius) && sourceVisibleRadius > 1e-8 ? boundaryRadius / sourceVisibleRadius : 1;
+    for (const point of source.filter((item) => Number(item.xMm) > 1e-8 && Number(item.zMm) > sourceVisibleZ + 1e-6).sort((left, right) => Number(left.zMm) - Number(right.zMm))) {
+      const ratio = (Number(point.zMm) - sourceVisibleZ) / Math.max(1e-9, sourceZMax - sourceVisibleZ);
+      inferredTail.push({
+        xMm: Number((Math.max(.01, Number(point.xMm) * tailScale)).toFixed(5)), yMm: 0,
+        zMm: Number((zMax + ratio * (targetHeightMm - zMax)).toFixed(5)),
+      });
+    }
+  }
+  const outer = [...observedOuter, ...inferredTail];
+  const outerMaxZ = canReserveClosure ? targetHeightMm : zMax;
+  const fitted = [{ xMm: 0, yMm: 0, zMm: zMin }, ...outer, { xMm: 0, yMm: 0, zMm: outerMaxZ }];
   const next = structuredClone(graph); const node = next.nodes.find((item) => item.id === target.id);
   node.parameters.profile = fitted;
   // Keep the axis-closing edges explicit in ``profile`` and declare only the
   // observed outer contour as a NURBS. The OCCT compiler joins those approved
   // straight edges to this curve, so no polygon mesh or LLM-invented control
   // point becomes the manufacturing source.
-  const poles = fitted.filter((point) => point.xMm > 1e-8).map(({ xMm, zMm }) => ({ xMm, zMm }));
+  const poles = outer.map(({ xMm, zMm }) => ({ xMm, zMm }));
   // OCCT's native shell operation offsets the declared exterior curve inside
   // the same B-Rep. This avoids the earlier independent-cavity Boolean while
   // preserving the fitted C1 Bézier exterior and the approved base/mouth
@@ -570,7 +613,10 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
     calibration: {
       sourceHeightMm: sourceZMax - sourceZMin,
       sourceDiameterMm: sourceMaxRadius * 2,
-      targetHeightMm: zMax - zMin,
+      targetHeightMm: outerMaxZ - zMin,
+      visibleBodyHeightMm: zMax - zMin,
+      hiddenNeckHeightMm: canReserveClosure ? outerMaxZ - zMax : 0,
+      hiddenNeckSource: canReserveClosure ? "existing_approved_graph_tail" : null,
       assemblyHeightMm: Number.isFinite(targetHeightMm) && targetHeightMm > 0 ? targetHeightMm : null,
       capBandReservedMm: closure && Number.isFinite(capRatio) ? targetHeightMm * capRatio : null,
       targetDiameterMm: maxRadius * 2,
@@ -614,4 +660,38 @@ export function compareBrepAxisymmetricContour(preflight, evidence, primaryImage
   const sorted = [...diffs].sort((left, right) => left - right); const hausdorff95Mm = sorted[Math.floor((sorted.length - 1) * .95)] * radiusMm;
   const graphArea = measured.bodySilhouette.reduce((sum, item) => sum + interpolate(samples, item.zNorm), 0); const targetArea = measured.bodySilhouette.reduce((sum, item) => sum + item.radiusNorm, 0); const intersection = measured.bodySilhouette.reduce((sum, item) => sum + Math.min(interpolate(samples, item.zNorm), item.radiusNorm), 0); const union = graphArea + targetArea - intersection;
   return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "occt_brep_tessellation", componentId: candidate.componentId };
+}
+
+/** Compare the full B-Rep assembly envelope, including graph-approved child
+ * transforms, against the primary product silhouette.  This catches the
+ * historical failure where a valid cap existed but was assembled at z=0.
+ */
+export function compareBrepAssemblyContour(preflight, evidence, primaryImageId = null) {
+  const measured = evidence?.images?.find((item) => item.ok && item.measurement?.imageId === primaryImageId && item.measurement?.silhouette?.length >= 12)?.measurement;
+  const components = (preflight?.diagnostics ?? []).filter((item) => Array.isArray(item.silhouette) && item.silhouette.length >= 4 && Number(item.boundsMm?.z ?? 0) > 0);
+  if (!measured || !components.length) return null;
+  const placed = components.map((component) => {
+    const z = Number(component.transform?.translationMm?.z ?? 0); const height = Number(component.boundsMm.z); const radius = Number(component.boundsMm.x ?? 0) / 2;
+    return { ...component, zMin: z, zMax: z + height, radius };
+  });
+  const zMin = Math.min(...placed.map((item) => item.zMin)); const zMax = Math.max(...placed.map((item) => item.zMax)); const maxRadius = Math.max(...placed.map((item) => item.radius));
+  if (!(zMax > zMin) || !(maxRadius > 0)) return null;
+  const assemblySamples = Array.from({ length: 128 }, (_, index) => {
+    const z = zMin + (zMax - zMin) * index / 127;
+    const occupying = placed.filter((component) => z >= component.zMin - 1e-6 && z <= component.zMax + 1e-6);
+    // In a photograph, an opaque closure masks a transparent vessel neck in
+    // the same depth interval. A raw Boolean-union envelope would expose the
+    // hidden neck as a false exterior error. This is a material-aware front
+    // orthographic visibility approximation; a full renderer remains the
+    // final visual-review path, while manufacturing B-Reps stay unchanged.
+    const opaque = occupying.filter((component) => Number(component.material?.transmission ?? 0) < .5 && Number(component.material?.opacity ?? 1) > .05);
+    const visible = opaque.length ? opaque : occupying;
+    const radius = Math.max(0, ...visible.map((component) => interpolate(component.silhouette, (z - component.zMin) / Math.max(1e-9, component.zMax - component.zMin)) * component.radius));
+    return { zNorm: index / 127, radiusNorm: radius / maxRadius };
+  });
+  const diffs = measured.silhouette.map((item) => Math.abs(interpolate(assemblySamples, item.zNorm) - item.radiusNorm));
+  const rmsMm = Math.sqrt(diffs.reduce((sum, item) => sum + item ** 2, 0) / diffs.length) * maxRadius;
+  const sorted = [...diffs].sort((left, right) => left - right); const hausdorff95Mm = sorted[Math.floor((sorted.length - 1) * .95)] * maxRadius;
+  const modelArea = measured.silhouette.reduce((sum, item) => sum + interpolate(assemblySamples, item.zNorm), 0); const targetArea = measured.silhouette.reduce((sum, item) => sum + item.radiusNorm, 0); const intersection = measured.silhouette.reduce((sum, item) => sum + Math.min(interpolate(assemblySamples, item.zNorm), item.radiusNorm), 0); const union = modelArea + targetArea - intersection;
+  return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "occt_brep_assembly_tessellation", componentIds: placed.map((item) => item.componentId) };
 }
