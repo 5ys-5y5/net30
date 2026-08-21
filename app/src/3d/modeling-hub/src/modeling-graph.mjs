@@ -216,6 +216,24 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
      * just this component and require an explicit base + rib + pattern chain.
      */
     const currentFeatures = new Map(features.map((feature) => [feature.key, feature]));
+    const interpolateRadius = (profile, zMm) => {
+      const visible = profile.filter((point) => point.xMm > 1e-6).sort((left, right) => left.zMm - right.zMm);
+      if (visible.length < 2) return null;
+      if (zMm <= visible[0].zMm) return visible[0].xMm;
+      if (zMm >= visible.at(-1).zMm) return visible.at(-1).xMm;
+      for (let index = 1; index < visible.length; index += 1) {
+        const after = visible[index]; if (after.zMm < zMm) continue;
+        const before = visible[index - 1]; const ratio = (zMm - before.zMm) / Math.max(1e-9, after.zMm - before.zMm);
+        return before.xMm + (after.xMm - before.xMm) * ratio;
+      }
+      return null;
+    };
+    const outerRevolveFor = (key, seen = new Set()) => {
+      if (seen.has(key)) return null; seen.add(key);
+      const feature = currentFeatures.get(key); if (!feature) return null;
+      const candidates = feature.operation === "revolve" && feature.parameters.profile?.length ? [feature] : feature.inputKeys.flatMap((input) => outerRevolveFor(input, seen) ?? []);
+      return candidates.sort((left, right) => (Math.max(...right.parameters.profile.map((point) => point.zMm)) - Math.min(...right.parameters.profile.map((point) => point.zMm))) - (Math.max(...left.parameters.profile.map((point) => point.zMm)) - Math.min(...left.parameters.profile.map((point) => point.zMm))))[0] ?? null;
+    };
     for (const feature of features) {
       if (feature.inputKeys.some((key) => !currentFeatures.has(key))) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
       if (["revolve", "extrude", "primitive"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
@@ -234,6 +252,20 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       if (feature.operation === "pattern") {
         const [baseKey, seedKey] = feature.inputKeys;
         if (feature.inputKeys.length !== 2 || currentFeatures.get(seedKey)?.operation !== "rib" || !baseKey) throw new Error(`graph_repair_required: ${component.componentKey}.pattern.baseAndRib`);
+      }
+      if (feature.operation === "boolean" && feature.parameters.operation === "cut" && feature.inputKeys.length >= 2) {
+        const outer = outerRevolveFor(feature.inputKeys[0]); const cutter = currentFeatures.get(feature.inputKeys[1]);
+        if (outer?.parameters.profile?.length && cutter?.operation === "revolve" && cutter.parameters.profile?.length) {
+          const crossing = cutter.parameters.profile.filter((point) => point.xMm > 1e-6).some((point) => {
+            const radius = interpolateRadius(outer.parameters.profile, point.zMm);
+            return radius !== null && point.xMm >= radius - .01;
+          });
+          // A cutter crossing the outer profile splits a vessel into separate
+          // B-Reps.  Do not quietly turn it into a fixed cylinder or apply an
+          // invented wall thickness: the component repair call receives this
+          // exact topology error and must return a contained cavity/profile.
+          if (crossing) throw new Error(`graph_repair_required: ${component.componentKey}.boolean.cavityWithinOuter`);
+        }
       }
     }
     /* A manufacturing component has exactly one terminal B-Rep root.  Several
