@@ -164,6 +164,24 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       const profile = rawProfile.map((point) => ({ ...point, yMm: 0, zMm: zSpan >= ySpan ? point.zMm : point.yMm }));
       return { ...feature, parameters: { ...feature.parameters, profile } };
     });
+    // Vision may consistently choose Y as an axisymmetric component's vertical
+    // ordinate. Profiles were already normalized into XZ above, but a mouth
+    // cutter or groove transform expressed in that same source coordinate
+    // system must move with it. Leaving `translation.y` untouched placed a
+    // correct bottle-mouth cutter at the local datum, where it cut the base
+    // instead of the neck. This is a component-coordinate conversion, not a
+    // product-name rule or an inferred geometric alteration.
+    const profileAxisWasY = component.features.some((feature) => {
+      const profile = feature.parameters.profile ?? []; if (profile.length < 2) return false;
+      const ySpan = Math.max(...profile.map((point) => point.yMm)) - Math.min(...profile.map((point) => point.yMm));
+      const zSpan = Math.max(...profile.map((point) => point.zMm)) - Math.min(...profile.map((point) => point.zMm));
+      return ySpan > zSpan + 1e-6;
+    });
+    if (profileAxisWasY) features = features.map((feature) => {
+      const params = feature.parameters ?? {}; const translation = params.transform?.translationMm;
+      if (!translation || Math.abs(Number(translation.z ?? 0)) > 1e-6 || Math.abs(Number(translation.y ?? 0)) <= 1e-6) return params.axis === "y" ? { ...feature, parameters: { ...params, axis: "z" } } : feature;
+      return { ...feature, parameters: { ...params, axis: params.axis === "y" ? "z" : params.axis, transform: { ...params.transform, translationMm: { ...translation, y: 0, z: translation.y } } }, rationale: `${feature.rationale} (Y축 axial transform을 XZ 좌표계로 정규화함)` };
+    });
     const componentZ = Number(component.transform?.translationMm?.z ?? 0);
     features = features.map((feature) => {
       const profile = feature.parameters.profile;

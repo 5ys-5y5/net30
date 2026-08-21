@@ -153,11 +153,12 @@ reversedCutOutput.components[0].features = [smallBase, largerCutter, reversedCut
 assert.throws(() => canonicalizeGraph(reversedCutOutput, ["마개"], []), /graph_repair_required: component-1\.boolean\.cutContainment/);
 const mouthOpeningOutput = fixtureGraphOutput({ product: { name: "상부 개구 병" }, prompt: "open mouth", requestedComponents: ["유리병"], imageIds: [] });
 const mouthOuter = structuredClone(mouthOpeningOutput.components[0].features[0]); mouthOuter.key = "outer-vessel";
-mouthOuter.parameters = { ...mouthOuter.parameters, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 0, zMm: 95 }, { xMm: 14, yMm: 0, zMm: 100 }, { xMm: 0, yMm: 0, zMm: 100 }] };
-const mouthCutter = { ...structuredClone(mouthOuter), key: "mouth-cutter", operation: "primitive", inputKeys: [], parameters: { ...mouthOuter.parameters, profile: null, primitive: "cylinder", radiusMm: 10, heightMm: 15, dimensionsMm: null, transform: { translationMm: { x: 0, y: 0, z: 90 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
+mouthOuter.parameters = { ...mouthOuter.parameters, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 95, zMm: 0 }, { xMm: 14, yMm: 100, zMm: 0 }, { xMm: 0, yMm: 100, zMm: 0 }] };
+const mouthCutter = { ...structuredClone(mouthOuter), key: "mouth-cutter", operation: "primitive", inputKeys: [], parameters: { ...mouthOuter.parameters, profile: null, primitive: "cylinder", radiusMm: 10, heightMm: 15, dimensionsMm: null, transform: { translationMm: { x: 0, y: 90, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
 const mouthCut = { ...structuredClone(mouthOuter), key: "open-mouth", operation: "boolean", inputKeys: [mouthOuter.key, mouthCutter.key], parameters: { ...mouthOuter.parameters, profile: null, primitive: null, operation: "cut" } };
 mouthOpeningOutput.components[0].features = [mouthOuter, mouthCutter, mouthCut];
-assert.doesNotThrow(() => canonicalizeGraph(mouthOpeningOutput, ["유리병"], []), "a contained cutter may cross one boundary to create an intentional vessel mouth");
+const normalizedMouth = canonicalizeGraph(mouthOpeningOutput, ["유리병"], []);
+assert.equal(normalizedMouth.graph.nodes.find((node) => node.id === normalizedMouth.graph.nodes.find((node) => node.operation === "primitive")?.id)?.parameters.transform.translationMm.z, 90, "a Y-axis visual plan must move its mouth cutter into canonical Z");
 const openRevolveOutput = fixtureGraphOutput({ product: { name: "열린 회전 단면" }, prompt: "cap", requestedComponents: ["뚜껑"], imageIds: [] });
 openRevolveOutput.components[0].features[0].parameters.profile = [{ xMm: 20, yMm: 0, zMm: 0 }, { xMm: 22, yMm: 0, zMm: 1 }, { xMm: 20, yMm: 0, zMm: 2 }];
 assert.throws(() => canonicalizeGraph(openRevolveOutput, ["뚜껑"], []), /graph_repair_required: component-1\.revolve\.closedProfile/);
