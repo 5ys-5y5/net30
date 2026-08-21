@@ -279,7 +279,13 @@ function fitClosureOutline(graph, componentId, capMeasurement, approvedDimension
   if (!target || !range || samples.length < 12 || !Number.isFinite(targetRadius) || targetRadius <= 0 || range.max - range.min <= 1e-6) {
     return null;
   }
-  const compact = samples.length <= 64 ? samples : Array.from({ length: 64 }, (_, index) => samples[Math.round(index * (samples.length - 1) / 63)]);
+  // A cap band has a comparatively simple axial outline, while every fitted
+  // sample becomes a native OCCT Bézier edge and then participates in shell
+  // and rib Boolean work. Preserve the measured curve through deterministic
+  // fitting knots, but bound that representation to 24 segments so a high
+  // resolution photograph cannot turn one closure into a multi-minute CAD
+  // operation. This is curve compression, not a mesh simplification.
+  const compact = samples.length <= 24 ? samples : Array.from({ length: 24 }, (_, index) => samples[Math.round(index * (samples.length - 1) / 23)]);
   const outer = compact.map((sample) => ({
     xMm: Number((Math.max(.01, Number(sample.radiusNorm) * targetRadius)).toFixed(6)),
     yMm: 0,
