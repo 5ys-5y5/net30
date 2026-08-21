@@ -405,6 +405,71 @@ def inner_revolve_from_profile(params, thickness):
     return revolve({**params, "profile": [{"xMm": x, "zMm": z} for x, z in inner], "curveSegments": []})
 
 
+def axisymmetric_shell_from_profile(params, thickness):
+    """Create an open vessel from one continuous annular generating wire.
+
+    Subtracting a second revolved solid from a thin, curved bottle can split
+    OCCT into disconnected slivers.  ``faces().shell`` may look valid in
+    memory yet serialise a different cavity in STEP.  Instead, this builds the
+    outer wall, rim, inner wall and base as one planar cross-section and
+    revolves that single wire.  The outer declared Bézier/NURBS edge remains
+    the graph-authored analytical curve; only the hidden inner offset is
+    derived from the approved wall thickness.
+    """
+    raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or [])]
+    visible = sorted([(x, z) for x, z in raw if x > 1e-6], key=lambda item: item[1])
+    if len(visible) < 2:
+        raise RuntimeError("graph_invalid: shell source revolve needs a visible outer profile")
+    if raw[0][0] > 1e-6:
+        raise RuntimeError("graph_invalid: axisymmetric shell requires an approved lower axial datum")
+    def offset_point(index):
+        left, right = visible[max(0, index - 1)], visible[min(len(visible) - 1, index + 1)]
+        dx, dz = right[0] - left[0], right[1] - left[1]; length = math.hypot(dx, dz)
+        if length <= 1e-9: raise RuntimeError("graph_invalid: shell source profile has a zero-length tangent")
+        # The generating curve travels bottom-to-mouth. Its inward normal is
+        # (-dz, dx), so this is a normal wall thickness, not a radial shortcut.
+        x, z = visible[index]
+        return (x - thickness * dz / length, z + thickness * dx / length)
+    inner = [offset_point(index) for index in range(len(visible))]
+    start = next((index for index, (_, z) in enumerate(inner) if z >= visible[0][1] + thickness - 1e-6), None)
+    if start is None or start >= len(inner) - 1:
+        raise RuntimeError("graph_invalid: shell thickness leaves no approved interior profile")
+    inner = inner[start:]
+    # The open mouth is an annular rim on the approved outer mouth plane. A
+    # normal offset can move its final point infinitesimally above that plane;
+    # clamping that one inner endpoint preserves the datum without altering
+    # the exterior B-spline/Bezier surface.
+    inner[-1] = (inner[-1][0], visible[-1][1])
+    if any(x <= 1e-5 for x, _ in inner):
+        raise RuntimeError("graph_invalid: shell thickness exceeds the approved outer profile")
+
+    segments = params.get("curveSegments") or []
+    outer_edges = []
+    if segments and all(segment.get("kind") == "bezier" for segment in segments):
+        first = segments[0].get("points", [None])[0]; last = segments[-1].get("points", [None])[-1]
+        if not first or not last: raise RuntimeError("graph_invalid: declared Bézier shell profile is incomplete")
+        outer_edges = [bezier_edge(segment) for segment in segments]
+        first_outer, last_outer = (float(first["xMm"]), float(first["zMm"])), (float(last["xMm"]), float(last["zMm"]))
+    elif len(segments) == 1 and segments[0].get("kind") == "nurbs":
+        poles = segments[0].get("poles") or segments[0].get("points") or []
+        if len(poles) < 2: raise RuntimeError("graph_invalid: declared NURBS shell profile is incomplete")
+        outer_edges = [rational_bspline_edge(segments[0])]
+        first_outer, last_outer = (float(poles[0]["xMm"]), float(poles[0]["zMm"])), (float(poles[-1]["xMm"]), float(poles[-1]["zMm"]))
+    else:
+        first_outer, last_outer = visible[0], visible[-1]
+        outer_edges = [BRepBuilderAPI_MakeEdge(gp_Pnt(x0, 0, z0), gp_Pnt(x1, 0, z1)).Edge() for (x0, z0), (x1, z1) in zip(visible, visible[1:])]
+
+    edges = [BRepBuilderAPI_MakeEdge(gp_Pnt(0, 0, raw[0][1]), gp_Pnt(first_outer[0], 0, first_outer[1])).Edge(), *outer_edges, BRepBuilderAPI_MakeEdge(gp_Pnt(last_outer[0], 0, last_outer[1]), gp_Pnt(inner[-1][0], 0, inner[-1][1])).Edge()]
+    for current, following in zip(reversed(inner), reversed(inner[:-1])):
+        edges.append(BRepBuilderAPI_MakeEdge(gp_Pnt(current[0], 0, current[1]), gp_Pnt(following[0], 0, following[1])).Edge())
+    edges.extend([BRepBuilderAPI_MakeEdge(gp_Pnt(inner[0][0], 0, inner[0][1]), gp_Pnt(0, 0, inner[0][1])).Edge(), BRepBuilderAPI_MakeEdge(gp_Pnt(0, 0, inner[0][1]), gp_Pnt(0, 0, raw[0][1])).Edge()])
+    wire_builder = BRepBuilderAPI_MakeWire()
+    for edge in edges: wire_builder.Add(edge)
+    if not wire_builder.IsDone(): raise RuntimeError("graph_invalid: shell wall/rim/base cannot form one closed generating wire")
+    face = cq.Face.makeFromWires(cq.Wire(wire_builder.Wire()))
+    return cq.Workplane("XZ").newObject([face]).toPending().revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
+
+
 def radial_extent_at_z(node_id, z_mm, nodes_by_id, seen=None):
     """Resolve the actual radial envelope at a feature's local Z ordinate.
 
@@ -509,25 +574,14 @@ def compile_graph(graph_component, graph_nodes):
                 visible_top = max((z for _, z in visible), default=-float("inf"))
                 outer_top = max((z for _, z in profile), default=-float("inf"))
                 roofed = outer_top > visible_top + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top) <= 1e-6 for x, z in profile)
-                # Keep exterior and interior as explicit, independently
-                # inspectable revolved B-Reps, then perform the declared cut.
-                # OCCT's generic face-shell can look valid in-memory yet
-                # change its offset volume after STEP export/re-import for a
-                # NURBS mouth/shoulder. An explicit inner revolve provides a
-                # stable manufacturing representation whenever the approved
-                # profile admits that Boolean. A few legacy self-touching
-                # profiles cannot form a stable cutter; retain OCCT's native
-                # shell *only* for that documented geometry failure rather
-                # than substituting a primitive or silently changing shape.
-                cavity = inner_revolve_from_profile(source_params, thickness)
-                try:
+                if roofed:
+                    cavity = inner_revolve_from_profile(source_params, thickness)
                     candidate = inputs[0].cut(cavity)
                     if candidate.val().isNull() or len(candidate.val().Solids()) != 1:
-                        raise RuntimeError("explicit cavity Boolean did not produce one connected solid")
+                        raise RuntimeError("graph_invalid: explicit roofed cavity cannot form one connected B-Rep")
                     shape = candidate
-                except Exception as cavity_error:
-                    if roofed: raise RuntimeError("graph_invalid: explicit roofed cavity cannot form a stable B-Rep") from cavity_error
-                    shape = cq.Workplane(obj=inputs[0].val()).faces(">Z").shell(-thickness)
+                else:
+                    shape = axisymmetric_shell_from_profile(source_params, thickness)
             else:
                 shape = cq.Workplane(obj=inputs[0].val()).faces("<Z").shell(-thickness)
         elif op == "pattern":
