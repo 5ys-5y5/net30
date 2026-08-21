@@ -54,19 +54,33 @@ def revolve(params):
         if not points or math.dist(point, points[-1]) > 1e-8: points.append(point)
     if len(points) > 2 and math.dist(points[0], points[-1]) <= 1e-8: points.pop()
     if len(points) < 2: raise RuntimeError("graph_invalid: revolve profile requires at least two points")
-    wire = cq.Workplane("XZ").moveTo(*points[0]).spline(points[1:]).close()
+    workplane = cq.Workplane("XZ").moveTo(*points[0])
+    # Raw measured samples are a *point cloud*, not yet a declared NURBS.
+    # Interpolating all of them as a free B-spline can overshoot the approved
+    # base/rim planes by centimetres. Until the fitter emits explicit rational
+    # curveSegments (degree/poles/weights/knots), preserve the measured points
+    # as an exact OCCT wire. This is still a B-Rep surface of revolution, not a
+    # polygon mesh; a later curve-fitting pass may replace this wire with its
+    # validated NURBS declaration without changing the product datum.
+    wire = workplane.polyline(points[1:]).close()
     return wire.revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
 
 
 def primitive(params):
+    # ModelingGraph component-local coordinates use the assembly datum plane at
+    # z=0.  Revolved/extruded profiles already follow that rule, so primitives
+    # must extend upward from z=0 as well.  Centering only primitives around
+    # the origin was shifting a cap down by half its height after a correct
+    # mate transform had been calculated.
     dimensions = params.get("dimensionsMm") or {"x": float(params.get("radiusMm") or 10) * 2, "y": float(params.get("radiusMm") or 10) * 2, "z": float(params.get("heightMm") or 10)}
     kind = params.get("primitive") or "cylinder"; x, y, z = vec(dimensions, (20, 20, 20))
-    if params.get("innerRadiusMm") is not None: return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).circle(float(params["innerRadiusMm"])).extrude(float(params.get("heightMm") or z)).translate((0, 0, -float(params.get("heightMm") or z) / 2))
-    if kind == "box": return cq.Workplane("XY").box(x, y, z)
-    if kind == "sphere": return cq.Workplane("XY").sphere(x / 2)
-    if kind == "cone": return cq.Workplane("XY").circle(x / 2).workplane(offset=z).circle(max(.01, y / 2)).loft(combine=True).translate((0, 0, -z / 2))
+    height = float(params.get("heightMm") or z)
+    if params.get("innerRadiusMm") is not None: return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).circle(float(params["innerRadiusMm"])).extrude(height)
+    if kind == "box": return cq.Workplane("XY").box(x, y, z, centered=(True, True, False))
+    if kind == "sphere": return cq.Workplane("XY").sphere(x / 2).translate((0, 0, x / 2))
+    if kind == "cone": return cq.Workplane("XY").circle(x / 2).workplane(offset=z).circle(max(.01, y / 2)).loft(combine=True)
     if kind == "torus": return cq.Workplane("XY").transformed(offset=(x / 2, 0, 0)).circle(max(.01, y / 2)).revolve(360, (0, 0, 0), (0, 0, 1))
-    return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).extrude(float(params.get("heightMm") or z)).translate((0, 0, -float(params.get("heightMm") or z) / 2))
+    return cq.Workplane("XY").circle(float(params.get("radiusMm") or x / 2)).extrude(height)
 
 
 def radial_pattern(shape, count):
@@ -75,8 +89,31 @@ def radial_pattern(shape, count):
     count = min(512, int(count)); result = None
     for index in range(count):
         instance = shape.rotate((0, 0, 0), (0, 0, 1), 360 * index / count)
-        result = instance if result is None else result.union(instance)
-    return result
+        # ``Workplane.union`` can retain a compound when its input is already a
+        # compound.  That is acceptable for unrelated assembly children, but a
+        # radial rib feature must become one B-Rep with its host surface.  Use
+        # OCCT's Shape fuse directly and wrap the result once at the boundary.
+        result = instance.val() if result is None else result.fuse(instance.val())
+    return cq.Workplane(obj=result)
+
+
+def fuse_roots(roots):
+    """Fuse feature roots into one intended component solid.
+
+    A compound is not an acceptable silent substitute for a single cap or
+    bottle component: it masks disconnected ribs, rings, or decals as a
+    manufacturing candidate.  Callers may intentionally emit an assembly
+    compound elsewhere, but each ``brep_solid`` graph component must pass this
+    direct OCCT fuse before it can reach the manufacturing validator.
+    """
+    if not roots:
+        raise RuntimeError("graph_invalid: component has no compiled B-Rep root")
+    result = roots[0].val()
+    for addition in roots[1:]:
+        result = result.fuse(addition.val())
+        if result.isNull():
+            raise RuntimeError("graph_invalid: component roots do not form a fuseable B-Rep; repair the feature topology")
+    return cq.Workplane(obj=result)
 
 
 def inner_revolve_from_profile(params, thickness):
@@ -153,10 +190,14 @@ def compile_graph(graph_component, graph_nodes):
             # is not copied 36 times.  Other patterns still instance their
             # seed exactly as requested.
             seed_id = node.get("inputNodeIds", [])[-1] if node.get("inputNodeIds") else None
-            if seed_id and nodes_by_id.get(seed_id, {}).get("operation") == "rib": shape = inputs[-1]
+            if seed_id and nodes_by_id.get(seed_id, {}).get("operation") == "rib":
+                # A pattern's first input is the immutable host/base; its
+                # second input is one rib seed. Return the complete fused cap,
+                # not a compound of 36 detached rib solids.
+                shape = fuse_roots([inputs[0], radial_pattern(inputs[-1], params.get("count"))])
             else:
                 patterned = radial_pattern(inputs[-1], params.get("count"))
-                shape = inputs[0].union(patterned) if len(inputs) == 2 else patterned
+                shape = fuse_roots([inputs[0], patterned]) if len(inputs) == 2 else patterned
         elif op == "rib":
             if len(inputs) < 1: raise RuntimeError(f"graph_invalid: rib node {node['id']} requires baseSolidNodeId input")
             # A feature planner may express the radial count on its following
@@ -175,10 +216,15 @@ def compile_graph(graph_component, graph_nodes):
             translation = local_transform.get("translationMm") or {}
             radius = float(params["radiusMm"]) if params.get("radiusMm") is not None else float(translation.get("x", max(abs(base_box.xmin), abs(base_box.xmax), abs(base_box.ymin), abs(base_box.ymax))))
             z_center = float(params.get("zMm", float(translation.get("z", base_box.zmin)) + height / 2))
-            # A radial rib is placed tangent to the exterior, then patterned
-            # around the part.  It is never silently substituted by a 1 mm box.
-            rib = cq.Workplane("XY").box(depth, width, height).translate((radius + depth / 2, 0, z_center))
-            shape = inputs[0].union(radial_pattern(rib, count))
+            # The rib deliberately penetrates the approved exterior by 35% of
+            # its radial depth.  A merely tangent box becomes a separate B-Rep
+            # compound; this overlap makes the Boolean fuse deterministic while
+            # retaining the explicit protrusion requested by the graph.
+            rib = cq.Workplane("XY").box(depth, width, height).translate((radius + depth * .15, 0, z_center))
+            # A following Pattern node owns the radial repetition.  Returning
+            # only the seed here prevents the base cylinder from being copied
+            # once per rib, which previously made cap root fusion void.
+            shape = rib if node["id"] in pattern_count_by_seed else fuse_roots([inputs[0], radial_pattern(rib, count)])
         elif op in ("transform", "mate"):
             if len(inputs) != 1: raise RuntimeError(f"graph_invalid: {op} node {node['id']} requires one input")
             shape = transform_shape(inputs[0], params.get("transform"))
@@ -193,25 +239,16 @@ def compile_graph(graph_component, graph_nodes):
         # legacy inline operation is only for compatibility on a generating
         # node; applying it again inverted a cap cavity into a void B-Rep.
         if op != "boolean" and legacy_boolean in ("cut", "union", "intersect") and inputs:
-            base = inputs[0]; shape = base.cut(shape) if legacy_boolean == "cut" else base.intersect(shape) if legacy_boolean == "intersect" else base.union(shape)
+            base = inputs[0]
+            # Keep a legacy inline union on the same OCCT fuse path as an
+            # explicit Boolean union.  ``Workplane.union`` may preserve a
+            # compound after a patterned rib feature even when every rib
+            # overlaps the cap shell, which made a visibly correct cap fail
+            # the one-connected-solid manufacturing gate.
+            shape = base.cut(shape) if legacy_boolean == "cut" else base.intersect(shape) if legacy_boolean == "intersect" else fuse_roots([base, shape])
         results[node["id"]] = shape
     roots = [results[item] for item in graph_component.get("rootNodeIds", []) if item in results]
-    if not roots: raise RuntimeError("graph_invalid: component has no compiled B-Rep root")
-    shape = roots[0]
-    for addition in roots[1:]: shape = shape.union(addition)
-    # OCCT can return a void result when fusing coplanar, independently
-    # modelled cap ribs and sealing rings.  Preserve those approved B-Rep
-    # roots as an XDE-compatible compound rather than silently dropping the
-    # component.  The validation report exposes its solid count, so a compound
-    # is never mistaken for a single production-released solid.
-    try:
-        final_value = shape.val()
-        if final_value.isNull(): raise RuntimeError("void fused root")
-        final_value.BoundingBox()
-    except Exception:
-        compound = cq.Compound.makeCompound([root.val() for root in roots if not root.val().isNull()])
-        if compound.isNull(): raise RuntimeError("brep_empty: component roots could not form a B-Rep compound")
-        shape = cq.Workplane(obj=compound)
+    shape = fuse_roots(roots)
     # Component transforms are assembly transforms.  B-Rep children are always
     # exported in local coordinates; cad-assembly-worker/XDE owns placement.
     return shape

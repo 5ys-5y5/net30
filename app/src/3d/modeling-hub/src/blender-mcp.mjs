@@ -107,7 +107,10 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   // explicitly not-measured until that analyser is available.
   const primaryImageId = payload.approvedDraft?.evidenceManifest?.items?.find((item) => item.role === "primary_product")?.imageId ?? null;
   const contour = modelingSpec.modelingGraph ? compareAxisymmetricContour(modelingSpec.modelingGraph, payload.approvedDraft?.imageEvidence, primaryImageId) : null;
-  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed), solidCount: Math.max(...Object.values(cad.validation).map((item) => item.solidCount ?? Infinity)) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
+  const expectedDimensions = modelingSpec.contract.dimensionsMm;
+  const actualBounds = cad.assembly.validation.sourceBoundsMm;
+  const dimensions = { toleranceMm: .5, maxDeltaMm: Math.max(Math.abs(actualBounds.x - expectedDimensions.widthMm), Math.abs(actualBounds.y - expectedDimensions.depthMm), Math.abs(actualBounds.z - expectedDimensions.heightMm)) };
+  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, dimensions, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed), solidCount: Math.max(...Object.values(cad.validation).map((item) => item.solidCount ?? Infinity)) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
   await dossier.writeSnapshot("validation/quality-gates.json", qualityReport);
   dossier.record("quality.gates", qualityReport);
   const dossierManifest = await dossier.finalize({ status: cad.manufacturingStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers, qualityReport });

@@ -68,7 +68,7 @@ function interpolate(samples, zNorm) {
 /** Apply the primary-image body contour only to the largest revolved solid.
  * This uses no component-name heuristic: the selected target is the largest
  * B-Rep profile in the graph. */
-export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId = null) {
+export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId = null, approvedDimensions = null) {
   const measured = evidence?.images?.find((item) => item.ok && item.measurement?.imageId === primaryImageId && item.measurement?.bodySilhouette?.length >= 12)?.measurement;
   if (!measured) return { graph, applied: false, reason: "evidence_missing" };
   const candidates = graph.nodes
@@ -77,8 +77,18 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   const target = candidates.sort((left, right) => right.span - left.span)[0]?.node;
   if (!target) return { graph, applied: false, reason: "no_axisymmetric_brep" };
   const source = target.parameters.profile;
-  const zMin = Math.min(...source.map((point) => point.zMm)); const zMax = Math.max(...source.map((point) => point.zMm));
-  const maxRadius = Math.max(...source.map((point) => Math.abs(point.xMm)));
+  const sourceZMin = Math.min(...source.map((point) => point.zMm)); const sourceZMax = Math.max(...source.map((point) => point.zMm));
+  const sourceMaxRadius = Math.max(...source.map((point) => Math.abs(point.xMm)));
+  // Image measurements determine the continuous contour, but cannot establish
+  // scale by themselves.  When the product contract contains approved overall
+  // dimensions, make that contract the datum rather than preserving an LLM
+  // guessed profile extent.  This keeps the curve shape while producing a
+  // component-local B-Rep with a reproducible, reviewable mm envelope.
+  const targetHeightMm = Number(approvedDimensions?.heightMm);
+  const targetWidthMm = Number(approvedDimensions?.widthMm);
+  const zMin = Number.isFinite(targetHeightMm) && targetHeightMm > 0 ? 0 : sourceZMin;
+  const zMax = Number.isFinite(targetHeightMm) && targetHeightMm > 0 ? targetHeightMm : sourceZMax;
+  const maxRadius = Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? targetWidthMm / 2 : sourceMaxRadius;
   const rows = measured.bodySilhouette.filter((item) => item.zNorm >= 0 && item.zNorm <= 1).sort((left, right) => left.zNorm - right.zNorm);
   // Keep the measured rows.  OCCT receives a smooth spline through these
   // samples; reducing them to a handful of points was the source of visible
@@ -91,7 +101,19 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // v3 envelope created from this graph, rather than weakening the existing
   // Strict Structured Outputs schema with an opaque optional field.
   node.parameters.profile = fitted;
-  return { graph: next, applied: true, nodeId: target.id, measurement: measured };
+  return {
+    graph: next,
+    applied: true,
+    nodeId: target.id,
+    measurement: measured,
+    calibration: {
+      sourceHeightMm: sourceZMax - sourceZMin,
+      sourceDiameterMm: sourceMaxRadius * 2,
+      targetHeightMm: zMax - zMin,
+      targetDiameterMm: maxRadius * 2,
+      source: Number.isFinite(targetHeightMm) && targetHeightMm > 0 && Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? "approved_dimensions" : "graph_extent",
+    },
+  };
 }
 
 /** Compare the graph's outer revolved profile against the measured primary

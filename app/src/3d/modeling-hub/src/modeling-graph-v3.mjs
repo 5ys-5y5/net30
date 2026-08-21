@@ -32,7 +32,7 @@ export const modelingGraphV3Schema = z.object({
   capabilityVersion: z.literal("net30-occt-v3"),
 }).strict();
 
-export const qualityGateReportSchema = z.object({ version: z.literal("net30.quality-gates.v1"), graphHash: z.string().length(64), gates: z.array(z.object({ id: z.enum(["silhouette_iou", "contour_rms_mm", "hausdorff95_mm", "landmarks_mm", "brep_valid", "closed_shell", "single_intended_solid", "free_edges", "assembly_clearance", "step_roundtrip", "evidence" ]), state: z.enum(["pass", "fail", "blocked", "not_measured"]), value: z.number().nullable(), threshold: z.number().nullable(), message: z.string() }).strict()), manufacturingStatus: z.enum(["visual_verified", "dimensional_candidate", "manufacturing_review_required", "manufacturing_released"]) }).strict();
+export const qualityGateReportSchema = z.object({ version: z.literal("net30.quality-gates.v1"), graphHash: z.string().length(64), gates: z.array(z.object({ id: z.enum(["silhouette_iou", "contour_rms_mm", "hausdorff95_mm", "landmarks_mm", "overall_dimensions", "brep_valid", "closed_shell", "single_intended_solid", "free_edges", "assembly_clearance", "step_roundtrip", "evidence" ]), state: z.enum(["pass", "fail", "blocked", "not_measured"]), value: z.number().nullable(), threshold: z.number().nullable(), message: z.string() }).strict()), manufacturingStatus: z.enum(["visual_verified", "dimensional_candidate", "manufacturing_review_required", "manufacturing_released"]) }).strict();
 
 export function stableHash(value) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 
@@ -93,13 +93,14 @@ export function fitAxisymmetricProfile(samples, { smoothPasses = 2, toleranceMm 
   return { segments: [{ kind: "nurbs", poles: fitted, degree: Math.min(3, fitted.length - 1), weights: fitted.map(() => 1), knots: Array.from({ length: fitted.length }, (_, index) => index), multiplicities: Array.from({ length: fitted.length }, () => 1), periodic: false, provenance }], fitted };
 }
 
-export function qualityGates({ graphHash, contour = null, landmarks = null, brep = null, step = null, evidenceComplete = false }) {
+export function qualityGates({ graphHash, contour = null, landmarks = null, dimensions = null, brep = null, step = null, evidenceComplete = false }) {
   const value = (candidate) => Number.isFinite(candidate) ? candidate : null;
   const gates = [
     { id: "silhouette_iou", state: contour?.iou >= .97 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.iou), threshold: .97, message: "Primary-image silhouette overlap" },
     { id: "contour_rms_mm", state: contour?.rmsMm <= .35 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.rmsMm), threshold: .35, message: "Calibrated contour RMS" },
     { id: "hausdorff95_mm", state: contour?.hausdorff95Mm <= .75 ? "pass" : contour ? "fail" : "not_measured", value: value(contour?.hausdorff95Mm), threshold: .75, message: "95th percentile contour distance" },
     { id: "landmarks_mm", state: landmarks?.maxMm <= .5 ? "pass" : landmarks ? "fail" : "not_measured", value: value(landmarks?.maxMm), threshold: .5, message: "Approved landmark deviation" },
+    { id: "overall_dimensions", state: dimensions?.maxDeltaMm <= dimensions?.toleranceMm ? "pass" : dimensions ? "fail" : "not_measured", value: value(dimensions?.maxDeltaMm), threshold: value(dimensions?.toleranceMm), message: "Approved overall-width, depth, and height deviation" },
     { id: "brep_valid", state: brep?.valid ? "pass" : brep ? "fail" : "not_measured", value: null, threshold: null, message: "OCCT B-Rep validity" },
     { id: "closed_shell", state: brep?.closed ? "pass" : brep ? "fail" : "not_measured", value: null, threshold: null, message: "Closed shell" },
     { id: "single_intended_solid", state: brep?.solidCount === 1 ? "pass" : brep?.solidCount !== undefined ? "fail" : "not_measured", value: value(brep?.solidCount), threshold: 1, message: "One connected manufacturing solid per B-Rep component" },

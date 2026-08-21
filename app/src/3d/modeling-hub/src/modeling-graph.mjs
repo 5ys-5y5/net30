@@ -96,8 +96,8 @@ export function modelingPatchJsonSchema() { return z.toJSONSchema(modelingPatchS
 function defaultTransform() { return { translationMm: { x: 0, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }; }
 function profileFor(kind, width, height) {
   const radius = width / 2;
-  if (kind === "closure") return [{ xMm: radius, yMm: 0, zMm: 0 }, { xMm: radius, yMm: 0, zMm: height * .86 }, { xMm: radius * .92, yMm: 0, zMm: height }];
-  return [{ xMm: radius * .82, yMm: 0, zMm: 0 }, { xMm: radius, yMm: 0, zMm: height * .06 }, { xMm: radius, yMm: 0, zMm: height * .62 }, { xMm: radius * .92, yMm: 0, zMm: height * .74 }, { xMm: radius * .64, yMm: 0, zMm: height * .84 }, { xMm: radius * .64, yMm: 0, zMm: height }];
+  if (kind === "closure") return [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: radius, yMm: 0, zMm: 0 }, { xMm: radius, yMm: 0, zMm: height * .86 }, { xMm: radius * .92, yMm: 0, zMm: height }, { xMm: 0, yMm: 0, zMm: height }];
+  return [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: radius * .82, yMm: 0, zMm: 0 }, { xMm: radius, yMm: 0, zMm: height * .06 }, { xMm: radius, yMm: 0, zMm: height * .62 }, { xMm: radius * .92, yMm: 0, zMm: height * .74 }, { xMm: radius * .64, yMm: 0, zMm: height * .84 }, { xMm: radius * .64, yMm: 0, zMm: height }, { xMm: 0, yMm: 0, zMm: height }];
 }
 
 export function fixtureGraphOutput(payload) {
@@ -177,13 +177,98 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       if (inlineBoolean && !precedingSolidKey && !repaired.inputKeys.length && feature.parameters.operation === "union") repaired = { ...feature, parameters: { ...feature.parameters, operation: null }, rationale: `${feature.rationale} (첫 B-Rep solid로 정규화함)` };
       const repairedNeedsBase = ["rib", "pattern", "shell", "transform", "mate"].includes(repaired.operation) || ["cut", "union", "intersect"].includes(repaired.parameters?.operation);
       if (repairedNeedsBase && !repaired.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
+      if (repaired.operation === "boolean" && repaired.inputKeys.length < 2) throw new Error(`graph_repair_required: ${component.componentKey}.boolean.inputKeys`);
       if (["revolve", "extrude", "primitive", "boolean", "rib", "pattern", "shell", "transform", "mate"].includes(repaired.operation)) precedingSolidKey = repaired.key;
       return repaired;
     });
     if (!features.length) throw new Error(`unsupported_operation: ${component.componentKey}.profile에는 revolve·extrude 같은 생성 연산이 필요합니다.`);
+    /* A cavity cut that starts above the datum but reaches the full height of
+     * its host primitive has neither a declared opening nor an approved roof
+     * thickness. OCCT may reject its coplanar boolean, but more importantly it
+     * is ambiguous manufacturing topology. Repair only this component instead
+     * of changing the cutter by an unapproved magic epsilon. */
+    for (const feature of features) {
+      if (feature.parameters.operation !== "cut" || feature.operation !== "revolve" || !feature.parameters.profile?.length) continue;
+      const base = feature.inputKeys.map((key) => byKey.get(key)).find((candidate) => ["primitive", "extrude"].includes(candidate?.operation));
+      const baseHeight = Number(base?.parameters?.heightMm ?? base?.parameters?.dimensionsMm?.z ?? 0);
+      const zValues = feature.parameters.profile.map((point) => point.zMm);
+      if (baseHeight > 0 && Math.min(...zValues) > .01 && Math.max(...zValues) >= baseHeight - .01) {
+        throw new Error(`graph_repair_required: ${component.componentKey}.boolean.cavityBoundary`);
+      }
+    }
+    for (const feature of features) {
+      if (feature.operation !== "revolve" || !feature.parameters.profile?.length) continue;
+      const profile = feature.parameters.profile;
+      // A B-Rep revolve must start from an actual closed section, not a
+      // decorative three-point stroke. The compiler closes the supplied wire
+      // but cannot manufacture a missing second boundary or non-zero area.
+      // Catch the issue here so only this component receives an LLM repair.
+      const area2 = profile.reduce((sum, point, index) => {
+        const next = profile[(index + 1) % profile.length];
+        return sum + point.xMm * next.zMm - next.xMm * point.zMm;
+      }, 0);
+      if (profile.length < 4 || Math.abs(area2) < .001) throw new Error(`graph_repair_required: ${component.componentKey}.revolve.closedProfile`);
+    }
+    /* Validate the topology which the static OCCT interpreter can actually
+     * preserve. Treating a complete cap as the seed of a radial `pattern`, or
+     * feeding a pattern back into a new `revolve`, looked valid as JSON but
+     * produced multiple disconnected solids. Do not approximate it: repair
+     * just this component and require an explicit base + rib + pattern chain.
+     */
+    const currentFeatures = new Map(features.map((feature) => [feature.key, feature]));
+    for (const feature of features) {
+      if (feature.inputKeys.some((key) => !currentFeatures.has(key))) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
+      if (["revolve", "extrude", "primitive"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
+      if (feature.operation === "rib") {
+        if (feature.inputKeys.length !== 1) throw new Error(`graph_repair_required: ${component.componentKey}.rib.inputKeys`);
+        const followingPattern = features.find((candidate) => candidate.operation === "pattern" && candidate.inputKeys.at(-1) === feature.key);
+        const params = feature.parameters;
+        const missing = [
+          (params.count ?? followingPattern?.parameters.count) === null ? "count" : null,
+          (params.spacingMm ?? params.thicknessMm) === null ? "spacingMm" : null,
+          (params.depthMm ?? params.thicknessMm) === null ? "depthMm" : null,
+          params.heightMm === null ? "heightMm" : null,
+        ].filter(Boolean);
+        if (missing.length) throw new Error(`graph_repair_required: ${component.componentKey}.rib.${missing.join("+")}`);
+      }
+      if (feature.operation === "pattern") {
+        const [baseKey, seedKey] = feature.inputKeys;
+        if (feature.inputKeys.length !== 2 || currentFeatures.get(seedKey)?.operation !== "rib" || !baseKey) throw new Error(`graph_repair_required: ${component.componentKey}.pattern.baseAndRib`);
+      }
+    }
+    /* A manufacturing component has exactly one terminal B-Rep root.  Several
+     * unconnected roots look harmless in a JSON plan but compile to a compound
+     * (or a void OCCT fuse): for example an outer cap, a rib array, and two
+     * independently authored sealing rings.  Require the planner to express
+     * their intended union/cut explicitly.  The caller repairs only this
+     * component, rather than silently treating a disconnected compound as a
+     * production solid or re-running every other component analysis. */
+    const referencedFeatureKeys = new Set(features.flatMap((feature) => feature.inputKeys));
+    const terminalBrepRoots = features.filter((feature) =>
+      !referencedFeatureKeys.has(feature.key) &&
+      !["surface_decal", "surface_artwork", "volume", "instance_distribution"].includes(feature.operation),
+    );
+    if (component.representation === "brep_solid" && terminalBrepRoots.length !== 1) {
+      throw new Error(`graph_repair_required: ${component.componentKey}.rootTopology`);
+    }
+    const selfHosted = component.hostComponentKey === component.componentKey || features.some((feature) => feature.parameters.hostComponentKey === component.componentKey);
+    const hasSurfaceAttachment = features.some((feature) => ["surface_decal", "surface_artwork"].includes(feature.operation));
+    const normalizedComponentHostKey = selfHosted && component.representation === "brep_solid" && !hasSurfaceAttachment ? null : component.hostComponentKey;
+    if (selfHosted && component.representation === "brep_solid" && !hasSurfaceAttachment) {
+      // A solid cannot be mounted on its own external host. Some VLM repairs
+      // echo the component key in a nullable host field even though no
+      // attached-surface feature exists. It has no geometric meaning, so make
+      // the safe canonical value explicit rather than spending another remote
+      // repair call or letting a cyclic relationship reach the assembly.
+      features = features.map((feature) => feature.parameters.hostComponentKey === component.componentKey
+        ? { ...feature, parameters: { ...feature.parameters, hostComponentKey: null } }
+        : feature);
+    } else if (selfHosted) {
+      throw new Error(`graph_repair_required: ${component.componentKey}.hostComponentKey`);
+    }
     const featureHostKeys = [...new Set(features.map((feature) => feature.parameters.hostComponentKey).filter(Boolean))];
-    if (featureHostKeys.length > 1 || (component.hostComponentKey && featureHostKeys.length && component.hostComponentKey !== featureHostKeys[0])) throw new Error(`graph_invalid: ${component.componentKey}의 부착 대상 참조가 충돌합니다.`);
-    return { ...component, hostComponentKey: component.hostComponentKey ?? featureHostKeys[0] ?? null, features };
+    if (featureHostKeys.length > 1 || (normalizedComponentHostKey && featureHostKeys.length && normalizedComponentHostKey !== featureHostKeys[0])) throw new Error(`graph_invalid: ${component.componentKey}의 부착 대상 참조가 충돌합니다.`);
+    return { ...component, hostComponentKey: normalizedComponentHostKey ?? featureHostKeys[0] ?? null, features };
   });
   const extent = (component) => {
     const ranges = component.features.flatMap((feature) => {
@@ -192,8 +277,11 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       if (!["primitive", "extrude"].includes(feature.operation)) return [];
       const height = Number(feature.parameters.heightMm ?? feature.parameters.dimensionsMm?.z ?? 0);
       if (!(height > 0)) return [];
-      const centre = Number(feature.parameters.transform?.translationMm?.z ?? 0);
-      return [{ min: centre - height / 2, max: centre + height / 2 }];
+      // All component-local generating features share the z=0 datum plane.
+      // Do not treat primitive height as centred: the B-Rep compiler exports
+      // a 24 mm cap from z=0 to z=24 just like its revolve profile.
+      const origin = Number(feature.parameters.transform?.translationMm?.z ?? 0);
+      return [{ min: origin, max: origin + height }];
     });
     if (!ranges.length) return null;
     const min = Math.min(...ranges.map((item) => item.min)); const max = Math.max(...ranges.map((item) => item.max));

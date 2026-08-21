@@ -23,6 +23,6 @@ const scoped = enforceEvidenceScopes(unsafeArtworkGraph, evidence);
 assert.equal(scoped.graph.nodes[0].parameters.artworkImageId, "primary");
 assert.equal(scoped.warnings.length, 1);
 
-const gates = qualityGates({ graphHash: canonical.graphHash, contour: { iou: .98, rmsMm: .3, hausdorff95Mm: .6 }, landmarks: { maxMm: .4 }, brep: { valid: true, closed: true, solidCount: 1, freeEdges: 0, interferenceCount: 0 }, step: { boundsDeltaMm: .009, volumeDeltaRatio: .0009 }, evidenceComplete: true });
+const gates = qualityGates({ graphHash: canonical.graphHash, contour: { iou: .98, rmsMm: .3, hausdorff95Mm: .6 }, landmarks: { maxMm: .4 }, dimensions: { maxDeltaMm: .2, toleranceMm: .5 }, brep: { valid: true, closed: true, solidCount: 1, freeEdges: 0, interferenceCount: 0 }, step: { boundsDeltaMm: .009, volumeDeltaRatio: .0009 }, evidenceComplete: true });
 assert.equal(gates.manufacturingStatus, "manufacturing_released");
 console.log("v3 evidence, fitting, local-coordinate and quality-gate proof passed.");

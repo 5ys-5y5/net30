@@ -117,6 +117,45 @@ assert.equal(normalizedModifier.graph.nodes[1].inputNodeIds[0], normalizedModifi
 const orphanRibOutput = fixtureGraphOutput({ product: { name: "리브 캡" }, prompt: "리브", requestedComponents: ["뚜껑"], imageIds: [] });
 orphanRibOutput.components[0].features = [{ ...orphanRibOutput.components[0].features[0], key: "cap-rib", operation: "rib", inputKeys: [], parameters: { ...orphanRibOutput.components[0].features[0].parameters, profile: null } }];
 assert.throws(() => canonicalizeGraph(orphanRibOutput, ["뚜껑"], []), /graph_repair_required: component-1\.rib\.inputKeys/);
+const incompleteRibOutput = fixtureGraphOutput({ product: { name: "불완전 리브 캡" }, prompt: "rib", requestedComponents: ["뚜껑"], imageIds: [] });
+const ribBase = incompleteRibOutput.components[0].features[0];
+incompleteRibOutput.components[0].features = [
+  ribBase,
+  { ...structuredClone(ribBase), key: "missing-rib-values", operation: "rib", inputKeys: [ribBase.key], parameters: { ...ribBase.parameters, profile: null, count: null, spacingMm: null, depthMm: null, thicknessMm: null, heightMm: null } },
+];
+assert.throws(() => canonicalizeGraph(incompleteRibOutput, ["뚜껑"], []), /graph_repair_required: component-1\.rib\.spacingMm\+depthMm\+heightMm/);
+const incompleteBooleanOutput = fixtureGraphOutput({ product: { name: "불완전 절단" }, prompt: "cut", requestedComponents: ["유리병"], imageIds: [] });
+const booleanBase = incompleteBooleanOutput.components[0].features[0];
+incompleteBooleanOutput.components[0].features.push({ ...structuredClone(booleanBase), key: "incomplete-cut", operation: "boolean", inputKeys: [booleanBase.key], parameters: { ...booleanBase.parameters, profile: null, operation: "cut" } });
+assert.throws(() => canonicalizeGraph(incompleteBooleanOutput, ["유리병"], []), /graph_repair_required: component-1\.boolean\.inputKeys/);
+const coplanarCavityOutput = fixtureGraphOutput({ product: { name: "모호한 cavity" }, prompt: "cap cavity", requestedComponents: ["뚜껑"], imageIds: [] });
+const outerCap = { ...structuredClone(coplanarCavityOutput.components[0].features[0]), key: "cap-outer", operation: "primitive", inputKeys: [], parameters: { ...coplanarCavityOutput.components[0].features[0].parameters, profile: null, primitive: "cylinder", radiusMm: 27, heightMm: 24 } };
+const ambiguousCut = { ...structuredClone(outerCap), key: "cap-cavity", operation: "revolve", inputKeys: [outerCap.key], parameters: { ...outerCap.parameters, primitive: null, radiusMm: null, heightMm: null, profile: [{ xMm: 0, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 24 }, { xMm: 0, yMm: 0, zMm: 24 }], operation: "cut" } };
+coplanarCavityOutput.components[0].features = [outerCap, ambiguousCut];
+assert.throws(() => canonicalizeGraph(coplanarCavityOutput, ["뚜껑"], []), /graph_repair_required: component-1\.boolean\.cavityBoundary/);
+const openRevolveOutput = fixtureGraphOutput({ product: { name: "열린 회전 단면" }, prompt: "cap", requestedComponents: ["뚜껑"], imageIds: [] });
+openRevolveOutput.components[0].features[0].parameters.profile = [{ xMm: 20, yMm: 0, zMm: 0 }, { xMm: 22, yMm: 0, zMm: 1 }, { xMm: 20, yMm: 0, zMm: 2 }];
+assert.throws(() => canonicalizeGraph(openRevolveOutput, ["뚜껑"], []), /graph_repair_required: component-1\.revolve\.closedProfile/);
+const selfHostedOutput = fixtureGraphOutput({ product: { name: "자기 부착 인쇄" }, prompt: "self host", requestedComponents: ["유리병"], imageIds: [] });
+selfHostedOutput.components[0].hostComponentKey = selfHostedOutput.components[0].componentKey;
+assert.equal(canonicalizeGraph(selfHostedOutput, ["유리병"], []).graph.components[0].hostComponentId, null, "a non-surface solid self-host is canonicalized to no host");
+const selfHostedDecalOutput = fixtureGraphOutput({ product: { name: "자기 부착 인쇄" }, prompt: "self host", requestedComponents: ["유리병", "전면 인쇄"], imageIds: ["image-1"] });
+selfHostedDecalOutput.components[1].hostComponentKey = selfHostedDecalOutput.components[1].componentKey;
+selfHostedDecalOutput.components[1].features[0].parameters.hostComponentKey = selfHostedDecalOutput.components[1].componentKey;
+assert.throws(() => canonicalizeGraph(selfHostedDecalOutput, ["유리병", "전면 인쇄"], ["image-1"]), /graph_repair_required: component-2\.hostComponentKey/);
+const disconnectedRootsOutput = fixtureGraphOutput({ product: { name: "분리 루트 캡" }, prompt: "리브", requestedComponents: ["뚜껑"], imageIds: [] });
+const secondRoot = structuredClone(disconnectedRootsOutput.components[0].features[0]);
+secondRoot.key = "cap-second-root";
+secondRoot.parameters = { ...secondRoot.parameters, profile: secondRoot.parameters.profile.map((point) => ({ ...point, zMm: point.zMm + 1 })) };
+disconnectedRootsOutput.components[0].features.push(secondRoot);
+assert.throws(() => canonicalizeGraph(disconnectedRootsOutput, ["뚜껑"], []), /graph_repair_required: component-1\.rootTopology/);
+const invalidPatternOutput = fixtureGraphOutput({ product: { name: "잘못된 cap pattern" }, prompt: "rib", requestedComponents: ["뚜껑"], imageIds: [] });
+const patternBase = invalidPatternOutput.components[0].features[0];
+invalidPatternOutput.components[0].features = [
+  patternBase,
+  { ...structuredClone(patternBase), key: "invalid-whole-cap-pattern", operation: "pattern", inputKeys: [patternBase.key], parameters: { ...patternBase.parameters, profile: null, count: 36 } },
+];
+assert.throws(() => canonicalizeGraph(invalidPatternOutput, ["뚜껑"], []), /graph_repair_required: component-1\.pattern\.baseAndRib/);
 const assemblyPlacement = fixtureGraphOutput({ product: { name: "조립 배치", widthMm: 56, heightMm: 120, depthMm: 56 }, prompt: "test", requestedComponents: ["몸체", "마개", "밀봉 링"], imageIds: [] });
 assemblyPlacement.product.heightMm = 120;
 assemblyPlacement.components[0].features[0].parameters.profile = [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 105, zMm: 0 }, { xMm: 0, yMm: 105, zMm: 0 }];
@@ -125,7 +164,7 @@ assemblyPlacement.components[2].features[0].parameters.profile = [{ xMm: 22, yMm
 assemblyPlacement.interfaces = [{ key: "thread", componentKeys: [assemblyPlacement.components[0].componentKey, assemblyPlacement.components[1].componentKey], kind: "thread", clearanceMm: .3, rationale: "thread" }, { key: "seal", componentKeys: [assemblyPlacement.components[0].componentKey, assemblyPlacement.components[2].componentKey], kind: "seal", clearanceMm: .2, rationale: "seal" }];
 const placedAssembly = canonicalizeGraph(assemblyPlacement, ["몸체", "마개", "밀봉 링"], []);
 assert.equal(placedAssembly.graph.nodes.find((node) => node.parameters.profile)?.parameters.profile.at(-1).zMm, 105, "the varying y ordinate must become canonical XZ");
-assert.equal(placedAssembly.graph.components[1].transform.translationMm.z, 108, "threaded cap top must align with assembly height");
+assert.equal(placedAssembly.graph.components[1].transform.translationMm.z, 96, "threaded cap local datum must align its top with assembly height");
 assert.equal(placedAssembly.graph.components[2].transform.translationMm.z, 93, "seal must sit directly below the threaded closure envelope");
 assert.throws(() => validateGraph({ ...printCanonical.graph, nodes: [{ ...printCanonical.graph.nodes[0], operation: "eval" }] }), /지원하지 않는|Invalid/);
 const patched = applyModelingPatch(printCanonical.graph, { version: "net30.modeling-patch.v1", baseGraphHash: printCanonical.graphHash, scope: { stage: "material_surface", componentIds: [printComponent.id] }, changes: [{ op: "set_parameter", nodeId: printNode.id, field: "wrapDegrees", expectedValueHash: valueHash(printNode.parameters.wrapDegrees), value: 120, rationale: "사진의 감김 범위" }] });

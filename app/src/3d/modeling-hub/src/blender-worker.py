@@ -98,13 +98,21 @@ def graph_texture_material(name, spec, image_input, job_dir):
     suffix=pathlib.Path(image_input.get("filename","artwork.png")).suffix or ".png"; image_path=pathlib.Path(job_dir)/("artwork-"+str(image_input.get("id","input"))+suffix)
     image_path.write_bytes(base64.b64decode(encoded)); image=bpy.data.images.load(str(image_path),check_existing=True)
     nodes=material.node_tree.nodes; links=material.node_tree.links; texture=nodes.new("ShaderNodeTexImage"); texture.image=image; bsdf=nodes.get("Principled BSDF"); links.new(texture.outputs["Color"],bsdf.inputs["Base Color"])
-    if "Alpha" in texture.outputs and "Alpha" in bsdf.inputs:
-        links.new(texture.outputs["Alpha"],bsdf.inputs["Alpha"])
-        if hasattr(material, "surface_render_method"): material.surface_render_method='DITHERED'
-        elif hasattr(material, "blend_method"): material.blend_method='BLEND'
+    # Input photographs normally have an opaque white background, whereas an
+    # observed print/decal is ink on a transparent host surface.  Treat the
+    # photo's own alpha as authoritative when present; otherwise derive a
+    # conservative luminance mask so white paper/background pixels do not
+    # become a large opaque panel on the bottle.  The source crop stays in the
+    # graph and this is only the deterministic web-artwork materialisation.
+    alpha_source=texture.outputs.get("Alpha") if getattr(image,"channels",4)>=4 else None
+    if alpha_source is None:
+        luminance=nodes.new("ShaderNodeRGBToBW"); invert=nodes.new("ShaderNodeMath"); invert.operation='SUBTRACT'; invert.inputs[0].default_value=1.0; links.new(texture.outputs["Color"],luminance.inputs["Color"]); links.new(luminance.outputs["Val"],invert.inputs[1]); alpha_source=invert.outputs[0]
+    links.new(alpha_source,bsdf.inputs["Alpha"])
+    if hasattr(material, "surface_render_method"): material.surface_render_method='DITHERED'
+    elif hasattr(material, "blend_method"): material.blend_method='BLEND'
     return material
 def graph_decal(name, params, radius, height, target, material):
-    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or 118)); h=max(.001,float(crop.get("height",.3))*height); z=max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM
+    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or (360*float(crop.get("width",.33))))); approved_height=float(params.get("heightMm") or 0)*MM; h=max(.001,approved_height if approved_height>0 else float(crop.get("height",.3))*height); z=max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM
     segments=64; vs=[]; fs=[]
     for j in range(2):
         for i in range(segments+1):
@@ -226,8 +234,14 @@ def main():
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(instance_id+".glb"))
         # The part file above is component-local.  The assembly uses the exact
         # same tessellation with its graph-approved parent transform once.
+        graph_component=graph_components.get(instance_id, {})
         for obj in list(part.objects):
-            apply_graph_transform([obj], graph_components.get(instance_id, {}).get("transform", {}))
+            # A hosted visual surface already receives its location from the
+            # approved crop/projection and optional node transform.  Applying
+            # the component assembly transform again moves a front print above
+            # its host (and used to create a tall opaque panel over the cap).
+            if not (graph_component.get("representation")=="visual_surface" and graph_component.get("hostComponentId")):
+                apply_graph_transform([obj], graph_component.get("transform", {}))
             link(obj,assembly)
     approved=request.get("payload",{}).get("approvedDraft") or {}
     if approved.get("stickerSlots"):
