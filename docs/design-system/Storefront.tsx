@@ -731,6 +731,11 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     setProductName(tree.name); setComponentInput("새 하위 자산"); setEditTarget({ mode: "add-child", rootModelId: tree.id, baseRootRevisionId: activeParentTree?.selectedRevision.id ?? tree.selectedRevision.id, label: `${tree.name} + OpenAI × Blender · 하위 자산 추가` }); setDraft(null); setPreviewModel("");
   };
 
+  useEffect(() => {
+    if (!activeParentTree || focusedAsset?.kind !== "parent" || focusedAsset.parentId !== activeParentTree.id) return;
+    beginAssetRefine(activeParentTree);
+  }, [activeParentTree, focusedAsset]);
+
   const removeChildAsset = async (tree: ProductModelTree, childRefId: string) => {
     setAssetActionPending(childRefId); setLibraryError("");
     try {
