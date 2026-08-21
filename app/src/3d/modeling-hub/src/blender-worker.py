@@ -69,7 +69,10 @@ def sticker_slot(name, source_id, radius, height, target, values):
             a=-sweep/2+sweep*i/segments; vs.append(((radius+offset)*math.sin(a),-(radius+offset)*math.cos(a),z+j*h))
     for i in range(segments): fs.append((i,i+1,segments+2+i,segments+1+i))
     mesh=bpy.data.meshes.new(name+"Mesh"); mesh.from_pydata(vs,[],fs); mesh.update(); obj=bpy.data.objects.new(name,mesh); target.objects.link(obj)
-    material=bpy.data.materials.new(name+"Material"); material.use_nodes=True; material.node_tree.nodes.get("Principled BSDF").inputs["Alpha"].default_value=0; material.surface_render_method='DITHERED'; obj.data.materials.append(material)
+    material=bpy.data.materials.new(name+"Material"); material.use_nodes=True; material.node_tree.nodes.get("Principled BSDF").inputs["Alpha"].default_value=0
+    if hasattr(material, "surface_render_method"): material.surface_render_method='DITHERED'
+    elif hasattr(material, "blend_method"): material.blend_method='BLEND'
+    obj.data.materials.append(material)
     obj["net30_sticker_slot"]={"sourceGraphicId":source_id,"physicalWidthMm":width/MM,"physicalHeightMm":h/MM,"wrapDegrees":math.degrees(sweep),"surfaceOffsetMm":offset/MM}; return obj
 def graph_material(name, spec):
     return mat(name,{"color":spec["baseColor"],"roughness":spec["roughness"],"transmission":spec["transmission"]})
