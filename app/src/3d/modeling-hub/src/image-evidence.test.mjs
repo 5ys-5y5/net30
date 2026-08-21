@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { alignArtworkCropToPhysicalPlacement, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -18,7 +18,7 @@ const evidence = await measureImageEvidence(inputs);
 assert.equal(evidence.images.filter((item) => item.ok).length, 3, "all fixed fixture images must be measurable without an LLM");
 const primarySilhouette = evidence.images.find((item) => item.ok && item.measurement?.filename === "Duran laboratory bottles 100.jpg")?.measurement?.silhouette ?? [];
 assert.ok(primarySilhouette.length >= 12, "the primary product image must expose a usable assembly silhouette");
-assert.equal(evidence.images[0].measurement.bounds.topY, evidence.images[0].measurement.cap.topY, "a detected wide coloured closure must define the product top instead of a stray sub-cap pixel");
+assert.equal(evidence.images[0].measurement.bounds.topY, evidence.images[0].measurement.cap.contourTopY, "a detected wide coloured closure must define the product top instead of a stray sub-cap pixel");
 assert.ok(evidence.images[0].measurement.cap.silhouette[0]?.radiusNorm >= .5, "the measured cap contour must begin with a substantial closure width");
 assert.ok(evidence.images[0].measurement.cap.bottomY < evidence.images[0].measurement.bounds.bottomY, "primary image must isolate a cap boundary from the bottle");
 assert.ok(evidence.images[0].measurement.cap.outerDiameterRatio > .8, "primary image must expose a measured cap envelope separately from the bottle contour");
@@ -144,6 +144,72 @@ const fittedSeedPlacement = seededFit.graph.nodes.find((node) => node.operation 
 assert.ok(fittedSeed.parameters.dimensionsMm.z < 40, "measured taper must clip an overlong patterned primitive instead of allowing it to flatten the closure apex");
 assert.ok(fittedSeedPlacement.parameters.transform.translationMm.x < 27, "measured outer rib envelope must reposition the transformed seed without a product-name rule");
 assert.ok(seededFit.adjustments[0].patternSeedAnchors.length === 1, "the fitting dossier must retain the measured pattern anchor for review");
+
+// A legacy rectangular extrusion used as the seed of a radial pattern is a
+// measured rib topology, not an unrelated floating component.  Fitting must
+// retain its declared count and dimensions while converting it to the same
+// surface-attached B-Rep feature path that the OCCT compiler can fuse.
+const directSeedOutput = structuredClone(seededOutput);
+const directSeedFeature = directSeedOutput.components[0].features.find((feature) => feature.key === "seed-box");
+const directSeedPattern = directSeedOutput.components[0].features.find((feature) => feature.key === "seed-pattern");
+directSeedOutput.components[0].features = directSeedOutput.components[0].features.filter((feature) => feature.key !== "seed-place");
+directSeedFeature.operation = "extrude";
+directSeedFeature.parameters = {
+  ...directSeedFeature.parameters,
+  primitive: null,
+  profile: [
+    { xMm: 25.8, yMm: -2, zMm: 0 }, { xMm: 27.2, yMm: -2, zMm: 0 },
+    { xMm: 27.2, yMm: 2, zMm: 0 }, { xMm: 25.8, yMm: 2, zMm: 0 },
+  ],
+  dimensionsMm: null,
+  heightMm: 18,
+  transform: null,
+};
+directSeedPattern.inputKeys = [seededBase.key, directSeedFeature.key];
+const directSeedGraph = canonicalizeGraph(directSeedOutput, ["임의 부품"]).graph;
+const directSeedFit = fitMeasuredClosureAssembly(directSeedGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15 * .7, radiusNorm: .9 })) } });
+const fittedDirectSeed = directSeedFit.graph.nodes.find((node) => node.id === directSeedGraph.nodes.find((node) => node.operation === "extrude").id);
+assert.equal(fittedDirectSeed.operation, "rib", "a direct rectangular radial seed must become a surface-attached rib after a measured cap fit");
+assert.equal(fittedDirectSeed.inputNodeIds.length, 1, "the normalised rib must retain one explicit host B-Rep dependency");
+assert.equal(fittedDirectSeed.parameters.depthMm, 1.4, "the original radial extrusion width must remain the approved rib depth");
+assert.equal(directSeedFit.adjustments[0].patternSeedAnchors[0].seedFeature, "direct_extrude", "the dossier must distinguish a deterministic direct-extrude normalisation from a transformed seed");
+
+const roofedDirectOutput = structuredClone(directSeedOutput);
+const roofedCut = structuredClone(roofedDirectOutput.components[0].features.find((feature) => feature.key === "seed-root"));
+roofedCut.operation = "boolean";
+roofedCut.inputKeys = ["seed-pattern", "roofed-cylinder"];
+roofedCut.parameters = { ...roofedCut.parameters, operation: "cut" };
+const roofedCylinder = structuredClone(directSeedFeature);
+roofedCylinder.key = "roofed-cylinder";
+roofedCylinder.operation = "primitive";
+roofedCylinder.inputKeys = [];
+roofedCylinder.parameters = { ...roofedCylinder.parameters, primitive: "cylinder", profile: null, radiusMm: 10, heightMm: 80, transform: { translationMm: { x: 0, y: 0, z: 1 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } };
+roofedDirectOutput.components[0].features = roofedDirectOutput.components[0].features.filter((feature) => feature.key !== "seed-root");
+roofedDirectOutput.components[0].features.push(roofedCylinder, roofedCut);
+const roofedDirectGraph = canonicalizeGraph(roofedDirectOutput, ["임의 부품"]).graph;
+const roofedDirectFit = fitMeasuredClosureAssembly(roofedDirectGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15 * .7, radiusNorm: .9 })) } });
+assert.ok(roofedDirectFit.adjustments[0].cavityCutAnchors[0].heightMm < 80, "a clearance cutter must stop before it pierces the measured closure roof");
+
+const unverifiedThreadGraph = structuredClone(directSeedFit.graph);
+const unverifiedThreadComponent = unverifiedThreadGraph.components[0];
+const unverifiedRoot = unverifiedThreadComponent.rootNodeIds[0];
+const threadSweep = structuredClone(unverifiedThreadGraph.nodes.find((node) => node.operation === "rib"));
+threadSweep.id = "unverified-thread-sweep";
+threadSweep.operation = "sweep";
+threadSweep.inputNodeIds = [];
+threadSweep.parameters = { ...threadSweep.parameters, profile: null, path: [{ xMm: 10, yMm: 0, zMm: 2 }, { xMm: 0, yMm: 10, zMm: 4 }], radiusMm: 1, heightMm: null, spacingMm: null, depthMm: null, interfaceKey: "thread-proof", transform: null };
+const threadCut = structuredClone(unverifiedThreadGraph.nodes.find((node) => node.operation === "boolean"));
+threadCut.id = "unverified-thread-cut";
+threadCut.inputNodeIds = [unverifiedRoot, threadSweep.id];
+threadCut.parameters = { ...threadCut.parameters, operation: "cut" };
+unverifiedThreadGraph.nodes.push(threadSweep, threadCut);
+unverifiedThreadComponent.rootNodeIds = [threadCut.id];
+unverifiedThreadGraph.interfaces.push({ id: "thread-proof-contract", componentIds: [unverifiedThreadComponent.id], kind: "thread", clearanceMm: .2, rationale: "evidence pending" });
+const suppressedThreadFit = suppressUnverifiedThreadCuts(unverifiedThreadGraph);
+assert.equal(suppressedThreadFit.applied, true, "an unverified thread sweep used as a Boolean cutter must be excluded from the visual B-Rep");
+assert.equal(suppressedThreadFit.graph.nodes.some((node) => node.id === threadSweep.id), false, "the excluded sweep must not remain as a second terminal B-Rep root");
+assert.equal(suppressedThreadFit.graph.nodes.find((node) => node.id === threadCut.id).operation, "transform", "a cut with only an unverified thread operand must become an explicit identity root before graph validation");
+assert.deepEqual(suppressedThreadFit.graph.nodes.find((node) => node.id === threadCut.id).inputNodeIds, [unverifiedRoot]);
 
 const compiledGraph = canonicalizeGraph(fixtureGraphOutput({ product: { name: "compiled contour" }, prompt: "generic revolved part", requestedComponents: ["임의 회전 부품"] }), ["임의 회전 부품"]).graph;
 const compiledComponent = compiledGraph.components[0];

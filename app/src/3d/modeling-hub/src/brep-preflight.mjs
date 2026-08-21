@@ -176,7 +176,7 @@ function brepSketchPlan(graph, meshSources, { width = 1000, height = 680, title 
  * used by the final export, so JSON topology cannot be treated as a proxy for
  * a closed, connected manufacturing solid.
  */
-export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 3, preview = null } = {}) {
+export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 2, preview = null } = {}) {
   const components = graph.components.filter((component) => component.representation === "brep_solid");
   if (!components.length) return { ok: true, diagnostics: [] };
   const temporary = await mkdtemp(path.join(os.tmpdir(), "net30-brep-preflight-"));
@@ -208,7 +208,13 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
         try { meshSources.set(component.id, binaryStlTriangles(stl ?? await readFile(`${stem}.stl`), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
       }
     };
-    const workers = Array.from({ length: Math.min(Math.max(1, concurrency), components.length) }, async () => {
+    // OCCT performs substantial native work per child (B-Rep validation,
+    // STEP round trip, and controlled tessellation). Three simultaneous
+    // workers caused every local DURAN child to exceed the 45s watchdog even
+    // though the same shapes complete in 7–22s when bounded. Two workers are
+    // the product-wide limit promised by the modeling service; callers may
+    // request fewer, never more, for deterministic resource use on Railway.
+    const workers = Array.from({ length: Math.min(2, Math.max(1, concurrency), components.length) }, async () => {
       while (nextIndex < components.length) {
         const index = nextIndex;
         nextIndex += 1;

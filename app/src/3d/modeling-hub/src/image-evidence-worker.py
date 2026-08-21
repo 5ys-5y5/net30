@@ -94,6 +94,13 @@ def analyse(item):
             if xs.size >= minimum_cap_span:
                 cap_rows.append({"y": y, "left": int(xs.min()), "right": int(xs.max())})
         if len(cap_rows) >= 12:
+            # `topY` remains the colour-band bounding box for evidence
+            # provenance. `contourTopY` is the first row with a substantial
+            # cap span, and is the only safe axial datum for the exterior
+            # curve. A few anti-aliased pixels above it are not a physical
+            # chamfer or a manufacturing contour.
+            cap["contourTopY"] = cap_rows[0]["y"]
+            cap["contourBottomY"] = cap_rows[-1]["y"]
             cap["silhouette"] = [{
                 "zNorm": round((cap_bottom - row["y"]) / max(1, cap_bottom - cap_top), 7),
                 "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / rough_half_width, 7),
@@ -115,8 +122,8 @@ def analyse(item):
     # sample and making the measured assembly look like it had a pointed cap.
     # This does not invent a product category: it only uses the independently
     # measured wide blue envelope already accepted as a closure evidence cue.
-    if cap and cap["topY"] > top:
-        top = int(cap["topY"])
+    if cap and cap.get("contourTopY", cap["topY"]) > top:
+        top = int(cap.get("contourTopY", cap["topY"]))
     rows = _samples(foreground, top, bottom)
     if len(rows) < 12:
         raise RuntimeError("evidence_missing: insufficient measurable silhouette rows")

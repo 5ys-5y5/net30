@@ -15,7 +15,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
-import { alignArtworkCropToPhysicalPlacement, compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
@@ -517,11 +517,12 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const closureFit = fitMeasuredClosureAssembly(fitted.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? fitted.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
   const envelopeFit = fitRadialAssemblyEnvelope(closureFit.graph, approvedDimensions, primaryMeasurement);
   const placementFit = fitAxialAssemblyEnvelope(envelopeFit.graph, approvedDimensions);
+  const threadFit = suppressUnverifiedThreadCuts(placementFit.graph);
   // The physical decal position is graph data.  Re-project the *vertical*
   // photograph crop from that datum before the first B-Rep preview, so the
   // preview, user approval questions and final artwork cannot disagree about
   // which part of the input photograph is being applied.
-  const artworkFit = alignArtworkCropToPhysicalPlacement(placementFit.graph, imageEvidence, canonical.product, primaryImageId);
+  const artworkFit = alignArtworkCropToPhysicalPlacement(threadFit.graph, imageEvidence, canonical.product, primaryImageId);
   canonical.graph = validateGraph(artworkFit.graph);
   canonical.graphHash = graphHash(canonical.graph);
   // JSON topology checks catch missing links, but only OCCT can establish that
@@ -563,9 +564,21 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     // accepted candidate must be a fresh valid OCCT B-Rep. Stop after two
     // consecutive <0.2% improvements and preserve an explicit evidence
     // request instead of pretending that the remaining discrepancy is solved.
+    // Continuous fitting is deliberately bounded by both iteration count and
+    // wall time. Each candidate is a real OCCT compilation; rerunning the
+    // entire assembly twenty times before the first review made a useful
+    // preview take several minutes. "quality" may use all twenty attempts,
+    // while the interactive profiles stop at their published preview budget
+    // and leave the remaining uncertainty visible for review.
     const contourFitLimit = payload.qualityProfile === "speed" ? 8 : 20;
+    const contourFitBudgetMs = payload.qualityProfile === "speed" ? 45_000 : payload.qualityProfile === "quality" ? 180_000 : 90_000;
+    const contourFitStartedAt = Date.now();
     let stalledContourFits = 0;
     for (let iteration = 0; iteration < contourFitLimit; iteration += 1) {
+      if (Date.now() - contourFitStartedAt >= contourFitBudgetMs) {
+        compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: "time_budget_requires_review", elapsedMs: Date.now() - contourFitStartedAt, budgetMs: contourFitBudgetMs });
+        break;
+      }
       const compiledContour = compareBrepAssemblyContour(brepPreflight, imageEvidence, primaryImageId);
       if (!compiledContour || (compiledContour.iou >= .97 && compiledContour.rmsMm <= .35 && compiledContour.hausdorff95Mm <= .75)) break;
       const candidate = fitCompiledAssemblyContour(canonical.graph, brepPreflight, imageEvidence, primaryImageId);
@@ -606,7 +619,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     solidCount: Math.max(...brepPreflight.diagnostics.map((item) => item.solidCount ?? Infinity)),
   } : null;
   const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, artworkPlacement: artworkFit.adjustments, compiledClosureDatum: compiledClosureDatum.adjustments, compiledContourFits, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, unverifiedThreadCuts: threadFit.adjustments, artworkPlacement: artworkFit.adjustments, compiledClosureDatum: compiledClosureDatum.adjustments, compiledContourFits, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {

@@ -201,10 +201,12 @@ function hasUnanchoredExteriorFeature(graph, componentId, primaryNodeId = null) 
     // A standalone sweep that is unioned into a fitted exterior has no
     // parametric surface attachment. Moving the exterior would detach it.
     if (generator.operation === "sweep" && consumers.some((node) => node.operation === "boolean" && node.parameters?.operation === "union")) return true;
-    // A direct primitive/extrude pattern seed has no transform node that can
-    // be re-anchored to the measured exterior. A transform-wrapped seed is
-    // handled deterministically by fitClosureOutline instead.
-    if (consumers.some((node) => node.operation === "pattern" && node.inputNodeIds?.at(-1) === generator.id)) return true;
+    // A direct pattern seed is not an independent exterior: its local
+    // parameters are rescaled with the same component and its generated
+    // instances remain graph-connected to the terminal Boolean. Treating it
+    // as detached incorrectly skipped curve fitting for ordinary ribbed caps.
+    // Only a separately unioned sweep can remain physically unanchored after
+    // the host profile moves.
   }
   return false;
 }
@@ -426,10 +428,66 @@ function fitClosureOutline(graph, componentId, capMeasurement, approvedDimension
   target.parameters.curveSegments = monotoneBezierSegments(outer.map(({ xMm, zMm }) => ({ xMm, zMm })));
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   const anchors = [];
+  const cavityCutAnchors = [];
   const visible = outer.map((point) => ({ xMm: point.xMm, zMm: point.zMm }));
   const radiusAt = (zMm) => interpolate(visible.map((point) => ({ zNorm: (point.zMm - range.min) / Math.max(1e-9, range.max - range.min), radiusNorm: point.xMm / targetRadius })), (zMm - range.min) / Math.max(1e-9, range.max - range.min)) * targetRadius;
   for (const pattern of componentNodes(graph, componentId).filter((node) => node.operation === "pattern" && node.inputNodeIds.length >= 1)) {
     const seed = byId.get(pattern.inputNodeIds.at(-1));
+    const hostNodeId = pattern.inputNodeIds[0] ?? null;
+    /* A legacy planner can declare one rectangular ``extrude`` and repeat it
+     * radially.  That is an explicit rib topology, but an extrusion has a
+     * constant radial section and cannot follow a newly fitted taper.  Keep
+     * the user's measured width, height and count while normalising this DAG
+     * shape into the compiler's surface-attached rib feature.  This is not a
+     * component-name rule and does not invent a substitute primitive: it
+     * preserves the original base + seed + pattern relationship so OCCT can
+     * fuse every repeated protrusion to the fitted host B-Rep.
+     */
+    if (seed?.operation === "extrude" && !seed.inputNodeIds.length && hostNodeId) {
+      const profile = seed.parameters?.profile ?? [];
+      const radial = profile.map((point) => Number(point.xMm)).filter(Number.isFinite);
+      const tangential = profile.map((point) => Number(point.yMm)).filter(Number.isFinite);
+      const ordinates = profile.map((point) => Number(point.zMm)).filter(Number.isFinite);
+      const radialWidth = radial.length ? Math.max(...radial) - Math.min(...radial) : NaN;
+      const tangentialWidth = tangential.length ? Math.max(...tangential) - Math.min(...tangential) : NaN;
+      const baseZ = ordinates.length ? Math.min(...ordinates) : 0;
+      const height = Number(seed.parameters?.heightMm);
+      if (Number.isFinite(radialWidth) && radialWidth > .01 && Number.isFinite(tangentialWidth) && tangentialWidth > .01 && Number.isFinite(height) && height > .01 && Number.isFinite(baseZ)) {
+        const surfaceRadius = radiusAt(baseZ);
+        const inheritedTransform = seed.parameters?.transform ?? {};
+        seed.operation = "rib";
+        seed.inputNodeIds = [hostNodeId];
+        seed.parameters = {
+          ...seed.parameters,
+          primitive: null,
+          profile: null,
+          path: null,
+          curveSegments: null,
+          profiles: null,
+          dimensionsMm: null,
+          radiusMm: Number(surfaceRadius.toFixed(6)),
+          innerRadiusMm: null,
+          heightMm: Number(height.toFixed(6)),
+          thicknessMm: null,
+          count: null,
+          spacingMm: Number(tangentialWidth.toFixed(6)),
+          depthMm: Number(radialWidth.toFixed(6)),
+          cavityOpenAt: null,
+          offsetMm: null,
+          operation: null,
+          axis: "z",
+          transform: {
+            ...inheritedTransform,
+            translationMm: { ...(inheritedTransform.translationMm ?? {}), x: 0, y: 0, z: Number(baseZ.toFixed(6)) },
+            rotationDeg: inheritedTransform.rotationDeg ?? { x: 0, y: 0, z: 0 },
+            scale: inheritedTransform.scale ?? { x: 1, y: 1, z: 1 },
+          },
+        };
+        seed.rationale = `${seed.rationale} (직접 압출 방사 패턴을 측정 외곽에 결합하는 rib feature로 정규화함)`;
+        anchors.push({ patternNodeId: pattern.id, seedNodeId: seed.id, seedFeature: "direct_extrude", zMm: baseZ, surfaceRadiusMm: surfaceRadius, outerDatumMm: Number((surfaceRadius + radialWidth * .65).toFixed(6)), overlapMm: Number((radialWidth * .35).toFixed(6)), clippedHeightMm: null });
+        continue;
+      }
+    }
     if (seed?.operation !== "transform" || !seed.inputNodeIds.length) continue;
     const primitive = byId.get(seed.inputNodeIds[0]); const width = Number(primitive?.parameters?.dimensionsMm?.x);
     const translation = seed.parameters?.transform?.translationMm ?? {};
@@ -467,7 +525,31 @@ function fitClosureOutline(graph, componentId, capMeasurement, approvedDimension
     }
     anchors.push({ patternNodeId: pattern.id, seedNodeId: seed.id, zMm, surfaceRadiusMm: surfaceRadius, outerDatumMm: surfaceRadius, overlapMm: width * .65, clippedHeightMm });
   }
-  return { nodeId: target.id, samples: outer.length, source: "primary_cap_silhouette_measurement", patternSeedAnchors: anchors };
+  // The fitted cap top may taper to a narrower roof than the planner's
+  // original straight cylinder. Limit a declared internal clearance cut to
+  // the last measured ordinate that still retains a radial roof/web. Without
+  // this, a valid cylinder can pierce a newly rounded closure apex and split
+  // it into two solids. The cutter remains an explicit Boolean feature; only
+  // its approved continuous height is constrained by the same observed curve.
+  const roofMarginMm = Math.max(.25, Math.min(1, targetRadius * .02));
+  for (const cut of componentNodes(graph, componentId).filter((node) => node.operation === "boolean" && node.parameters?.operation === "cut")) {
+    for (const inputId of cut.inputNodeIds.slice(1)) {
+      const cutter = byId.get(inputId);
+      if (cutter?.operation !== "primitive" || cutter.parameters?.primitive !== "cylinder") continue;
+      const cutterRadius = Number(cutter.parameters.radiusMm);
+      const translation = cutter.parameters.transform?.translationMm ?? {};
+      const zStart = Number(translation.z ?? 0);
+      const height = Number(cutter.parameters.heightMm);
+      if (!(cutterRadius > 0) || !Number.isFinite(zStart) || !(height > 0)) continue;
+      const safeTop = outer.filter((point) => point.zMm >= zStart - 1e-6 && point.xMm >= cutterRadius + roofMarginMm).at(-1)?.zMm;
+      if (!Number.isFinite(safeTop)) continue;
+      const nextHeight = Math.min(height, Number(safeTop) - zStart);
+      if (!(nextHeight > .05) || nextHeight >= height - 1e-6) continue;
+      cutter.parameters.heightMm = Number(nextHeight.toFixed(6));
+      cavityCutAnchors.push({ booleanNodeId: cut.id, cutterNodeId: cutter.id, source: "measured_closure_roof_margin", zStartMm: zStart, previousHeightMm: height, heightMm: cutter.parameters.heightMm, roofMarginMm });
+    }
+  }
+  return { nodeId: target.id, samples: outer.length, source: "primary_cap_silhouette_measurement", patternSeedAnchors: anchors, cavityCutAnchors };
 }
 
 function radiusFromProfile(profile, zMm) {
@@ -586,6 +668,50 @@ export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, pri
     adjustments.push({ componentId: component.id, role: "centred_annular_insert", source: "primary_cap_band_datum", assemblyZMm, measuredRadiusMm: measuredRadius, radialScale });
   }
   return { graph: next, applied: true, closureBottomZMm: closureBottomZ, closureHeightMm: targetClosureHeight, adjustments };
+}
+
+/**
+ * A thread sweep can only be a manufacturing cut when its pitch, section and
+ * clearance are evidenced.  A photograph-derived, interface-labelled sweep
+ * has none of those values.  Passing it to an OCCT Boolean anyway can split a
+ * cap into disconnected solids while making the graph look more detailed than
+ * the evidence warrants.  Remove only such *cut operands* from the visual
+ * B-Rep graph and leave the thread interface itself for the manufacturing
+ * evidence gate.  This is topology/evidence based (interface kind + graph
+ * edge), never a product or component-name exception.
+ */
+export function suppressUnverifiedThreadCuts(graph) {
+  const next = structuredClone(graph);
+  const threadComponentIds = new Set(next.interfaces.filter((item) => item.kind === "thread").flatMap((item) => item.componentIds));
+  const byId = new Map(next.nodes.map((node) => [node.id, node]));
+  const suppressed = [];
+  for (const node of next.nodes) {
+    if (node.operation !== "boolean" || node.parameters?.operation !== "cut" || node.inputNodeIds.length < 2) continue;
+    const retained = [node.inputNodeIds[0]];
+    for (const inputId of node.inputNodeIds.slice(1)) {
+      const input = byId.get(inputId);
+      const hasThreadContract = input?.operation === "sweep" && Boolean(input.parameters?.interfaceKey) && threadComponentIds.has(node.componentId);
+      if (!hasThreadContract) retained.push(inputId);
+      else suppressed.push({ componentId: node.componentId, booleanNodeId: node.id, sweepNodeId: inputId, interfaceKey: input.parameters.interfaceKey, reason: "thread_profile_pitch_tolerance_evidence_missing" });
+    }
+    node.inputNodeIds = retained;
+    // A cut that contained only a provisional thread is semantically an
+    // identity node for the visual B-Rep. Preserve the terminal DAG node as
+    // a no-op transform so the component still has exactly one explicit root;
+    // leaving a one-input Boolean would violate the strict graph contract.
+    if (retained.length === 1) {
+      node.operation = "transform";
+      node.parameters = { ...node.parameters, operation: null, transform: null };
+    }
+  }
+  if (!suppressed.length) return { graph: next, applied: false, adjustments: [] };
+  const stillReferenced = new Set(next.nodes.flatMap((node) => node.inputNodeIds));
+  const removedIds = new Set(suppressed.map((item) => item.sweepNodeId).filter((id) => !stillReferenced.has(id)));
+  next.nodes = next.nodes.filter((node) => !removedIds.has(node.id));
+  for (const component of next.components) {
+    if (Array.isArray(component.nodeIds)) component.nodeIds = component.nodeIds.filter((id) => !removedIds.has(id));
+  }
+  return { graph: next, applied: true, adjustments: suppressed.map((item) => ({ ...item, excludedFrom: "visual_brep_only", manufacturingStatus: "manufacturing_review_required" })) };
 }
 
 /** Align a patterned closure to the approved assembly top from the B-Rep that
