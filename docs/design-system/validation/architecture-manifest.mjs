@@ -35,6 +35,10 @@ export const ARCHITECTURE = Object.freeze({
     "destructiveActionGate",
     "assetEmptyState",
     "modelingWorkspaceIntro",
+    "modelingStudio",
+    "modelingLibraryWorkspace",
+    "modelingLibraryTree",
+    "modelingOutputSections",
     "workflowStepper",
     "proposalCard",
     "parameterEditor",
@@ -65,7 +69,6 @@ export const ARCHITECTURE = Object.freeze({
     "iterationNavigator",
   ]),
   modelingClassKeys: Object.freeze([
-    "modelingStudio",
     "modelingForm",
     "modelingFields",
     "modelingField",
@@ -85,9 +88,7 @@ export const ARCHITECTURE = Object.freeze({
     "modelingLibraryPreview",
     "modelingLibraryPreviewState",
     "modelingAction",
-    "modelingOutputSections",
     "modelingOutputSection",
-    "modelingLibraryWorkspace",
     "modelingParentToolbar",
   ]),
 });

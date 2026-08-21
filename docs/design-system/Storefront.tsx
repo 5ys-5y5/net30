@@ -34,6 +34,10 @@ import {
   DestructiveActionGate,
   AssetEmptyState,
   ModelingWorkspaceIntro,
+  ModelingStudio,
+  ModelingLibraryWorkspace,
+  ModelingLibraryTree,
+  ModelingOutputSections,
   Metric,
   Panel,
   PanelBody,
@@ -1016,7 +1020,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     : libraryPreviewModel ? <ModelPreviewFrame className={CLASS.modelingLibraryPreview} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
       : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{libraryPreviewPending ? studio.assetLibrary.previewPendingMessage : activeParentModelId ? studio.assetLibrary.previewIdleMessage : "부모 모델을 선택하면 조립 3D 미리보기가 여기에 표시됩니다."}</Copy></Atom>;
   return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
-    <Atom className={CLASS.modelingStudio} data-workspace={hasDecisionWorkspace}>
+    <ModelingStudio data-workspace={hasDecisionWorkspace}>
       <Surface className={CLASS.modelingForm}>
         <form onSubmit={submit}>
           <ModelingWorkspaceIntro><Label>OPENAI × BLENDER</Label><Atom as="h2">{editTarget ? editTarget.label : "새 부모 모델 생성"}</Atom><Copy>{editTarget ? "저장된 기준 모델과 선택하지 않은 형제 자산은 그대로 유지합니다. 이 작업은 보완 전용입니다." : "새 부모 모델과 최초 자녀 모델을 생성합니다. 첫 Blender 결과가 검증되기 전에는 제품 자산 라이브러리에 저장되지 않습니다."}</Copy></ModelingWorkspaceIntro>
@@ -1065,8 +1069,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <DraftQuestionGroups draft={draft} questions={activeScopeQuestions} decisionPending={draftDecisionPending} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
         <BuildGate><Copy>{draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
       </ReviewWorkspace> : null}
-    </Atom>
-    <Atom className={CLASS.modelingLibraryWorkspace}>
+    </ModelingStudio>
+    <ModelingLibraryWorkspace>
       <ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY</Label><Atom as="h2">{studio.assetLibrary.title}</Atom><Copy>{studio.assetLibrary.copy}</Copy></ModelingWorkspaceIntro>
       {sectionPreview}
       <AssetLibraryGrid aria-label="제품 모델과 SKU 연결 카드 목록">
@@ -1081,10 +1085,10 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </AssetLibraryGrid>
       {editingName && productModels.some((item) => item.id === editingName.id) ? <InlineAssetEditor onSubmit={(event) => { event.preventDefault(); void saveModelName(); }}><FormField label="부모 모델 이름"><input className={CLASS.modelingControl} value={editingName.value} onChange={(event) => setEditingName((current) => current ? { ...current, value: event.target.value } : current)} /></FormField><ActionButton className={CLASS.modelingAction} type="submit" disabled={assetActionPending === editingName.id}>저장</ActionButton></InlineAssetEditor> : null}
       {deleteTarget ? <DestructiveActionGate><Label>부모 모델 삭제</Label><Copy>{deleteTarget.name}은 복구 가능한 보관 상태로 전환됩니다. 게시 artifact와 과거 리비전은 보존됩니다.{deleteTarget.linkedSkuId ? " SKU 연결을 먼저 해제해야 합니다." : ""}</Copy><AssetNodeActions><ActionButton className={CLASS.modelingAction} onClick={() => setDeleteTarget(null)}>취소</ActionButton><ActionButton className={CLASS.modelingAction} disabled={Boolean(deleteTarget.linkedSkuId) || assetActionPending === deleteTarget.id} onClick={() => void archiveParent()}>삭제 확인</ActionButton></AssetNodeActions></DestructiveActionGate> : null}
-      {activeParentTree ? <Atom className={CLASS.modelingLibraryWorkspace}>
+      {activeParentTree ? <ModelingLibraryTree>
         <Atom className={CLASS.modelingParentToolbar}><AssetIdentity><strong>{activeParentTree.name}</strong><small>최신 r{activeParentTree.currentRevision?.ordinal ?? 0} · 게시 {activeParentTree.publishedRevision ? `r${activeParentTree.publishedRevision.ordinal}` : "없음"} · {activeParentTree.status}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} onClick={() => beginAssetRefine(activeParentTree)}>전체 조립 보완</ActionButton><ActionButton className={CLASS.modelingAction} onClick={() => beginAddChild(activeParentTree)}>하위 자산 추가</ActionButton></AssetNodeActions></Atom>
         {activeParentTree.children.length ? <AssetHierarchy aria-label={`${activeParentTree.name} 하위 자산`}>{activeParentTree.children.map((child) => renderAssetNode(activeParentTree, child))}</AssetHierarchy> : <AssetEmptyState><Label>하위 자산 없음</Label><Copy>OpenAI × Blender 보완에서 첫 구성 부품을 추가할 수 있습니다.</Copy></AssetEmptyState>}
-      </Atom> : <AssetEmptyState><Label>선택한 부모 모델 없음</Label><Copy>새 부모 모델을 만들거나 기존 모델을 선택하세요.</Copy></AssetEmptyState>}
+      </ModelingLibraryTree> : <AssetEmptyState><Label>선택한 부모 모델 없음</Label><Copy>새 부모 모델을 만들거나 기존 모델을 선택하세요.</Copy></AssetEmptyState>}
       {modelListError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{modelListError}</Atom> : null}
       <Atom className={CLASS.modelingLibraryHeader}>
         <Label>조립 선택</Label>
@@ -1104,8 +1108,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </Atom>
       {!activeParentTree ? <AssetEmptyState><Label>부모 모델을 선택하세요</Label><Copy>이전 전역 컴포넌트 버전은 부모 자산 트리와 섞지 않습니다.</Copy></AssetEmptyState> : null}
       {archivedParents.length ? <DecisionHistoryDisclosure label={`삭제된 부모 모델 ${archivedParents.length}개`}><AssetHierarchy>{archivedParents.map((item) => <AssetHierarchyItem key={item.id}><AssetIdentity><strong>{item.name}</strong><small>보관됨 · 마지막 리비전 r{item.currentRevision?.ordinal ?? 0}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === item.id} onClick={() => void restoreParent(item)}>복원</ActionButton></AssetNodeActions></AssetHierarchyItem>)}</AssetHierarchy></DecisionHistoryDisclosure> : null}
-    </Atom>
-    <Atom className={CLASS.modelingOutputSections}>
+    </ModelingLibraryWorkspace>
+    <ModelingOutputSections>
       <Surface className={CLASS.modelingOutputSection}>
         <Label>{studio.workspace.manufacturingLabel}</Label>
         <Copy>현재 작업에서 생성된 제조 검토용 산출물과 검증 보고서를 확인합니다.</Copy>
@@ -1116,7 +1120,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <Copy>자산 라이브러리에서 버전을 선택해 홈페이지에 표시할 조립 모델을 지정합니다.</Copy>
         <Link href="/">홈페이지 3D 뷰어 열기</Link>
       </Surface>
-    </Atom>
+    </ModelingOutputSections>
   </Container>;
 }
 

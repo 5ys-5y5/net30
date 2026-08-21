@@ -70,6 +70,12 @@ export async function validateDesignSystem(root = repositoryRoot) {
   if (!/<ModelingWorkspaceIntro><Label>OPENAI × BLENDER<\/Label>/.test(storefront) || !/<ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY<\/Label>/.test(storefront)) {
     failures.push("Storefront.tsx must integrate OpenAI and product asset library identities inside their workspaces");
   }
+  for (const atom of ["ModelingStudio", "ModelingLibraryWorkspace", "ModelingLibraryTree", "ModelingOutputSections"]) {
+    if (!new RegExp(`<${atom}\\b`).test(storefront)) failures.push(`Storefront.tsx must compose modeling layout with ${atom}`);
+  }
+  if (/<Atom\s+className=\{CLASS\.(?:modelingStudio|modelingLibraryWorkspace|modelingOutputSections)\}/.test(storefront)) {
+    failures.push("Storefront.tsx must not use page-local Atom wrappers for modeling workspaces");
+  }
   if (/<SectionHeading\s+\{\.\.\.(?:modelingSection|assetLibrarySection)\}/.test(storefront)) {
     failures.push("Storefront.tsx must not create page-level section headers around modeling workspaces");
   }

@@ -234,6 +234,26 @@ export function ModelingWorkspaceIntro({ className = "", ...props }: HTMLAttribu
   return <div className={joinClasses(CLASS.modelingWorkspaceIntro, className)} {...props} />;
 }
 
+/** Layout-only composition for the form and its mutually exclusive decision or result workspace. */
+export function ModelingStudio({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.modelingStudio, className)} {...props} />;
+}
+
+/** The product asset library is a first-class surface, rather than a page-local wrapper. */
+export function ModelingLibraryWorkspace({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <Surface className={joinClasses(CLASS.modelingLibraryWorkspace, className)} {...props} />;
+}
+
+/** Separates the active parent's hierarchy from the library's parent card grid. */
+export function ModelingLibraryTree({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.modelingLibraryTree, className)} {...props} />;
+}
+
+/** Layout-only grouping for model output surfaces. */
+export function ModelingOutputSections({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.modelingOutputSections, className)} {...props} />;
+}
+
 export function WorkflowStepper({ children }: { children: ReactNode }) { return <div className={CLASS.workflowStepper}>{children}</div>; }
 export function ProposalCard({ children }: { children: ReactNode }) { return <Surface className={CLASS.proposalCard}>{children}</Surface>; }
 export function ParameterEditor({ children }: { children: ReactNode }) { return <div className={CLASS.parameterEditor}>{children}</div>; }
