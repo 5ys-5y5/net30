@@ -97,6 +97,52 @@ def absolute_lathe(name, points, target, material, wall=0):
     if wall:
         modifier=obj.modifiers.new("Approved graph wall","SOLIDIFY"); modifier.thickness=-float(wall)*MM; modifier.offset=-1; modifier.use_even_offset=True
     return obj
+
+def photograph_artwork_matte(image, name, ink_color):
+    """Derive a bounded alpha mask for artwork observed in a JPEG photograph.
+
+    JPEG uploads have no authored alpha even though a small crop normally
+    contains ink on a transparent product.  Feeding its opaque rectangular
+    pixels directly into a decal makes a sheet of photograph cover the part.
+    This deterministic local-contrast matte keeps only small, image-observed
+    marks.  It deliberately does *not* create text, logos, or geometry: the
+    graph crop, host, projection, and approved ink colour remain the source of
+    truth.  A PNG/WebP supplied with real alpha bypasses this path.
+    """
+    width, height = image.size
+    if width < 2 or height < 2:
+        raise RuntimeError("artwork_invalid: photograph artwork image is too small")
+    pixels = list(image.pixels[:])
+    luminance = [0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2] for index in range(0, len(pixels), 4)]
+    # Summed-area filtering is stable across image sizes and avoids an image
+    # processing dependency inside Blender's bundled Python runtime.
+    stride = width + 1
+    integral = [0.0] * (stride * (height + 1))
+    for y in range(height):
+        running = 0.0; row = (y + 1) * stride; previous = y * stride
+        source = y * width
+        for x in range(width):
+            running += luminance[source + x]
+            integral[row + x + 1] = integral[previous + x + 1] + running
+    radius = max(3, min(16, round(min(width, height) / 64)))
+    alpha = [0.0] * (width * height)
+    for y in range(height):
+        top = max(0, y - radius); bottom = min(height - 1, y + radius)
+        for x in range(width):
+            left = max(0, x - radius); right = min(width - 1, x + radius)
+            total = integral[(bottom + 1) * stride + right + 1] - integral[top * stride + right + 1] - integral[(bottom + 1) * stride + left] + integral[top * stride + left]
+            local_mean = total / max(1, (bottom - top + 1) * (right - left + 1))
+            # Fine print survives as local contrast while broad bottle shading
+            # and the original white background stay transparent. Clamp rather
+            # than thresholding to avoid jagged photographic type edges.
+            contrast = abs(luminance[y * width + x] - local_mean)
+            alpha[y * width + x] = max(0.0, min(1.0, (contrast - .025) / .13))
+    matte = bpy.data.images.new(name, width=width, height=height, alpha=True)
+    rgba = []
+    for value in alpha: rgba.extend((ink_color[0], ink_color[1], ink_color[2], value))
+    matte.pixels.foreach_set(rgba); matte.pack(); matte.colorspace_settings.name = 'Non-Color'
+    return matte
+
 def graph_texture_material(name, spec, image_input, job_dir):
     material=graph_material(name,spec)
     if not image_input: return material
@@ -119,7 +165,11 @@ def graph_texture_material(name, spec, image_input, job_dir):
     authored_alpha=data_url.startswith("data:image/png;") or data_url.startswith("data:image/webp;")
     alpha_source=texture.outputs.get("Alpha") if authored_alpha else None
     if alpha_source is None:
-        luminance=nodes.new("ShaderNodeRGBToBW"); invert=nodes.new("ShaderNodeMath"); invert.operation='SUBTRACT'; invert.inputs[0].default_value=1.0; links.new(texture.outputs["Color"],luminance.inputs["Color"]); links.new(luminance.outputs["Val"],invert.inputs[1]); alpha_source=invert.outputs[0]
+        # Use an image-observed alpha mask, but preserve the graph's approved
+        # ink colour instead of projecting bottle highlights into the print.
+        image = photograph_artwork_matte(image, name+"Matte", rgb(spec["baseColor"]))
+        matte_texture=nodes.new("ShaderNodeTexImage"); matte_texture.image=image
+        links.new(matte_texture.outputs["Color"],bsdf.inputs["Base Color"]); alpha_source=matte_texture.outputs["Alpha"]
     links.new(alpha_source,bsdf.inputs["Alpha"])
     if hasattr(material, "surface_render_method"): material.surface_render_method='DITHERED'
     elif hasattr(material, "blend_method"): material.blend_method='BLEND'
