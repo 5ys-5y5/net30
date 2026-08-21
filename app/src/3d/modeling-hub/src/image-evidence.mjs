@@ -208,6 +208,20 @@ function scaleRadialParameters(parameters, scale) {
     next.dimensionsMm.y = Number((next.dimensionsMm.y * scale).toFixed(6));
   }
   if (next.profile) next.profile = next.profile.map((point) => ({ ...point, xMm: Number((point.xMm * scale).toFixed(6)) }));
+  // OCCT treats the declared curve segments as the manufacturing source when
+  // they are present.  Scaling only the legacy/profile points leaves a second,
+  // stale set of NURBS control ordinates behind: review JSON says one diameter
+  // while the B-Rep compiles another.  Keep every radial curve representation
+  // in lockstep so an approved envelope is one physical datum.
+  if (Array.isArray(next.curveSegments)) next.curveSegments = next.curveSegments.map((segment) => {
+    const scalePoints = (points) => Array.isArray(points)
+      ? points.map((point) => ({ ...point, xMm: Number((Number(point.xMm) * scale).toFixed(6)) }))
+      : points;
+    const scaled = { ...segment };
+    if (Array.isArray(segment.points)) scaled.points = scalePoints(segment.points);
+    if (Array.isArray(segment.poles)) scaled.poles = scalePoints(segment.poles);
+    return scaled;
+  });
   if (next.transform?.translationMm) {
     next.transform.translationMm.x = Number((next.transform.translationMm.x * scale).toFixed(6));
     next.transform.translationMm.y = Number((next.transform.translationMm.y * scale).toFixed(6));
@@ -648,12 +662,22 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // observed outer contour as a NURBS. The OCCT compiler joins those approved
   // straight edges to this curve, so no polygon mesh or LLM-invented control
   // point becomes the manufacturing source.
-  const poles = outer.map(({ xMm, zMm }) => ({ xMm, zMm }));
-  // OCCT's native shell operation offsets the declared exterior curve inside
-  // the same B-Rep. This avoids the earlier independent-cavity Boolean while
-  // preserving the fitted C1 Bézier exterior and the approved base/mouth
-  // datum. The compiler rejects an invalid shell at preflight; no primitive
-  // fallback is allowed.
+  // ``curveSegments`` is the exact curve the OCCT worker consumes and its
+  // strict graph contract permits 64 segments (65 poles).  The visible
+  // silhouette and the inferred neck tail can together exceed that count.
+  // Allocate knots to both regions deterministically instead of serialising
+  // an unbuildable 79-segment curve or dropping the hidden connection.
+  const curvePoles = outer.length <= 65 ? outer : (() => {
+    const visibleSlots = Math.max(2, Math.min(observedOuter.length, 56));
+    const tailSlots = Math.max(1, 65 - visibleSlots);
+    const sample = (points, count) => points.length <= count ? points : Array.from({ length: count }, (_, index) => points[Math.round(index * (points.length - 1) / Math.max(1, count - 1))]);
+    return [...sample(observedOuter, visibleSlots), ...sample(inferredTail, tailSlots)];
+  })();
+  const poles = curvePoles.map(({ xMm, zMm }) => ({ xMm, zMm }));
+  // The static OCCT compiler preserves this declared exterior curve, then
+  // derives an explicit inner revolve and Boolean cavity from the approved
+  // wall thickness. This keeps the visible C1 Bézier exterior and the
+  // base/mouth datum while avoiding a polygon or primitive substitute.
   node.parameters.curveSegments = monotoneBezierSegments(poles);
   return {
     graph: next,
@@ -788,8 +812,15 @@ export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryIm
       return rightRadius - leftRadius;
     })[0] ?? null;
   };
+  // The primary full-product silhouette supplies one exterior envelope; it
+  // cannot safely attribute a hidden liner or a narrow annular ring to a
+  // specific contour row. Those parts have their own measured feature/crop
+  // fits. Use this global residual only for the largest eligible B-Rep body,
+  // rather than distorting every overlapping component to chase the same
+  // pixel. This is a geometry/evidence rule, not a product-name heuristic.
+  const primaryBodyId = [...placed].sort((left, right) => (right.zMax - right.zMin) - (left.zMax - left.zMin))[0]?.componentId ?? null;
   const next = structuredClone(graph); const diagnosticsById = new Map(placed.map((item) => [item.componentId, item])); const adjustments = [];
-  for (const component of next.components.filter((item) => item.representation === "brep_solid")) {
+  for (const component of next.components.filter((item) => item.representation === "brep_solid" && item.id === primaryBodyId)) {
     const diagnostic = diagnosticsById.get(component.id); const node = outerRevolveNode(next, component.id);
     if (!diagnostic || !node) continue;
     const profile = node.parameters?.profile ?? []; const localHeight = Number(diagnostic.boundsMm.z);
@@ -813,7 +844,32 @@ export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryIm
     // only regenerate curve metadata when a strictly ordered exterior exists.
     const exterior = nextProfile.filter((point) => Math.abs(Number(point.xMm)) > 1e-7).map(({ xMm, zMm }) => ({ xMm, zMm }))
       .sort((left, right) => Number(left.zMm) - Number(right.zMm)).filter((point, index, all) => index === 0 || Number(point.zMm) > Number(all[index - 1].zMm) + 1e-8);
-    if (exterior.length >= 2) node.parameters.curveSegments = monotoneBezierSegments(exterior);
+    const radialScaleAt = (zMm) => {
+      const previousRadius = radiusFromProfile(profile, zMm);
+      const nextRadius = radiusFromProfile(nextProfile, zMm);
+      return previousRadius > 1e-8 && Number.isFinite(nextRadius) ? nextRadius / previousRadius : 1;
+    };
+    const declaredCurves = Array.isArray(node.parameters.curveSegments) ? node.parameters.curveSegments : [];
+    const canPreserveDeclaredCurves = declaredCurves.length > 0 && declaredCurves.every((segment) => Array.isArray(segment.poles) || Array.isArray(segment.points));
+    if (canPreserveDeclaredCurves) {
+      // A graph may declare rational NURBS with non-uniform knots and weights.
+      // Replacing it with an interpolated Bézier chain after every residual
+      // adjustment changes the CAD topology and can amplify a small correction
+      // into a shoulder/heel defect.  Retain the exact declared curve family
+      // and modify only its radial control ordinates by the measured profile
+      // ratio. The compiler therefore receives the same curve representation
+      // that the approval graph and previous B-Rep used.
+      node.parameters.curveSegments = declaredCurves.map((segment) => {
+        const key = Array.isArray(segment.poles) ? "poles" : "points";
+        return { ...segment, [key]: segment[key].map((point) => ({ ...point, xMm: Number((Number(point.xMm) * radialScaleAt(Number(point.zMm))).toFixed(6)) })) };
+      });
+    } else {
+      // A legacy profile without an explicit curve remains convertible, but
+      // the bounded conversion is a one-time compatibility path—not a
+      // replacement for an approved rational curve.
+      const curveInput = exterior.length <= 65 ? exterior : Array.from({ length: 65 }, (_, index) => exterior[Math.round(index * (exterior.length - 1) / 64)]);
+      if (curveInput.length >= 2) node.parameters.curveSegments = monotoneBezierSegments(curveInput);
+    }
     const changed = nextProfile.reduce((count, point, index) => count + (Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8 ? 1 : 0), 0);
     adjustments.push({ componentId: component.id, nodeId: node.id, source: "compiled_occt_assembly_contour", changedControlPoints: changed, gain, maxScaleStep, minimumResidualMm });
   }

@@ -69,7 +69,15 @@ async function cadExports(spec, cadDir, quality) {
   await run(python, [path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cad-assembly-worker.py"), assemblyRequest], 4 * 60 * 1000);
   const assemblyValidation = JSON.parse(await fs.readFile(assemblyPaths.report, "utf8"));
   const geometryBlockers = Object.entries(validation).flatMap(([id, report]) => [report.valid ? null : `${id}: B-Rep validity failure`, report.closed ? null : `${id}: open shell/free edge review required`, report.solidCount === 1 ? null : `${id}: expected one connected manufacturing solid, found ${report.solidCount}`].filter(Boolean));
-  const blockers = [...spec.contract.unresolved, ...geometryBlockers];
+  // The parent XDE/STEP can be valid while its numeric round-trip exceeds the
+  // manufacturing tolerance.  Keep that fact explicit in the dossier and
+  // release gate, but do not throw away the valid child B-Reps: their GLB is
+  // the review artifact the user must inspect before supplying missing
+  // tolerances or correcting the graph.
+  const assemblyBlockers = assemblyValidation.roundTripWithinTolerance
+    ? []
+    : [`assembly STEP round-trip exceeds tolerance (bounds ${Math.max(...Object.values(assemblyValidation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })).toFixed(6)} mm, volume ${(Number(assemblyValidation.volumeDeltaRatio ?? Infinity) * 100).toFixed(4)}%)`];
+  const blockers = [...spec.contract.unresolved, ...geometryBlockers, ...assemblyBlockers];
   return { available: true, sources, validation, assembly: { ...assemblyPaths, validation: assemblyValidation }, tessellation: profile, manufacturingStatus: blockers.length ? "manufacturing_review_required" : "dimensional_candidate", blockers };
 }
 

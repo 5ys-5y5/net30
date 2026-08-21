@@ -54,7 +54,12 @@ def main():
     volume_delta = abs(source_volume - reloaded_volume) / max(abs(source_volume), 1e-9)
     report = {"valid": reloaded.val().isValid(), "componentCount": len(parts), "sourceBoundsMm": source_bounds, "reloadedBoundsMm": reloaded_bounds, "boundsDeltaMm": delta, "sourceVolumeMm3": source_volume, "reloadedVolumeMm3": reloaded_volume, "volumeDeltaRatio": volume_delta, "roundTripWithinTolerance": max(delta.values(), default=0) <= float(request.get("toleranceMm", .01)) and volume_delta <= .001, "elapsedMs": round((time.perf_counter() - started) * 1000, 3)}
     pathlib.Path(paths["report"]).write_text(json.dumps(report, indent=2) + "\n")
-    if not report["valid"] or not report["roundTripWithinTolerance"]: raise RuntimeError("assembly_step_roundtrip_failed")
+    # A STEP round-trip discrepancy is a manufacturing-release blocker, not a
+    # reason to discard an otherwise valid B-Rep review model.  The caller
+    # reads this report, blocks manufacturing export, and still derives the
+    # review GLB from these same child B-Reps.  Only an invalid re-import means
+    # there is no trustworthy assembly geometry to display at all.
+    if not report["valid"]: raise RuntimeError("assembly_step_invalid")
 
 
 if __name__ == "__main__": main()

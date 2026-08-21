@@ -34,10 +34,15 @@ assert.ok(analysis.fit.primaryBodyCalibration.visibleBodyHeightMm <= analysis.fi
 const radialOutput = fixtureGraphOutput({ product: { name: "radial envelope" }, prompt: "closure", requestedComponents: ["closure"] });
 radialOutput.components[0].features[0].parameters.profile.forEach((point) => { point.xMm *= 1.12; });
 const radialGraph = canonicalizeGraph(radialOutput, ["closure"]).graph;
+radialGraph.nodes[0].parameters.curveSegments = [{ kind: "nurbs", poles: radialGraph.nodes[0].parameters.profile.filter((point) => point.xMm > 0).map(({ xMm, zMm }) => ({ xMm, zMm })) }];
 const radialFit = fitRadialAssemblyEnvelope(radialGraph, { widthMm: 50, depthMm: 50 });
 assert.equal(radialFit.applied, true, "a centred radial component outside its approved assembly envelope must be fitted before review");
 const fittedProfile = radialFit.graph.nodes[0].parameters.profile;
 assert.equal(Math.max(...fittedProfile.map((point) => point.xMm)), 25, "radial fitting must edit the graph feature values, not apply a hidden assembly scale");
+const fittedCurveSegments = radialFit.graph.nodes[0].parameters.curveSegments ?? [];
+assert.ok(fittedCurveSegments.length > 0, "the source feature must keep its declared OCCT curve representation");
+const fittedCurveX = fittedCurveSegments.flatMap((segment) => segment.poles ?? segment.points ?? []).map((point) => point.xMm);
+assert.equal(Math.max(...fittedCurveX), 25, "radial fitting must update the NURBS/B\u00e9zier data OCCT actually compiles");
 
 const ribbedOutput = fixtureGraphOutput({ product: { name: "ribbed closure" }, prompt: "closure", requestedComponents: ["뚜껑"] });
 const ribBase = ribbedOutput.components[0].features[0];
@@ -106,6 +111,21 @@ assert.equal(compiledFit.applied, true, "the compiled OCCT contour must be able 
 const correctedProfile = compiledFit.graph.nodes.find((node) => node.componentId === compiledComponent.id && node.operation === "revolve").parameters.profile;
 assert.ok(Math.max(...correctedProfile.map((point) => point.xMm)) > Math.max(...compiledProfile.map((point) => point.xMm)), "compiled residual fitting must update the same revolve profile that OCCT consumes");
 assert.ok(compiledFit.adjustments[0].changedControlPoints > 0, "compiled residual fitting must record changed graph control points for the dossier");
+const rationalCompiledGraph = structuredClone(compiledGraph);
+const rationalNode = rationalCompiledGraph.nodes.find((node) => node.componentId === compiledComponent.id && node.operation === "revolve");
+rationalNode.parameters.curveSegments = [{ kind: "nurbs", poles: rationalNode.parameters.profile.filter((point) => point.xMm > 0).map(({ xMm, zMm }) => ({ xMm, zMm })), degree: 3, weights: rationalNode.parameters.profile.filter((point) => point.xMm > 0).map(() => 1), knots: [0, 1], multiplicities: [4, rationalNode.parameters.profile.filter((point) => point.xMm > 0).length - 4] }];
+const rationalFit = fitCompiledAssemblyContour(rationalCompiledGraph, compiledPreflight, compiledEvidence, "compiled-primary");
+const rationalSegment = rationalFit.graph.nodes.find((node) => node.id === rationalNode.id).parameters.curveSegments[0];
+assert.equal(rationalSegment.kind, "nurbs", "compiled fitting must preserve an approved NURBS representation");
+assert.equal(rationalSegment.degree, 3, "compiled fitting must preserve NURBS degree and therefore curve continuity intent");
+assert.equal(rationalSegment.poles.length, rationalNode.parameters.curveSegments[0].poles.length, "compiled fitting must adjust declared poles rather than recreate an approximate curve");
+const mixedCompiledGraph = structuredClone(compiledGraph);
+const secondaryComponent = structuredClone(mixedCompiledGraph.components[0]);
+secondaryComponent.id = "small-auxiliary"; secondaryComponent.requestedName = "auxiliary"; secondaryComponent.nodeIds = []; secondaryComponent.rootNodeIds = [];
+mixedCompiledGraph.components.push(secondaryComponent);
+const mixedPreflight = { diagnostics: [...compiledPreflight.diagnostics, { componentId: secondaryComponent.id, code: "ok", boundsMm: { x: 12, y: 12, z: 6 }, transform: secondaryComponent.transform, material: secondaryComponent.material, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: 1 })) }] };
+const mixedFit = fitCompiledAssemblyContour(mixedCompiledGraph, mixedPreflight, compiledEvidence, "compiled-primary");
+assert.deepEqual(mixedFit.adjustments.map((item) => item.componentId), [compiledComponent.id], "a global silhouette residual must not rewrite smaller overlapping components without their own evidence scope");
 
 const localGraph = structuredClone(radialGraph);
 localGraph.nodes[0].parameters.profile.forEach((point) => { point.zMm += 83; });

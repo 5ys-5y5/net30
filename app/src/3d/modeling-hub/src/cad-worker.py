@@ -394,13 +394,14 @@ def inner_revolve_from_profile(params, thickness):
         if radius <= 1e-5:
             raise RuntimeError("graph_invalid: shell thickness exceeds the approved outer profile")
         inner.append((radius, z))
-    # Close the cutter exactly on the approved mouth plane.  Extending the
-    # axial edge beyond that plane looks harmless in a profile diagram, but
-    # for a shoulder/neck transition it can split the outer revolution into
-    # two solids during the Boolean.  The outer B-Rep already defines the
-    # datum face; an exact closing edge produces the same open-mouth cut
-    # without inventing geometry above the measured silhouette.
-    inner.append((0.0, z_max))
+    # Pass the cutter a tiny, fixed manufacturing-kernel tolerance through
+    # the mouth plane. A cutter ending exactly coincident with the outer rim
+    # makes OCCT's Boolean ambiguous (and can return a null shape), whereas
+    # this 0.01 mm extension is removed by the outer solid and never changes
+    # the exterior curve, height, or approved mouth datum.
+    cut_clearance = .01
+    inner.append((inner[-1][0], z_max + cut_clearance))
+    inner.append((0.0, z_max + cut_clearance))
     return revolve({**params, "profile": [{"xMm": x, "zMm": z} for x, z in inner], "curveSegments": []})
 
 
@@ -508,15 +509,25 @@ def compile_graph(graph_component, graph_nodes):
                 visible_top = max((z for _, z in visible), default=-float("inf"))
                 outer_top = max((z for _, z in profile), default=-float("inf"))
                 roofed = outer_top > visible_top + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top) <= 1e-6 for x, z in profile)
-                declared_curve = any(segment.get("kind") in ("nurbs", "bezier") for segment in (source_params.get("curveSegments") or []))
-                if declared_curve and not roofed:
-                    # OCCT's face shell is its native offset operation. It
-                    # preserves the declared exterior NURBS/Bézier face and
-                    # avoids an independently interpolated inner curve that
-                    # can overshoot through the bottle mouth.
+                # Keep exterior and interior as explicit, independently
+                # inspectable revolved B-Reps, then perform the declared cut.
+                # OCCT's generic face-shell can look valid in-memory yet
+                # change its offset volume after STEP export/re-import for a
+                # NURBS mouth/shoulder. An explicit inner revolve provides a
+                # stable manufacturing representation whenever the approved
+                # profile admits that Boolean. A few legacy self-touching
+                # profiles cannot form a stable cutter; retain OCCT's native
+                # shell *only* for that documented geometry failure rather
+                # than substituting a primitive or silently changing shape.
+                cavity = inner_revolve_from_profile(source_params, thickness)
+                try:
+                    candidate = inputs[0].cut(cavity)
+                    if candidate.val().isNull() or len(candidate.val().Solids()) != 1:
+                        raise RuntimeError("explicit cavity Boolean did not produce one connected solid")
+                    shape = candidate
+                except Exception as cavity_error:
+                    if roofed: raise RuntimeError("graph_invalid: explicit roofed cavity cannot form a stable B-Rep") from cavity_error
                     shape = cq.Workplane(obj=inputs[0].val()).faces(">Z").shell(-thickness)
-                else:
-                    shape = inputs[0].cut(inner_revolve_from_profile(source_params, thickness))
             else:
                 shape = cq.Workplane(obj=inputs[0].val()).faces("<Z").shell(-thickness)
         elif op == "pattern":

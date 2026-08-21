@@ -136,5 +136,13 @@ try {
   const assemblyRun = spawnSync(python, [path.join(here, "cad-assembly-worker.py"), assemblyRequest], { encoding: "utf8", timeout: 120000 });
   assert.equal(assemblyRun.status, 0, `${assemblyRun.stdout}\n${assemblyRun.stderr}`); const assemblyReport = JSON.parse(await fs.readFile(assemblyPaths.report, "utf8"));
   assert.equal(assemblyReport.valid, true); assert.equal(assemblyReport.roundTripWithinTolerance, true); assert.ok((await fs.stat(assemblyPaths.xbf)).size > 100); assert.ok((await fs.stat(assemblyPaths.step)).size > 100);
+  // A numerically out-of-tolerance STEP must remain inspectable as a valid
+  // B-Rep assembly.  The JS release gate turns this report into a manufacturing
+  // blocker; the worker itself must not prevent the visual review GLB.
+  const blockedRequest = path.join(temporary, "blocked-assembly.request.json");
+  await fs.writeFile(blockedRequest, JSON.stringify({ ...JSON.parse(await fs.readFile(assemblyRequest, "utf8")), paths: { xbf: path.join(temporary, "blocked.xbf"), step: path.join(temporary, "blocked.step"), report: path.join(temporary, "blocked.report.json") }, toleranceMm: -1 }));
+  const blockedRun = spawnSync(python, [path.join(here, "cad-assembly-worker.py"), blockedRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(blockedRun.status, 0, `${blockedRun.stdout}\n${blockedRun.stderr}`); const blockedReport = JSON.parse(await fs.readFile(path.join(temporary, "blocked.report.json"), "utf8"));
+  assert.equal(blockedReport.valid, true); assert.equal(blockedReport.roundTripWithinTolerance, false);
   console.log("Canonical child B-Rep plus parent XBF/STEP round-trip proof passed.");
 } finally { await fs.rm(temporary, { recursive: true, force: true }); }
