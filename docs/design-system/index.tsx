@@ -131,13 +131,14 @@ export function Link({ children, ...props }: AnchorHTMLAttributes<HTMLAnchorElem
   return <a {...props}>{children}</a>;
 }
 
-/** A shared interactive atom. Feature surfaces only supply their semantic intent and variant class. */
+/** A shared interactive atom. Feature surfaces supply semantic intent, never page-local button styling. */
 export function ActionButton({
   className = "",
   type = "button",
+  intent = "neutral",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement>) {
-  return <Atom as="button" type={type} className={joinClasses(CLASS.button, className)} {...props} />;
+}: ButtonHTMLAttributes<HTMLButtonElement> & { intent?: "neutral" | "edit" | "add" | "show" | "hide" | "publish" | "danger" }) {
+  return <Atom as="button" type={type} data-intent={intent} className={joinClasses(CLASS.button, className)} {...props} />;
 }
 
 export function FormField({
