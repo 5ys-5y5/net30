@@ -338,7 +338,7 @@ async function repairGraphComponent({ raw, componentKey, model, payload, evidenc
     model,
     name: "net30_modeling_graph_component_repair",
     schema: modelingGraphJsonSchema(),
-    instructions: "Repair exactly one safe declarative ModelingGraph component fragment. Return exactly one component with its same immutable componentKey. A rib, shell, transform, mate, or boolean cut must reference a real preceding generating solid through inputKeys. A radial rib pattern has exactly two inputs in order: the base solid and one rib feature; the rib has exactly the base solid as its only input. Never use a whole body/cap as a pattern seed, never feed a pattern into a revolve, and do not give revolve/extrude/primitive features any inputs. Every revolve that creates a B-Rep solid must have a closed, non-zero-area section with at least four ordered profile points; never use a three-point decorative stroke as a solid cutter or ring. A brep_solid must have exactly one terminal B-Rep root: connect its body, ribs, rings, and cuts by explicit boolean/pattern feature inputs; never leave independent roots or duplicate an identical root feature. A cavity cut must explicitly leave the intended wall/roof thickness or explicitly open at its datum face; it must not merely touch a closed outer face. Add only an image-supported, allowed generating feature if it is required for that connection. Preserve host/material intent. Never write code, paths, URLs, HTML, or executable expressions. Do not create unrelated components or alter the product.",
+    instructions: "Repair exactly one safe declarative ModelingGraph component fragment. Return exactly one component with its same immutable componentKey. A rib, shell, transform, mate, or boolean cut must reference a real preceding generating solid through inputKeys. A radial rib pattern has exactly two inputs in order: the base solid and one rib feature; the rib has exactly the base solid as its only input. Every rib must declare positive numeric heightMm, spacingMm, and depthMm; its count is either positive numeric count or supplied by its following pattern. Never use a whole body/cap as a pattern seed, never feed a pattern into a revolve, and do not give revolve/extrude/primitive features any inputs. Every revolve that creates a B-Rep solid must have a closed, non-zero-area section with at least four ordered profile points; never use a three-point decorative stroke as a solid cutter or ring. A brep_solid must have exactly one terminal B-Rep root: connect its body, ribs, rings, and cuts by explicit boolean/pattern feature inputs; never leave independent roots or duplicate an identical root feature. A cavity cut must explicitly leave the intended wall/roof thickness or explicitly open at its datum face; it must not merely touch a closed outer face. Add only an image-supported, allowed generating feature if it is required for that connection. Preserve host/material intent. Never write code, paths, URLs, HTML, or executable expressions. Do not create unrelated components or alter the product.",
     input: [{ role: "user", content: [{ type: "input_text", text: `Product (copy unchanged): ${JSON.stringify(raw.product)}\nRequested component: ${componentKey}\nOriginal fragment: ${JSON.stringify(raw.components[index])}\nRead-only interfaces: ${JSON.stringify(raw.interfaces)}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nReturn product unchanged, interfaces as [], and exactly one repaired component.` }, ...images] }],
   }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
   if (!repaired || !Array.isArray(repaired.components) || repaired.components.length !== 1 || repaired.components[0]?.componentKey !== componentKey) throw new Error(`component_repair_failed: ${componentKey} 재분석 응답이 안정적인 단일 컴포넌트를 반환하지 않았습니다.`);
@@ -365,23 +365,24 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     } catch (error) { lastError = error; raw = null; }
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
-  let canonical; const repairedComponents = new Set();
+  let canonical; const repairCounts = new Map();
   // A full multimodal response can have independent defects in separate
-  // components. Repair each named fragment at most once (and at most three in
-  // one analysis) so a bottle boolean error does not discard an otherwise
-  // valid cap/print plan, while avoiding an unbounded costly repair loop.
+  // components. Repair each named fragment at most twice (and at most three
+  // repairs in one analysis) so one missing feature leaf does not discard an
+  // otherwise valid cap/print plan, while avoiding an unbounded costly loop.
   for (let attempt = 0; attempt <= Math.min(3, requested.length); attempt += 1) {
     try {
       canonical = canonicalizeGraph(raw, requested, payload.imageIds);
       break;
     } catch (error) {
       const componentKey = repairTargetKey(error);
-      if (!componentKey || process.env.NET30_MODELING_DRAFT_FIXTURE === "true" || repairedComponents.has(componentKey) || attempt >= Math.min(3, requested.length)) {
+      const repairsForComponent = repairCounts.get(componentKey) ?? 0;
+      if (!componentKey || process.env.NET30_MODELING_DRAFT_FIXTURE === "true" || repairsForComponent >= 2 || attempt >= Math.min(3, requested.length)) {
         throw new Error(`analysis_incomplete: ${error instanceof Error ? error.message : String(error)}`);
       }
       try {
         raw = await repairGraphComponent({ raw, componentKey, model, payload, evidenceManifest, imageInputs, runtime });
-        repairedComponents.add(componentKey);
+        repairCounts.set(componentKey, repairsForComponent + 1);
       } catch (repairError) {
         await runtime.onGraphRepair?.({ componentKey, state: "failed", message: repairError instanceof Error ? repairError.message : String(repairError) });
         throw new Error(`analysis_incomplete: ${repairError instanceof Error ? repairError.message : String(repairError)}`);
