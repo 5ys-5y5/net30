@@ -26,6 +26,11 @@ assert.deepEqual([...componentOutput.required].sort(), Object.keys(componentOutp
 function auditStrictSchema(schema, path = "root") {
   if (!schema || typeof schema !== "object") return;
   if (schema.properties) { assert.equal(schema.additionalProperties, false, `${path} must reject extra properties`); assert.deepEqual([...(schema.required ?? [])].sort(), Object.keys(schema.properties).sort(), `${path} must require every property`); }
+  // Responses Structured Outputs accepts a single object/boolean `items`
+  // schema, not JSON Schema draft-7 tuple arrays. This is easy to regress
+  // when modelling a fixed number of points, so audit every outbound schema.
+  assert.equal(Array.isArray(schema.items), false, `${path}.items must not use a tuple schema`);
+  assert.equal("oneOf" in schema, false, `${path} must use anyOf rather than oneOf for Responses Structured Outputs`);
   for (const [key, value] of Object.entries(schema)) if (key !== "$defs") Array.isArray(value) ? value.forEach((item, index) => auditStrictSchema(item, `${path}.${key}[${index}]`)) : auditStrictSchema(value, `${path}.${key}`);
   for (const [key, value] of Object.entries(schema.$defs ?? {})) auditStrictSchema(value, `${path}.$defs.${key}`);
 }

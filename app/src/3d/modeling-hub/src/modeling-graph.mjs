@@ -6,8 +6,15 @@ const vector3 = z.object({ x: z.number(), y: z.number(), z: z.number() }).strict
 const transform = z.object({ translationMm: vector3, rotationDeg: vector3, scale: vector3 }).strict();
 const profilePoint = z.object({ xMm: z.number(), yMm: z.number(), zMm: z.number() }).strict();
 const curvePoint = z.object({ xMm: z.number(), zMm: z.number() }).strict();
-const curveSegment = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("line"), points: z.tuple([curvePoint, curvePoint]), periodic: z.boolean() }).strict(),
+// `z.discriminatedUnion` serializes to JSON Schema `oneOf`, which Responses
+// Strict Structured Outputs rejects. The explicit `kind` literals still make
+// the alternatives unambiguous at parse time while `z.union` emits `anyOf`.
+const curveSegment = z.union([
+  // OpenAI's Strict Structured Outputs requires an array's `items` schema to
+  // be one schema object. Zod tuples emit draft-7's legacy `items: []` form,
+  // which the Responses API rejects before inference starts. Keep the exact
+  // two-point line invariant without emitting a tuple schema.
+  z.object({ kind: z.literal("line"), points: z.array(curvePoint).min(2).max(2), periodic: z.boolean() }).strict(),
   z.object({ kind: z.literal("arc"), points: z.array(curvePoint).length(3), periodic: z.boolean() }).strict(),
   z.object({ kind: z.literal("bezier"), points: z.array(curvePoint).length(4), periodic: z.boolean() }).strict(),
   z.object({ kind: z.literal("nurbs"), poles: z.array(curvePoint).min(2).max(64), degree: z.number().int().min(1).max(5), weights: z.array(z.number().positive()).min(2).max(64), knots: z.array(z.number()).min(2).max(96), multiplicities: z.array(z.number().int().min(1).max(6)).min(2).max(96), periodic: z.boolean() }).strict(),
@@ -110,7 +117,7 @@ export const modelingGraphSchema = z.object({
 export const modelingPatchSchema = z.object({
   version: z.literal("net30.modeling-patch.v1"), baseGraphHash: z.string().length(64),
   scope: z.object({ stage: z.enum(["assembly", "component_structure", "shape_dimensions", "material_surface", "interfaces", "prebuild", "result_review"]), componentIds: z.array(z.string()).max(30) }).strict(),
-  changes: z.array(z.discriminatedUnion("op", [
+  changes: z.array(z.union([
     z.object({ op: z.literal("set_parameter"), nodeId: z.string(), field: z.enum(Object.keys(featureParameters.shape)), expectedValueHash: z.string().length(64), value: z.union([z.string(), z.number(), z.boolean(), z.null(), vector3, transform, z.array(profilePoint), z.array(z.array(profilePoint))]), rationale: z.string().max(600) }).strict(),
     z.object({ op: z.literal("replace_material"), componentId: z.string(), expectedValueHash: z.string().length(64), value: material, rationale: z.string().max(600) }).strict(),
     z.object({ op: z.literal("set_transform"), componentId: z.string(), expectedValueHash: z.string().length(64), value: transform, rationale: z.string().max(600) }).strict(),
