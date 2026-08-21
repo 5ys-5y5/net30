@@ -184,7 +184,7 @@ def inner_revolve_from_nurbs(segment, thickness):
         raise RuntimeError("graph_invalid: NURBS shell offset exceeds the approved outer profile")
     return cq.Workplane("XZ").newObject([
         profile_face_from_curve(interpolated_offset_curve(inner), inner[0], inner[-1], (0.0, inner[0][1]), (0.0, inner[-1][1]))
-    ]).revolve(360, (0, 0, 0), (0, 1, 0))
+    ]).toPending().revolve(360, (0, 0, 0), (0, 1, 0))
 
 
 def revolve(params):
@@ -239,7 +239,7 @@ def revolve(params):
         axis_end = next((point for point in reversed(points) if abs(point[0]) <= 1e-8), points[-1])
         try:
             face = rational_profile_face(declared_curve, axis_start, axis_end)
-            return cq.Workplane("XZ").newObject([face]).revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
+            return cq.Workplane("XZ").newObject([face]).toPending().revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
         except Exception as error:
             if isinstance(error, RuntimeError): raise
             raise RuntimeError("graph_invalid: declared NURBS profile cannot form an OCCT face") from error
@@ -249,7 +249,7 @@ def revolve(params):
         axis_end = next((point for point in reversed(points) if abs(point[0]) <= 1e-8), points[-1])
         try:
             face = bezier_profile_face(bezier_segments, axis_start, axis_end)
-            return cq.Workplane("XZ").newObject([face]).revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
+            return cq.Workplane("XZ").newObject([face]).toPending().revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
         except Exception as error:
             if isinstance(error, RuntimeError): raise
             raise RuntimeError("graph_invalid: declared Bézier profile cannot form an OCCT face") from error
@@ -582,10 +582,18 @@ def main():
     paths = request.get("paths") or {"step": request["output"]}; step = pathlib.Path(paths["step"]); step.parent.mkdir(parents=True, exist_ok=True)
     brep = pathlib.Path(paths.get("brep", step.with_suffix(".brep"))); stl = pathlib.Path(paths.get("stl", step.with_suffix(".stl"))); report = pathlib.Path(paths.get("report", step.with_suffix(".validation.json")))
     print("CAD_PHASE=step", flush=True); cq.exporters.export(shape, str(step)); print("CAD_PHASE=brep", flush=True); solid.exportBrep(str(brep))
+    # The B-Rep file is the manufacturing source of truth.  Some OCCT curve
+    # wrappers expose a conservative in-memory BoundingBox until they are
+    # serialised, while the stored shape has the exact declared pole bounds.
+    # Validate and report the persisted canonical B-Rep, not that transient
+    # wrapper, so a quality gate cannot reject or accept a different shape
+    # from the one exported as STEP/GLB source.
+    persisted = cq.importers.importBrep(str(brep)).val()
+    if not persisted.isValid(): raise RuntimeError("brep_invalid: persisted OpenCascade B-Rep validity check failed")
     tolerance = float(request.get("tessellation", {}).get("chordMm", .05)); angular = math.radians(float(request.get("tessellation", {}).get("angularDeg", 7)))
     print("CAD_PHASE=tessellate", flush=True); cq.exporters.export(shape, str(stl), tolerance=tolerance, angularTolerance=angular)
-    shells = solid.Shells(); closed = bool(shells) and all(item.Closed() for item in shells)
-    box = solid.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(solid.Solids()), "shellCount": len(shells), "volumeMm3": solid.Volume(), "surfaceAreaMm2": solid.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
+    shells = persisted.Shells(); closed = bool(shells) and all(item.Closed() for item in shells)
+    box = persisted.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
     report.write_text(json.dumps(payload, indent=2) + "\n")
     if not closed or payload["solidCount"] != 1:
         raise RuntimeError(f"brep_preflight_failed: closed={closed}, solidCount={payload['solidCount']}")

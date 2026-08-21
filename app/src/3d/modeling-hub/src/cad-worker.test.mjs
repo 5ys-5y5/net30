@@ -33,6 +33,10 @@ try {
   assert.equal(curveRun.status, 0, `${curveRun.stdout}\n${curveRun.stderr}`);
   const curveReport = JSON.parse(await fs.readFile(`${curveStem}.validation.json`, "utf8"));
   assert.equal(curveReport.valid, true); assert.equal(curveReport.closed, true); assert.ok(curveReport.volumeMm3 > 0, "a declared NURBS generating curve must compile into a closed OCCT B-Rep");
+  const expectedCurveDiameter = Math.max(...curvedNode.parameters.profile.map((point) => point.xMm)) * 2;
+  const expectedCurveHeight = Math.max(...curvedNode.parameters.profile.map((point) => point.zMm)) - Math.min(...curvedNode.parameters.profile.map((point) => point.zMm));
+  assert.ok(Math.abs(curveReport.boundsMm.x - expectedCurveDiameter) <= .01, "the report must use the persisted B-Rep bounds, not a transient OCCT curve wrapper");
+  assert.ok(Math.abs(curveReport.boundsMm.z - expectedCurveHeight) <= .01, "the persisted B-Rep must retain the declared NURBS height");
   const shellOutput = fixtureGraphOutput({ product: { name: "NURBS shell proof" }, prompt: "hollow container", requestedComponents: ["용기"], imageIds: [] });
   const shellBase = shellOutput.components[0].features[0];
   shellOutput.components[0].features.push({ ...structuredClone(shellBase), key: "container-shell", operation: "shell", inputKeys: [shellBase.key], parameters: { ...shellBase.parameters, profile: null, curveSegments: null, thicknessMm: 2.2 } });

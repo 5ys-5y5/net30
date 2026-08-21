@@ -10,6 +10,7 @@ import { COMPONENTS, fallbackComponent, fallbackContract, modelingSpecSchema } f
 import { ModelingDossier } from "./modeling-dossier.mjs";
 import { qualityGates } from "./modeling-graph-v3.mjs";
 import { compareAxisymmetricContour } from "./image-evidence.mjs";
+import { normaliseGraphCompatibility } from "./modeling-graph.mjs";
 
 const componentSchema = z.string().trim().min(1).max(100);
 const settingsSchema = z.object({ sizeXmm: z.coerce.number().positive().max(500).optional(), sizeYmm: z.coerce.number().positive().max(800).optional(), sizeZmm: z.coerce.number().positive().max(500).optional(), shellThicknessMm: z.coerce.number().positive().max(30).optional(), widthMm: z.coerce.number().positive().max(500).optional(), heightMm: z.coerce.number().positive().max(800).optional(), depthMm: z.coerce.number().positive().max(500).optional(), wallMm: z.coerce.number().positive().max(30).optional() }).passthrough();
@@ -73,7 +74,13 @@ async function cadExports(spec, cadDir, quality) {
 }
 
 export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `job-${Date.now()}`, spec, imageInputs = [], onProgress = () => undefined } = {}) {
-  const payload = modelingPayloadSchema.parse(rawPayload); const modelingSpec = modelingSpecSchema.parse(spec);
+  const payload = modelingPayloadSchema.parse(rawPayload);
+  // Product revisions created before `curveSegments` was added remain valid
+  // manufacturing evidence. Normalize their additive graph fields before the
+  // strict spec schema runs; otherwise a legacy revision can be previewed but
+  // not rebuilt into the same canonical B-Rep pipeline.
+  const compatibleSpec = spec?.modelingGraph ? { ...spec, modelingGraph: normaliseGraphCompatibility(spec.modelingGraph) } : spec;
+  const modelingSpec = modelingSpecSchema.parse(compatibleSpec);
   const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../net30-3d-assets"))); const jobDir = path.join(root, "jobs", jobId);
   const renderDir = path.join(jobDir, "render"); const componentDir = path.join(jobDir, "components"); const cadDir = path.join(jobDir, "cad"); const requestPath = path.join(jobDir, "request.json"); const resultPath = path.join(jobDir, "result.json"); const assemblyGlb = path.join(renderDir, "assembly.glb");
   await Promise.all([fs.mkdir(renderDir, { recursive: true }), fs.mkdir(componentDir, { recursive: true }), fs.mkdir(cadDir, { recursive: true })]);
