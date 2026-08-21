@@ -6,6 +6,7 @@ import {
   draftPayloadSchema,
   draftReady,
   normaliseComponentInput,
+  responseJson,
 } from "./modeling-spec.mjs";
 import { applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
 
@@ -27,6 +28,31 @@ function auditStrictSchema(schema, path = "root") {
 }
 auditStrictSchema(modelingGraphJsonSchema());
 auditStrictSchema(modelingPatchJsonSchema());
+
+const originalApiKey = process.env.OPENAI_API_KEY;
+process.env.OPENAI_API_KEY = "test-key";
+const backgroundRequests = [];
+const completedGraph = JSON.stringify(fixtureGraphOutput({ product: { name: "background" }, prompt: "test", requestedComponents: ["병"], imageIds: [] }));
+const backgroundResult = await responseJson({ model: "fixture", instructions: "test", input: "test", schema: modelingGraphJsonSchema(), name: "background_test" }, {
+  pollIntervalMs: 0,
+  sleep: async () => undefined,
+  fetchImpl: async (url, options = {}) => {
+    backgroundRequests.push({ url, options });
+    const body = options.method === "POST" ? { id: "resp-test", status: "in_progress" } : { id: "resp-test", status: "completed", output_text: completedGraph };
+    return { ok: true, status: 200, json: async () => body };
+  },
+});
+assert.equal(backgroundResult.product.name, "background");
+assert.equal(backgroundResult.components.length, 1);
+assert.equal(backgroundRequests.length, 2);
+assert.equal(JSON.parse(backgroundRequests[0].options.body).background, true);
+assert.match(backgroundRequests[1].url, /\/responses\/resp-test$/);
+await assert.rejects(() => responseJson({ model: "fixture", instructions: "test", input: "test", schema: modelingGraphJsonSchema(), name: "failed_test" }, {
+  pollIntervalMs: 0,
+  sleep: async () => undefined,
+  fetchImpl: async (_url, options = {}) => ({ ok: true, status: 200, json: async () => options.method === "POST" ? { id: "resp-failed", status: "in_progress" } : { id: "resp-failed", status: "failed", error: { code: "server_error", message: "generation failed" } } }),
+}), (error) => error.responseId === "resp-failed" && /generation failed/.test(error.message));
+if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = originalApiKey;
 
 const input = draftPayloadSchema.parse({
   version: "net30.modeling-draft.v4",

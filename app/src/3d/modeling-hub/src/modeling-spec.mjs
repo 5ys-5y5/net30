@@ -135,12 +135,53 @@ export function fallbackComponent(contract, component) {
   return { version: "net30.component-spec.v3", component, componentInstanceId: component, displayName: component, semanticRole: component === "bottle" ? "containerBody" : component === "cap" ? "closure" : component === "pouringRing" ? "insert" : component === "liner" ? "seal" : component === "contents" ? "content" : "accessory", profile: defaultProfile(component), features: { ribCount: component === "cap" ? 32 : 0, ribDepthMm: component === "cap" ? 1.2 : 0, neckRings: component === "bottle" ? 3 : 0, skirtHeightMm: component === "cap" ? 5 : 0, heightMm: capHeight, outerDiameterMm: component === "cap" ? d.widthMm * .98 : d.widthMm * .8, innerDiameterMm: d.widthMm * .72, wallMm: d.wallMm, bottomMm: 3, quantity: 1, primitive: "cylinder", dimensionsMm: null, interfaceId: component === "bottle" ? null : "closure-main", labelText: component === "decorationFront" ? "DURAN\n100 ml\nAPPROX. VOL." : "", labelBand: component.startsWith("decoration") ? { zMm: d.heightMm * .40, heightMm: d.heightMm * .35, sweepDegrees: 118 } : null }, material: { role, color: role === "glass" ? contract.materials.bodyColor : role === "print" ? contract.materials.printColor : contract.materials.capColor, roughness: role === "glass" ? .08 : role === "print" ? .35 : .34, transmission: role === "glass" ? .82 : 0 }, transform: { xMm: 0, yMm: 0, zMm } };
 }
 
-async function responseJson({ model, instructions, input, schema, name }) {
+const OPENAI_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "incomplete"]);
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function openAiResponseError(body, fallback) {
+  const detail = body?.error?.message ?? body?.incomplete_details?.reason ?? fallback;
+  const error = new Error(detail);
+  error.code = body?.error?.code ?? body?.status ?? "openai_response_failed";
+  error.responseId = body?.id ?? null;
+  return error;
+}
+
+/** Run long multimodal Structured Output work as a retrievable Responses job.
+ * Each HTTP exchange has its own short timeout, while the OpenAI response keeps
+ * running under its stable response ID. This prevents a Railway request timeout
+ * from silently starting the same expensive analysis again. */
+export async function responseJson({ model, instructions, input, schema, name }, runtime = {}) {
   const apiKey = (process.env.OPENAI_API_KEY ?? "").trim(); if (!apiKey || !model) return null;
-  const response = await fetch("https://api.openai.com/v1/responses", { method: "POST", signal: AbortSignal.timeout(90_000), headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model, instructions, input, text: { format: { type: "json_schema", name, strict: true, schema } } }) });
-  const body = await response.json(); if (!response.ok) throw new Error(body?.error?.message ?? "OpenAI modeling request failed.");
+  const fetchImpl = runtime.fetchImpl ?? fetch;
+  const sleep = runtime.sleep ?? delay;
+  const pollIntervalMs = runtime.pollIntervalMs ?? Number(process.env.NET30_OPENAI_POLL_INTERVAL_MS ?? 2_000);
+  const deadlineMs = runtime.deadlineMs ?? Number(process.env.NET30_OPENAI_BACKGROUND_TIMEOUT_MS ?? 600_000);
+  const requestTimeoutMs = runtime.requestTimeoutMs ?? Number(process.env.NET30_OPENAI_HTTP_TIMEOUT_MS ?? 30_000);
+  const onStatus = runtime.onStatus ?? (() => undefined);
+  const startedAt = Date.now();
+  const request = async (url, options = {}) => {
+    const response = await fetchImpl(url, { ...options, signal: AbortSignal.timeout(requestTimeoutMs), headers: { authorization: `Bearer ${apiKey}`, ...(options.headers ?? {}) } });
+    const body = await response.json();
+    if (!response.ok) throw openAiResponseError(body, `OpenAI request failed (${response.status}).`);
+    return body;
+  };
+  let body = await request("https://api.openai.com/v1/responses", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, instructions, input, background: true, store: true, text: { format: { type: "json_schema", name, strict: true, schema } } }) });
+  if (!body?.id) throw openAiResponseError(body, "OpenAI가 추적 가능한 응답 ID를 반환하지 않았습니다.");
+  let lastStatus = body.status;
+  await onStatus({ id: body.id, status: body.status });
+  while (!OPENAI_TERMINAL_STATUSES.has(body.status)) {
+    if (Date.now() - startedAt >= deadlineMs) {
+      const error = new Error(`openai_background_timeout: 응답 ${body.id}가 ${Math.round(deadlineMs / 1000)}초 안에 완료되지 않았습니다.`);
+      error.code = "openai_background_timeout"; error.responseId = body.id; throw error;
+    }
+    await sleep(pollIntervalMs);
+    body = await request(`https://api.openai.com/v1/responses/${encodeURIComponent(body.id)}`);
+    if (body.status !== lastStatus) { lastStatus = body.status; await onStatus({ id: body.id, status: body.status }); }
+  }
+  if (body.status !== "completed") throw openAiResponseError(body, `OpenAI 응답 ${body.id}가 ${body.status} 상태로 종료되었습니다.`);
   const output = body.output_text ?? body.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
-  return typeof output === "string" ? JSON.parse(output) : null;
+  if (typeof output !== "string") throw openAiResponseError(body, "OpenAI 응답에 구조화된 출력이 없습니다.");
+  return JSON.parse(output);
 }
 export async function createAssemblyContract(payload, imageInputs) {
   const model = payload.model || defaultOpenAiModel(); if (model && !openAiModels().includes(model)) throw new Error("허용되지 않은 OpenAI 모델입니다.");
@@ -257,7 +298,7 @@ export function modelingGraphQuestions(product, components, graph) {
 export function modelingGraphComponents(graph) {
   return graph.components.map((component, index) => ({ id: component.id, requestedName: component.requestedName, displayName: component.requestedName, semanticRole: component.representation === "visual_surface" ? "accessory" : component.representation === "volume" || component.representation === "instance_set" ? "content" : "other", parentId: component.hostComponentId, quantity: 1, assemblyOrder: index, recipe: graph.nodes.find((node) => component.rootNodeIds.includes(node.id))?.operation ?? "primitive", representation: component.representation, summary: component.summary }));
 }
-export async function analyseDraft(payload, imageInputs) {
+export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const model = payload.model || defaultOpenAiModel(); if (!model || !openAiModels().includes(model)) throw new Error("허용된 OpenAI 모델을 선택하세요.");
   const requested = payload.requestedComponents ?? normaliseComponentInput(payload.componentInput);
   let raw = null; let lastError = null;
@@ -265,11 +306,9 @@ export async function analyseDraft(payload, imageInputs) {
   else {
     if (!(process.env.OPENAI_API_KEY ?? "").trim()) throw new Error("OpenAI 분석 키가 설정되지 않았습니다. 기본 형상으로 대체하지 않았습니다.");
     const images = imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl, detail: "high" }));
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and allowlisted feature operations from the images and prompt; never classify by the component name alone. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }); break;
-      } catch (error) { lastError = error; raw = null; }
-    }
+    try {
+      raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and allowlisted feature operations from the images and prompt; never classify by the component name alone. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus });
+    } catch (error) { lastError = error; raw = null; }
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
   let canonical;

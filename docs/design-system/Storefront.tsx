@@ -955,6 +955,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     <input className={CLASS.modelingControl} type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
   </FormField>;
   const analysisInProgress = pending && !buildInProgress && (!draft || draft.state.startsWith("analyzing"));
+  const analysisFailed = Boolean(draft && ["failed", "analysis_incomplete", "needs_custom_recipe"].includes(draft.state));
   const activeWorkflowIndex = draft ? workflowIndex(draft.state, Boolean(previewModel)) : 0;
   const flatAssetNodes = useMemo(() => activeParentTree ? flattenAssetTree(activeParentTree) : [], [activeParentTree]);
   const clearActiveParentSelection = useCallback(() => {
@@ -979,6 +980,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const stagePreview = analysisInProgress ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>스케치를 준비 중입니다.</Copy></header></ProcessProgressPanel></Atom>
     : previewModel ? <PreviewErrorBoundary fallback={<AssetEmptyState role="alert"><Copy>생성된 3D 모델을 표시하지 못했습니다. 결과 파일은 보존되었습니다.</Copy></AssetEmptyState>}><ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={studio.previewTitle} src={previewSrc} /></PreviewErrorBoundary>
       : draft?.activeIterationId ? <PreviewErrorBoundary fallback={<AssetEmptyState role="alert"><Copy>스케치 미리보기를 표시하지 못했습니다. 입력과 승인 내용은 보존되었습니다.</Copy></AssetEmptyState>}><Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending || buildInProgress} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt, strokes) => void applySketchFeedback(iteration, feedbackPrompt, strokes)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom></PreviewErrorBoundary>
+      : analysisFailed ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><AssetEmptyState role="alert"><Label>분석을 완료하지 못했습니다.</Label><Copy>{draft?.message || error}</Copy><Copy>기존 조립 파일과 구성요소는 변경되지 않았습니다. 입력을 보완하거나 다시 실행할 수 있습니다.</Copy></AssetEmptyState></Atom>
       : draft ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>{draft.message || "실형상 스케치를 준비하고 있습니다."}</Copy></header></ProcessProgressPanel></Atom>
         : activeParentTree?.selectedRevision.assetPath ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title="선택한 조립 파일 3D 미리보기" src={modelPreviewSrc(activeParentTree.selectedRevision.assetPath, activeParentTree.selectedRevision.id)} />
           : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{activeParentTree ? "표시할 구성요소를 선택하면 조립 파일 미리보기가 이곳에 표시됩니다." : "조립 파일을 선택하면 3D 미리보기와 승인 스케치가 이곳에 표시됩니다."}</Copy></Atom>;
@@ -1005,7 +1007,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
               <Copy className={CLASS.modelingHint}>{images.length ? `${images.length}장 선택됨 · 작업 완료 후 7일 보관` : "선택 사항 · JPEG/PNG/WebP 최대 4장, 각 10MB"}</Copy>
             </FormField>
           </Atom>
-          {!draft && <ActionButton className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? "제품 분석 중" : editTarget?.mode === "refine-node" ? "선택한 구성요소 분석 시작" : editTarget?.mode === "refine-assembly" ? "선택한 조립 파일·구성요소 분석 시작" : editTarget?.mode === "add-child" ? "새 구성요소 분석 시작" : "새 조립 파일 분석 시작"}</ActionButton>}
+          {(!draft || analysisFailed) && <ActionButton className={CLASS.modelingButton} type="submit" disabled={pending}>{pending ? "제품 분석 중" : analysisFailed ? "분석 다시 실행" : editTarget?.mode === "refine-node" ? "선택한 구성요소 분석 시작" : editTarget?.mode === "refine-assembly" ? "선택한 조립 파일·구성요소 분석 시작" : editTarget?.mode === "add-child" ? "새 구성요소 분석 시작" : "새 조립 파일 분석 시작"}</ActionButton>}
           <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
         </form>
       </Surface>
@@ -1016,7 +1018,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </ProcessProgressPanel></BuildProgressPanel> : analysisInProgress ? <ProcessProgressPanel>
         <header><Label>OPENAI × BLENDER · 제품·부품 분석</Label><ReviewStatus>분석 중</ReviewStatus><Copy>{progress || "제품과 구성 부품을 분석하고 있습니다."}</Copy></header>
         <ProgressStageList>{(draft?.progress?.filter((item) => item.operation === "analysis") ?? [{ eventId: 0, operation: "analysis", stage: "OpenAI 분석", state: "running", message: progress || "입력 분석을 시작했습니다." }]).map((item) => <ProgressStage state={item.state} key={`${item.eventId}-${item.stage}`}><span>{item.stage}{item.total ? ` · ${item.completed ?? 0}/${item.total} ${item.unit ?? ""}` : ""}</span><span>{item.message}</span></ProgressStage>)}</ProgressStageList>
-      </ProcessProgressPanel> : previewModel ? <ModelResultPanel>
+      </ProcessProgressPanel> : analysisFailed ? <AssetEmptyState role="alert"><Label>OpenAI 분석 실패</Label><Copy>{draft?.message || error}</Copy><Copy>승인 질문과 Blender 실행은 생성되지 않았으며 기존 제품 자산은 그대로 유지됩니다. 왼쪽 입력을 확인한 뒤 분석을 다시 실행하세요.</Copy></AssetEmptyState> : previewModel ? <ModelResultPanel>
         <Atom className={CLASS.modelingToolbar}><Atom><Label>{studio.workspace.assemblyLabel}</Label><Copy className={CLASS.modelingHint}>{studio.workspace.assemblyDescription}</Copy></Atom><Link href="/">{studio.backLabel}</Link></Atom>
         <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}><Label>{studio.resultTitle}</Label><Atom as={ELEMENT.span}>{error || result}</Atom>{downloadReady && <Link href={previewModel} download>{studio.downloadLabel}</Link>}</Atom>
         {draft ? <DecisionHistoryDisclosure label="승인 결정 내역 보기"><ReviewProgress>생성 당시 승인값 {draft.questions.length}개</ReviewProgress><DraftQuestionGroups draft={draft} readOnly /></DecisionHistoryDisclosure> : null}

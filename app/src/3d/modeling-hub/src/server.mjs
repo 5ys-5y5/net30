@@ -155,7 +155,7 @@ app.post("/api/modeling/drafts",async(req,res)=>{ if(!authorized(req)) return re
   void (async()=>{ try {
     await progressDraft(draft,{operation:"analysis",stage:"이미지 업로드 확인",state:"complete",completed:payload.imageIds.length,total:payload.imageIds.length,unit:"files",message:"모델링 입력 이미지를 확인했습니다."});
     await progressDraft(draft,{operation:"analysis",stage:"제품·조립 분석",state:"running",message:"제품과 공통 조립 기준을 분석 중입니다."});
-    const imageInputs=await storage.imageInputs(payload.imageIds); const analysis=await analyseDraft(payload,imageInputs);
+    const imageInputs=await storage.imageInputs(payload.imageIds); const analysis=await analyseDraft(payload,imageInputs,{onOpenAiStatus:async({id,status})=>progressDraft(draft,{operation:"analysis",stage:"OpenAI ModelingGraph",state:["failed","cancelled","incomplete"].includes(status)?"failed":status==="completed"?"complete":"running",message:`OpenAI 응답 ${id} · ${status}`})});
     if(parent) await bindAssemblyRefinementTargets(payload,parent.id,analysis);
     draft.input=payload; await drafts.save(draft);
     await progressDraft(draft,{operation:"analysis",stage:"제품·조립 분석",state:"complete",message:"공통 기준 분석이 완료되었습니다."});
