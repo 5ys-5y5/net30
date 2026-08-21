@@ -43,7 +43,7 @@ export const modelPageDefinition: ProductPageDefinition = {
       resultTitle: "최근 실행 결과",
       downloadLabel: "현재 GLB 다운로드",
       idleMessage: "아직 실행한 모델링 작업이 없습니다.",
-      unavailableMessage: "모델링 서비스가 일시적으로 준비되지 않아도, 저장된 3D 자산 미리보기는 계속 표시됩니다.",
+      unavailableMessage: "프롬프트와 선택 이미지를 입력한 뒤 분석을 시작하세요. 저장된 자산은 제품 자산 라이브러리에서 별도로 확인할 수 있습니다.",
       workspace: {
         productLabel: "제품",
         productName: "DURAN GL45 100 mL 실험용 병",
