@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, fitAxisymmetricProfile, qualityGates } from "./modeling-graph-v3.mjs";
 import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
+import { compareBrepAxisymmetricContour } from "./image-evidence.mjs";
 
 const evidence = buildEvidenceManifest([
   { id: "primary", filename: "Duran laboratory bottles 100.jpg" },
@@ -25,4 +26,7 @@ assert.equal(scoped.warnings.length, 1);
 
 const gates = qualityGates({ graphHash: canonical.graphHash, contour: { iou: .98, rmsMm: .3, hausdorff95Mm: .6 }, landmarks: { maxMm: .4 }, dimensions: { maxDeltaMm: .2, toleranceMm: .5 }, brep: { valid: true, closed: true, solidCount: 1, freeEdges: 0, interferenceCount: 0 }, step: { boundsDeltaMm: .009, volumeDeltaRatio: .0009 }, evidenceComplete: true });
 assert.equal(gates.manufacturingStatus, "manufacturing_released");
+const measured = { images: [{ ok: true, measurement: { imageId: "primary", bodySilhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: .8 + index / 150 })) } }] };
+const actual = compareBrepAxisymmetricContour({ diagnostics: [{ componentId: "short", boundsMm: { x: 20, z: 20 }, silhouette: measured.images[0].measurement.bodySilhouette }, { componentId: "body", boundsMm: { x: 56, z: 100 }, silhouette: measured.images[0].measurement.bodySilhouette }] }, measured, "primary");
+assert.equal(actual?.source, "occt_brep_tessellation"); assert.equal(actual?.componentId, "body"); assert.ok(actual?.iou > .999, "compiled B-Rep contours must be measured from the emitted tessellation rather than the graph profile");
 console.log("v3 evidence, fitting, local-coordinate and quality-gate proof passed.");

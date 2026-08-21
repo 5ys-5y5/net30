@@ -88,6 +88,27 @@ function binaryStlTriangles(bytes, maxTriangles = 700) {
   return triangles;
 }
 
+function binaryStlAxisymmetricContour(bytes, bins = 64) {
+  if (bytes.length < 84) return null;
+  const count = bytes.readUInt32LE(80);
+  if (84 + count * 50 > bytes.length) return null;
+  let zMin = Infinity; let zMax = -Infinity; const vertices = [];
+  for (let index = 0; index < count; index += 1) {
+    const offset = 84 + index * 50 + 12;
+    for (const delta of [0, 12, 24]) {
+      const x = bytes.readFloatLE(offset + delta); const y = bytes.readFloatLE(offset + delta + 4); const z = bytes.readFloatLE(offset + delta + 8);
+      vertices.push({ r: Math.hypot(x, y), z }); zMin = Math.min(zMin, z); zMax = Math.max(zMax, z);
+    }
+  }
+  if (!vertices.length || !(zMax > zMin)) return null;
+  const maxima = Array.from({ length: bins }, () => 0);
+  for (const point of vertices) {
+    const index = Math.max(0, Math.min(bins - 1, Math.round((point.z - zMin) / (zMax - zMin) * (bins - 1)))); maxima[index] = Math.max(maxima[index], point.r);
+  }
+  const maxRadius = Math.max(...maxima); if (!(maxRadius > 1e-8)) return null;
+  return maxima.map((radius, index) => ({ zNorm: index / Math.max(1, bins - 1), radiusNorm: radius / maxRadius })).filter((point, index, all) => point.radiusNorm > 1e-6 || index === 0 || index === all.length - 1);
+}
+
 function projected(point, view, explodedOffset = 0) {
   if (view === "side") return { x: point.y, y: point.z };
   if (view === "isometric") return { x: point.x + point.y * .62, y: point.z - (point.x + point.y) * .22 };
@@ -146,8 +167,12 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
       let report = null;
       try { report = JSON.parse(await readFile(reportPath, "utf8")); } catch { /* execution diagnostic below */ }
       diagnostics[index] = diagnostic(component, report, execution);
+      let stl = null;
+      if (execution.ok && diagnostics[index].code === "ok") {
+        try { stl = await readFile(`${stem}.stl`); diagnostics[index].silhouette = binaryStlAxisymmetricContour(stl); } catch { /* the B-Rep diagnostic stays authoritative */ }
+      }
       if (preview && execution.ok && diagnostics[index].code === "ok") {
-        try { meshSources.set(component.id, binaryStlTriangles(await readFile(`${stem}.stl`), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
+        try { meshSources.set(component.id, binaryStlTriangles(stl ?? await readFile(`${stem}.stl`), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
       }
     };
     const workers = Array.from({ length: Math.min(Math.max(1, concurrency), components.length) }, async () => {

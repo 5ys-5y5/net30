@@ -592,5 +592,26 @@ export function compareAxisymmetricContour(graph, evidence, primaryImageId = nul
   const rmsMm = Math.sqrt(diffs.reduce((sum, item) => sum + item ** 2, 0) / diffs.length) * maxRadius;
   const sorted = [...diffs].sort((left, right) => left - right); const hausdorff95Mm = sorted[Math.floor((sorted.length - 1) * .95)] * maxRadius;
   const graphArea = measured.bodySilhouette.reduce((sum, item) => sum + interpolate(graphSamples, item.zNorm), 0); const targetArea = measured.bodySilhouette.reduce((sum, item) => sum + item.radiusNorm, 0); const intersection = measured.bodySilhouette.reduce((sum, item) => sum + Math.min(interpolate(graphSamples, item.zNorm), item.radiusNorm), 0); const union = graphArea + targetArea - intersection;
-  return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId };
+  return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "graph_profile" };
+}
+
+/** Compare the *compiled OCCT B-Rep* exterior against the same calibrated
+ * primary-image evidence. This is deliberately separate from the graph
+ * profile metric: booleans, shells, and compiler changes may alter a solid
+ * after fitting, and only a persisted B-Rep tessellation can expose that.
+ */
+export function compareBrepAxisymmetricContour(preflight, evidence, primaryImageId = null) {
+  const measured = evidence?.images?.find((item) => item.ok && item.measurement?.imageId === primaryImageId && item.measurement?.bodySilhouette?.length >= 12)?.measurement;
+  const candidates = (preflight?.diagnostics ?? []).filter((item) => Array.isArray(item.silhouette) && item.silhouette.length >= 12 && Number(item.boundsMm?.z ?? 0) > 0);
+  if (!measured || !candidates.length) return null;
+  // The tallest component is selected by geometry, rather than by its Korean
+  // or English name. For an axisymmetric product this is the only component
+  // whose outer silhouette can be calibrated against the vessel body image.
+  const candidate = [...candidates].sort((left, right) => Number(right.boundsMm?.z ?? 0) - Number(left.boundsMm?.z ?? 0))[0];
+  const samples = candidate.silhouette; const diffs = measured.bodySilhouette.map((item) => Math.abs(interpolate(samples, item.zNorm) - item.radiusNorm));
+  const radiusMm = Number(candidate.boundsMm?.x ?? 0) / 2;
+  const rmsMm = Math.sqrt(diffs.reduce((sum, item) => sum + item ** 2, 0) / diffs.length) * radiusMm;
+  const sorted = [...diffs].sort((left, right) => left - right); const hausdorff95Mm = sorted[Math.floor((sorted.length - 1) * .95)] * radiusMm;
+  const graphArea = measured.bodySilhouette.reduce((sum, item) => sum + interpolate(samples, item.zNorm), 0); const targetArea = measured.bodySilhouette.reduce((sum, item) => sum + item.radiusNorm, 0); const intersection = measured.bodySilhouette.reduce((sum, item) => sum + Math.min(interpolate(samples, item.zNorm), item.radiusNorm), 0); const union = graphArea + targetArea - intersection;
+  return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "occt_brep_tessellation", componentId: candidate.componentId };
 }

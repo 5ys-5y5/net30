@@ -15,7 +15,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
-import { compareAxisymmetricContour, fitAxialAssemblyEnvelope, fitMeasuredClosureAssembly, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { compareAxisymmetricContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitMeasuredClosureAssembly, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
@@ -523,14 +523,15 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
   const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest, imageEvidence);
-  const contour = compareAxisymmetricContour(canonical.graph, imageEvidence, primaryImageId);
+  const graphContour = compareAxisymmetricContour(canonical.graph, imageEvidence, primaryImageId);
+  const contour = compareBrepAxisymmetricContour(brepPreflight, imageEvidence, primaryImageId) ?? graphContour;
   const preflightBrep = brepPreflight ? {
     valid: brepPreflight.diagnostics.every((item) => item.valid),
     closed: brepPreflight.diagnostics.every((item) => item.closed),
     solidCount: Math.max(...brepPreflight.diagnostics.map((item) => item.solidCount ?? Infinity)),
   } : null;
   const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {

@@ -21,6 +21,7 @@ try {
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   const report = JSON.parse(await fs.readFile(`${stem}.validation.json`, "utf8"));
   assert.equal(report.valid, true); assert.equal(report.closed, true); assert.ok(report.volumeMm3 > 0); assert.ok(report.boundsMm.z > 90);
+  assert.ok(report.silhouette?.length >= 12, "the persisted OCCT tessellation must expose an exterior contour for image-evidence verification");
   for (const suffix of ["step", "brep", "stl"]) assert.ok((await fs.stat(`${stem}.${suffix}`)).size > 100);
   const curvedGraph = structuredClone(canonical.graph);
   const curvedNode = curvedGraph.nodes.find((node) => node.componentId === component.id && node.parameters.profile?.length >= 4);

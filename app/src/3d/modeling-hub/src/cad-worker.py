@@ -3,7 +3,7 @@
 Only this static interpreter creates product solids. Blender consumes its
 tessellation and never re-interprets model-authored geometry instructions.
 """
-import json, math, pathlib, sys, time
+import json, math, pathlib, struct, sys, time
 
 try:
     import cadquery as cq
@@ -592,6 +592,35 @@ def compile_graph(graph_component, graph_nodes):
     return shape
 
 
+def stl_axisymmetric_contour(stl, bins=64):
+    """Return a bounded exterior contour from OCCT's emitted STL.
+
+    This is a verification measurement only. The B-Rep and STEP stay the
+    manufacturing source; sampling its display tessellation lets the quality
+    gate detect divergence caused by a compiler operation after graph fitting.
+    """
+    raw = stl.read_bytes()
+    if len(raw) < 84: return None
+    count = struct.unpack_from("<I", raw, 80)[0]
+    if 84 + count * 50 > len(raw): return None
+    points = []
+    for index in range(count):
+        offset = 84 + index * 50 + 12
+        for delta in (0, 12, 24):
+            x, y, z = struct.unpack_from("<fff", raw, offset + delta)
+            points.append((math.hypot(x, y), z))
+    if not points: return None
+    z_min = min(point[1] for point in points); z_max = max(point[1] for point in points)
+    if z_max <= z_min: return None
+    maxima = [0.0] * bins
+    for radius, z in points:
+        index = max(0, min(bins - 1, round((z - z_min) / (z_max - z_min) * (bins - 1))))
+        maxima[index] = max(maxima[index], radius)
+    max_radius = max(maxima)
+    if max_radius <= 1e-9: return None
+    return [{"zNorm": index / max(1, bins - 1), "radiusNorm": radius / max_radius} for index, radius in enumerate(maxima) if radius > 1e-8 or index in (0, bins - 1)]
+
+
 def main():
     started = time.perf_counter(); request = json.loads(pathlib.Path(sys.argv[1]).read_text())
     graph_component, graph_nodes = request.get("graphComponent"), request.get("graphNodes", [])
@@ -612,7 +641,7 @@ def main():
     tolerance = float(request.get("tessellation", {}).get("chordMm", .05)); angular = math.radians(float(request.get("tessellation", {}).get("angularDeg", 7)))
     print("CAD_PHASE=tessellate", flush=True); cq.exporters.export(shape, str(stl), tolerance=tolerance, angularTolerance=angular)
     shells = persisted.Shells(); closed = bool(shells) and all(item.Closed() for item in shells)
-    box = persisted.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
+    box = persisted.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
     report.write_text(json.dumps(payload, indent=2) + "\n")
     if not closed or payload["solidCount"] != 1:
         raise RuntimeError(f"brep_preflight_failed: closed={closed}, solidCount={payload['solidCount']}")
