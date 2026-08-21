@@ -34,6 +34,7 @@ export const ARCHITECTURE = Object.freeze({
     "inlineAssetEditor",
     "destructiveActionGate",
     "assetEmptyState",
+    "modelingWorkspaceIntro",
     "workflowStepper",
     "proposalCard",
     "parameterEditor",

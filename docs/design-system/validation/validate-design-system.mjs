@@ -67,8 +67,11 @@ export async function validateDesignSystem(root = repositoryRoot) {
   if (/<Surface\s+className=\{CLASS\.modelingLibrary\}/.test(storefront)) {
     failures.push("Storefront.tsx must not wrap OpenAI and library sections in ds-surface ds-modeling-library");
   }
-  if (!/<SectionHeading\s+\{\.\.\.modelingSection\}\s*\/>/.test(storefront) || !/<SectionHeading\s+\{\.\.\.assetLibrarySection\}\s+aside=\{sectionPreview\}\s*\/>/.test(storefront)) {
-    failures.push("Storefront.tsx must render independent OpenAI and product asset library section headings");
+  if (!/<ModelingWorkspaceIntro><Label>OPENAI × BLENDER<\/Label>/.test(storefront) || !/<ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY<\/Label>/.test(storefront)) {
+    failures.push("Storefront.tsx must integrate OpenAI and product asset library identities inside their workspaces");
+  }
+  if (/<SectionHeading\s+\{\.\.\.(?:modelingSection|assetLibrarySection)\}/.test(storefront)) {
+    failures.push("Storefront.tsx must not create page-level section headers around modeling workspaces");
   }
   if (!/@media\(min-width:720px\)\{\.ds-asset-library-grid\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}\}/.test(system) || !/@media\(min-width:1120px\)\{\.ds-asset-library-grid\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)\}\}/.test(system)) {
     failures.push("system.css must define the centralized 1/2/3-column asset library card grid");

@@ -229,6 +229,11 @@ export function AssetEmptyState({ className = "", ...props }: HTMLAttributes<HTM
   return <Surface className={joinClasses(CLASS.assetEmptyState, className)} {...props} />;
 }
 
+/** Keeps a modeling workspace's identity inside the workspace instead of creating a second page-level header. */
+export function ModelingWorkspaceIntro({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.modelingWorkspaceIntro, className)} {...props} />;
+}
+
 export function WorkflowStepper({ children }: { children: ReactNode }) { return <div className={CLASS.workflowStepper}>{children}</div>; }
 export function ProposalCard({ children }: { children: ReactNode }) { return <Surface className={CLASS.proposalCard}>{children}</Surface>; }
 export function ParameterEditor({ children }: { children: ReactNode }) { return <div className={CLASS.parameterEditor}>{children}</div>; }

@@ -33,6 +33,7 @@ import {
   InlineAssetEditor,
   DestructiveActionGate,
   AssetEmptyState,
+  ModelingWorkspaceIntro,
   Metric,
   Panel,
   PanelBody,
@@ -1014,26 +1015,11 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const sectionPreview = draft ? <Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt) => void applySketchFeedback(iteration, feedbackPrompt)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom>
     : libraryPreviewModel ? <ModelPreviewFrame className={CLASS.modelingLibraryPreview} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
       : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{libraryPreviewPending ? studio.assetLibrary.previewPendingMessage : activeParentModelId ? studio.assetLibrary.previewIdleMessage : "부모 모델을 선택하면 조립 3D 미리보기가 여기에 표시됩니다."}</Copy></Atom>;
-  const modelingSection = editTarget ? {
-    label: "OPENAI × BLENDER",
-    title: [editTarget.label],
-    copy: ["저장된 기준 모델과 선택하지 않은 형제 자산은 그대로 유지합니다. 이 작업은 보완 전용입니다."],
-  } : {
-    label: "OPENAI × BLENDER",
-    title: ["새 부모 모델 생성"],
-    copy: ["새 부모 모델과 최초 자녀 모델을 생성합니다. 첫 Blender 결과가 검증되기 전에는 제품 자산 라이브러리에 저장되지 않습니다."],
-  };
-  const assetLibrarySection = {
-    label: "PRODUCT ASSET LIBRARY",
-    title: [studio.assetLibrary.title],
-    copy: [studio.assetLibrary.copy],
-  };
-
   return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
-    <SectionHeading {...modelingSection} />
     <Atom className={CLASS.modelingStudio} data-workspace={hasDecisionWorkspace}>
       <Surface className={CLASS.modelingForm}>
         <form onSubmit={submit}>
+          <ModelingWorkspaceIntro><Label>OPENAI × BLENDER</Label><Atom as="h2">{editTarget ? editTarget.label : "새 부모 모델 생성"}</Atom><Copy>{editTarget ? "저장된 기준 모델과 선택하지 않은 형제 자산은 그대로 유지합니다. 이 작업은 보완 전용입니다." : "새 부모 모델과 최초 자녀 모델을 생성합니다. 첫 Blender 결과가 검증되기 전에는 제품 자산 라이브러리에 저장되지 않습니다."}</Copy></ModelingWorkspaceIntro>
           {editTarget ? <AssetEditContext><Label>수정 대상</Label><Copy>{editTarget.label} · 기준 부모 리비전 {editTarget.baseRootRevisionId}</Copy><ActionButton className={CLASS.modelingAction} onClick={() => { setEditTarget(null); setDraft(null); setPreviewModel(""); }}>보완 취소</ActionButton></AssetEditContext> : null}
           <Atom className={CLASS.modelingFields}>
             {models.length > 0 && selectField(studio.fields.model, model, setModel, models)}
@@ -1080,8 +1066,9 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <BuildGate><Copy>{draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
       </ReviewWorkspace> : null}
     </Atom>
-    <SectionHeading {...assetLibrarySection} aside={sectionPreview} />
     <Atom className={CLASS.modelingLibraryWorkspace}>
+      <ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY</Label><Atom as="h2">{studio.assetLibrary.title}</Atom><Copy>{studio.assetLibrary.copy}</Copy></ModelingWorkspaceIntro>
+      {sectionPreview}
       <AssetLibraryGrid aria-label="제품 모델과 SKU 연결 카드 목록">
         {productModels.length === 0 ? <AssetLibraryCard><AssetEmptyState><Label>저장된 부모 모델이 없습니다.</Label><Copy>새 부모 모델의 첫 Blender 결과가 검증되면 이 목록에 추가됩니다.</Copy></AssetEmptyState></AssetLibraryCard> : productModels.map((productModel) => <AssetLibraryCard key={productModel.id} selected={productModel.id === activeParentModelId}>
           <SelectionCardControl aria-pressed={productModel.id === activeParentModelId} onClick={() => setActiveParentModelId(productModel.id)}>

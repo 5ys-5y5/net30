@@ -17,6 +17,7 @@
 .ds-modeling-workspace-meta{display:grid;gap:8px}
 .ds-modeling-workspace-name{display:block;margin-top:10px;font-size:clamp(26px,3.4vw,48px);line-height:1;letter-spacing:-.05em;font-weight:600}
 .ds-modeling-workspace>p{margin:0;color:var(--ds-muted);font:500 11px/1.65 var(--ds-font-mono)}
+.ds-modeling-workspace-intro{display:grid;gap:8px}.ds-modeling-workspace-intro h2{margin:0;font:600 clamp(24px,3vw,42px)/1 var(--ds-font-sans);letter-spacing:-.05em}.ds-modeling-workspace-intro p{margin:0;max-width:640px;color:var(--ds-muted);font:500 11px/1.65 var(--ds-font-mono)}
 .ds-modeling-studio{display:grid;grid-template-columns:minmax(340px,480px) minmax(0,1fr);gap:24px;align-items:start;order:-1}
 .ds-modeling-form,.ds-modeling-preview{padding:24px}
 .ds-modeling-form form{display:grid;gap:18px}
