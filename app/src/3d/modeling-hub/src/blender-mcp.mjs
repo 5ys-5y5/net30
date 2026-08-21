@@ -122,8 +122,13 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, dimensions, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed), solidCount: Math.max(...Object.values(cad.validation).map((item) => item.solidCount ?? Infinity)) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
   await dossier.writeSnapshot("validation/quality-gates.json", qualityReport);
   dossier.record("quality.gates", qualityReport);
-  const dossierManifest = await dossier.finalize({ status: cad.manufacturingStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers, qualityReport });
-  const result = { summary: `${payload.components.join(", ")} 컴포넌트를 동일 B-Rep 정본에서 생성했습니다.`, status: cad.manufacturingStatus === "manufacturing_review_required" ? "review_required" : "complete", manufacturingStatus: cad.manufacturingStatus, jobId, assetPath: `/api/modeling/jobs/${jobId}/artifacts/render/assembly.glb`, artifact: { assemblyGlb: `/api/modeling/jobs/${jobId}/artifacts/render/assembly.glb`, components, dossier: `/api/modeling/jobs/${jobId}/artifacts/MODELING-DOSSIER.md`, report: `/api/modeling/jobs/${jobId}/artifacts/manifest.json` }, exportPaths: { assemblyGlb, componentDir, cadDir }, cad, dossier: dossierManifest, log: log.trim().slice(-4000) };
+  // A syntactically valid GLB is not a successful product model. Keep it as a
+  // review artifact when any measured B-Rep/STEP/evidence gate fails or is
+  // blocked; only a fully passing dossier may be surfaced as complete.
+  const qualityBlocked = qualityReport.gates.some((gate) => gate.state === "fail" || gate.state === "blocked");
+  const resultStatus = cad.manufacturingStatus === "manufacturing_review_required" || qualityBlocked ? "review_required" : "complete";
+  const dossierManifest = await dossier.finalize({ status: resultStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers, qualityReport });
+  const result = { summary: `${payload.components.join(", ")} 컴포넌트를 동일 B-Rep 정본에서 생성했습니다.`, status: resultStatus, manufacturingStatus: cad.manufacturingStatus, jobId, assetPath: `/api/modeling/jobs/${jobId}/artifacts/render/assembly.glb`, artifact: { assemblyGlb: `/api/modeling/jobs/${jobId}/artifacts/render/assembly.glb`, components, dossier: `/api/modeling/jobs/${jobId}/artifacts/MODELING-DOSSIER.md`, report: `/api/modeling/jobs/${jobId}/artifacts/manifest.json` }, exportPaths: { assemblyGlb, componentDir, cadDir }, cad, dossier: dossierManifest, log: log.trim().slice(-4000) };
   await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`); return result;
 }
 
