@@ -19,6 +19,24 @@ const curveSegment = z.union([
   z.object({ kind: z.literal("bezier"), points: z.array(curvePoint).length(4), periodic: z.boolean() }).strict(),
   z.object({ kind: z.literal("nurbs"), poles: z.array(curvePoint).min(2).max(64), degree: z.number().int().min(1).max(5), weights: z.array(z.number().positive()).min(2).max(64), knots: z.array(z.number()).min(2).max(96), multiplicities: z.array(z.number().int().min(1).max(6)).min(2).max(96), periodic: z.boolean() }).strict(),
 ]);
+
+// OCCT consumes `curveSegments` directly, including exact rational NURBS.
+// The graph validator also needs a conservative ordered radial envelope for
+// topology checks before a worker is spawned.  Do not flatten or replace the
+// declared curve: derive only its anchors (and NURBS poles) as compatibility
+// profile evidence.  Exact validity remains the subsequent OCCT B-Rep gate.
+function curveSegmentAnchors(segments) {
+  const points = [];
+  for (const segment of segments ?? []) {
+    const source = segment?.kind === "nurbs" ? segment.poles : segment?.points;
+    for (const point of source ?? []) {
+      const next = { xMm: Number(point?.xMm ?? 0), yMm: Number(point?.yMm ?? 0), zMm: Number(point?.zMm ?? 0) };
+      const previous = points.at(-1);
+      if (!previous || Math.abs(previous.xMm - next.xMm) > 1e-9 || Math.abs(previous.yMm - next.yMm) > 1e-9 || Math.abs(previous.zMm - next.zMm) > 1e-9) points.push(next);
+    }
+  }
+  return points.length >= 2 ? points : null;
+}
 const material = z.object({ name: z.string().min(1).max(120), baseColor: color, roughness: z.number().min(0).max(1), metallic: z.number().min(0).max(1), transmission: z.number().min(0).max(1), ior: z.number().min(1).max(3), opacity: z.number().min(0).max(1) }).strict();
 
 export const FEATURE_OPERATIONS = Object.freeze([
@@ -204,6 +222,23 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       if (feature.parameters.profile?.length) return feature;
       const source = feature.inputKeys.map((key) => byKey.get(key)).find((candidate) => candidate?.operation === "profile" && candidate.parameters.profile?.length);
       return source ? { ...feature, inputKeys: feature.inputKeys.filter((key) => key !== source.key), parameters: { ...feature.parameters, profile: source.parameters.profile } } : feature;
+    });
+    features = features.map((feature) => {
+      if (feature.parameters.profile?.length || !feature.parameters.curveSegments?.length) return feature;
+      const profile = curveSegmentAnchors(feature.parameters.curveSegments);
+      return profile ? { ...feature, parameters: { ...feature.parameters, profile } } : feature;
+    });
+    features = features.map((feature) => {
+      const params = feature.parameters;
+      if (![("surface_decal"), ("surface_artwork")].includes(feature.operation) || params.transform || !params.artworkCrop || !params.dimensionsMm) return feature;
+      // A photograph crop supplies a measurable vertical datum even when the
+      // planner omits an otherwise required local placement transform.  This
+      // is not a fabricated decoration: retain the crop, host and physical
+      // dimensions, map its centre into the declared product height, and let
+      // the image-evidence artwork fitter refine it before review.
+      const cropCentreY = params.artworkCrop.y + params.artworkCrop.height / 2;
+      const zMm = Math.max(0, Math.min(parsed.product.heightMm, (1 - cropCentreY) * parsed.product.heightMm));
+      return { ...feature, parameters: { ...params, transform: { translationMm: { x: 0, y: 0, z: zMm }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } }, rationale: `${feature.rationale} (이미지 crop 중심으로 부착 높이를 측정해 파생함)` };
     });
     features = features.map((feature) => {
       // A revolve is described by a radial XZ generating curve.  An extrude
