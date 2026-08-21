@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -85,6 +86,27 @@ function assemblyPoint(point, transform = {}) {
   return { x: rotated.x + Number(translation.x ?? 0), y: rotated.y + Number(translation.y ?? 0), z: rotated.z + Number(translation.z ?? 0) };
 }
 
+function componentGraphFingerprint(graph, component) {
+  // A preflight process receives only this component's reachable feature
+  // graph.  Key the disposable B-Rep result by that same closure plus the
+  // assembly transform/material that affect review projections.  This lets a
+  // constrained body-curve fit reuse unchanged cap/ring evidence without
+  // ever reusing a B-Rep after one of its own inputs changed.
+  const nodesById = new Map((graph.nodes ?? []).map((node) => [node.id, node]));
+  const reachable = new Set(); const pending = [...(component.rootNodeIds ?? [])];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reachable.has(id)) continue;
+    reachable.add(id);
+    for (const input of nodesById.get(id)?.inputNodeIds ?? []) pending.push(input);
+  }
+  const payload = {
+    component,
+    nodes: [...reachable].sort().map((id) => nodesById.get(id)),
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
 function binaryStlTriangles(bytes, maxTriangles = 700) {
   // OCCT writes binary STL. This sampled display mesh is only a review
   // projection; no manufacturing geometry is reconstructed from it.
@@ -117,8 +139,19 @@ function binaryStlAxisymmetricContour(bytes, bins = 64) {
   // no vertex. Intersect every tessellation triangle with each axial section
   // instead, so the gate measures the compiled B-Rep exterior rather than
   // an accidental vertex distribution.
+  const span = zMax - zMin;
+  // A closed B-Rep commonly has a pole on the axis at the exact first/last
+  // STL ordinate (for example a revolved bottle's centre closure).  Sampling
+  // that one topological vertex reports a false radius of zero even when the
+  // adjacent manufactured face is a wide, planar cap or base.  Measure the
+  // two boundary sections infinitesimally *inside* the solid instead.  The
+  // offset is tied to the sampled section spacing, not a product name or a
+  // mesh heuristic; pointed cones remain close to zero at the same offset.
+  const boundaryInset = Math.min(span * .005, Math.max(span / Math.max(1, bins - 1) * .5, 1e-4));
   const maxima = Array.from({ length: bins }, (_, index) => {
-    const z = zMin + (zMax - zMin) * index / Math.max(1, bins - 1); let radius = 0;
+    const nominalZ = zMin + span * index / Math.max(1, bins - 1);
+    const z = index === 0 ? Math.min(zMax, nominalZ + boundaryInset) : index === bins - 1 ? Math.max(zMin, nominalZ - boundaryInset) : nominalZ;
+    let radius = 0;
     for (const triangle of triangles) {
       for (const [start, end] of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
         const low = Math.min(start.z, end.z), high = Math.max(start.z, end.z);
@@ -176,7 +209,7 @@ function brepSketchPlan(graph, meshSources, { width = 1000, height = 680, title 
  * used by the final export, so JSON topology cannot be treated as a proxy for
  * a closed, connected manufacturing solid.
  */
-export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 2, preview = null } = {}) {
+export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 2, preview = null, cache = null } = {}) {
   const components = graph.components.filter((component) => component.representation === "brep_solid");
   if (!components.length) return { ok: true, diagnostics: [] };
   const temporary = await mkdtemp(path.join(os.tmpdir(), "net30-brep-preflight-"));
@@ -185,6 +218,20 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
     let nextIndex = 0;
     const inspect = async (index) => {
       const component = components[index];
+      const fingerprint = componentGraphFingerprint(graph, component);
+      const cached = cache?.get(fingerprint);
+      if (cached) {
+        const cachedDiagnostic = structuredClone(cached.diagnostic);
+        cachedDiagnostic.execution = {
+          ...cachedDiagnostic.execution,
+          cacheHit: true,
+          elapsedMs: 0,
+          stdout: "B-Rep preflight cache hit",
+        };
+        diagnostics[index] = cachedDiagnostic;
+        if (preview && cached.triangles) meshSources.set(component.id, structuredClone(cached.triangles));
+        return;
+      }
       const stem = path.join(temporary, component.id);
       const requestPath = `${stem}.request.json`;
       const reportPath = `${stem}.validation.json`;
@@ -206,6 +253,12 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
       }
       if (preview && execution.ok && diagnostics[index].code === "ok") {
         try { meshSources.set(component.id, binaryStlTriangles(stl ?? await readFile(`${stem}.stl`), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
+      }
+      if (cache && diagnostics[index].code === "ok") {
+        cache.set(fingerprint, {
+          diagnostic: structuredClone(diagnostics[index]),
+          triangles: preview ? structuredClone(meshSources.get(component.id) ?? []) : null,
+        });
       }
     };
     // OCCT performs substantial native work per child (B-Rep validation,

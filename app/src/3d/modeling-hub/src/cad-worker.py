@@ -589,13 +589,23 @@ def feature_depends_on(node_id, ancestor_id, nodes_by_id, seen=None):
 
 def compile_graph(graph_component, graph_nodes):
     results = {}
-    nodes_by_id = {node["id"]: node for node in graph_nodes}
+    # A child B-Rep is intentionally component-local. Preflight/export used
+    # to iterate every node in the parent graph even when asked to validate a
+    # single child, so a temporary cap/ring candidate could fail the bottle's
+    # check and each worker repeated the whole assembly's CAD work. Assembly
+    # transforms and mates are applied later in XDE; no cross-component shape
+    # input belongs in this local compiler closure.
+    component_id = graph_component.get("id")
+    component_nodes = [node for node in graph_nodes if node.get("componentId") == component_id]
+    if not component_nodes:
+        raise RuntimeError(f"graph_invalid: component {component_id} has no local feature nodes")
+    nodes_by_id = {node["id"]: node for node in component_nodes}
     pattern_count_by_seed = {}
-    for node in graph_nodes:
+    for node in component_nodes:
         if node.get("operation") == "pattern":
             for source in node.get("inputNodeIds", []):
                 pattern_count_by_seed[source] = node.get("parameters", {}).get("count")
-    for node in graph_nodes:
+    for node in component_nodes:
         op, params = node["operation"], node.get("parameters") or {}; inputs = [copy_workplane(results[item]) for item in node.get("inputNodeIds", []) if item in results]
         if op == "revolve": shape = revolve(params)
         elif op == "loft": shape = loft(params)
@@ -673,11 +683,32 @@ def compile_graph(graph_component, graph_nodes):
             surface_radius = radial_extent_at_z(base_node_id, z_center, nodes_by_id)
             radial_datum = float(translation.get("x") or 0)
             radius = float(params["radiusMm"]) if params.get("radiusMm") is not None else radial_datum if abs(radial_datum) > 1e-8 else surface_radius if surface_radius is not None else max(abs(base_box.xmin), abs(base_box.xmax), abs(base_box.ymin), abs(base_box.ymax))
-            # The rib deliberately penetrates the approved exterior by 35% of
-            # its radial depth.  A merely tangent box becomes a separate B-Rep
-            # compound; this overlap makes the Boolean fuse deterministic while
-            # retaining the explicit protrusion requested by the graph.
-            rib = cq.Workplane("XY").box(depth, width, height).translate((radius + depth * .15, 0, z_center))
+            # A rib is not a vertical box placed at one radius.  On a tapered
+            # cap or housing that approximation projects through the surface
+            # near one end and erases the measured silhouette.  Build one
+            # exact planar radial section from the host's declared B-Rep
+            # profile, then extrude that section tangentially and pattern it.
+            # The section follows only the approved host surface; it never
+            # derives a replacement primitive from a component name.
+            z_start = z_center - height / 2
+            sample_count = max(2, min(24, int(math.ceil(height / 1.5)) + 1))
+            sample_z = [z_start + height * index / (sample_count - 1) for index in range(sample_count)]
+            host_radii = [radial_extent_at_z(base_node_id, z_value, nodes_by_id) for z_value in sample_z]
+            if any(item is None or not math.isfinite(item) or item <= 0 for item in host_radii):
+                raise RuntimeError(f"graph_invalid: rib node {node['id']} leaves its declared host surface")
+            # The explicit 35% overlap is retained so the final OCCT fuse is
+            # one connected solid.  Both sides of the new wire use the same
+            # fitted host radii, preserving the taper as NURBS/analytic faces
+            # in the host rather than creating a stack of mesh-like boxes.
+            inner = [(radius_value - depth * .35, z_value) for radius_value, z_value in zip(host_radii, sample_z)]
+            outer = [(radius_value + depth * .65, z_value) for radius_value, z_value in zip(host_radii, sample_z)]
+            if min(point[0] for point in inner) <= 1e-6:
+                raise RuntimeError(f"graph_invalid: rib node {node['id']} depth exceeds its declared host radius")
+            rib_wire = outer + list(reversed(inner))
+            try:
+                rib = cq.Workplane("XZ").polyline(rib_wire).close().extrude(width / 2, both=True)
+            except Exception as error:
+                raise RuntimeError(f"graph_invalid: rib node {node['id']} cannot form a host-following section") from error
             # A following Pattern node owns the radial repetition.  Returning
             # only the seed here prevents the base cylinder from being copied
             # once per rib, which previously made cap root fusion void.
@@ -750,9 +781,17 @@ def stl_axisymmetric_contour(stl, bins=64):
         for _, _, z in triangle:
             z_min, z_max = min(z_min, z), max(z_max, z)
     if not triangles or z_max <= z_min: return None
+    # A closed revolution can meet the axis at the exact boundary ordinate.
+    # Sample the first/last section just inside the persisted B-Rep so the
+    # dossier's exterior contour measures its adjacent face rather than that
+    # singular topological pole.  This mirrors the JavaScript preflight path.
+    span = z_max - z_min
+    boundary_inset = min(span * .005, max(span / max(1, bins - 1) * .5, 1e-4))
     maxima = []
     for index in range(bins):
-        z = z_min + (z_max - z_min) * index / max(1, bins - 1); radius = 0.0
+        nominal_z = z_min + span * index / max(1, bins - 1)
+        z = min(z_max, nominal_z + boundary_inset) if index == 0 else max(z_min, nominal_z - boundary_inset) if index == bins - 1 else nominal_z
+        radius = 0.0
         for triangle in triangles:
             for start, end in ((triangle[0], triangle[1]), (triangle[1], triangle[2]), (triangle[2], triangle[0])):
                 low, high = min(start[2], end[2]), max(start[2], end[2])

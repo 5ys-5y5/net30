@@ -11,7 +11,7 @@
     "dev": "node src/server.mjs",
     "start": "node src/server.mjs",
     "check": "node --check src/server.mjs && node --check src/modeling-agent.mjs && node --check src/modeling-spec.mjs && node --check src/modeling-graph-v3.mjs && node --check src/image-evidence.mjs && node --check src/storage.mjs && node --check src/blender-mcp.mjs && node --check src/version-store.mjs && node --check src/model-store.mjs && node --check src/sku-registry.mjs",
-    "test": "node src/modeling-spec.test.mjs && node src/modeling-graph-v3.test.mjs && node src/image-evidence.test.mjs && node src/model-store.test.mjs && node src/cad-worker.test.mjs && node src/server-lifecycle.test.mjs"
+    "test": "node src/modeling-spec.test.mjs && node src/modeling-graph-v3.test.mjs && node src/image-evidence.test.mjs && node src/model-store.test.mjs && node src/cad-worker.test.mjs && node src/modeling-dossier.test.mjs && node src/server-lifecycle.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1114.0",

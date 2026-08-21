@@ -23,6 +23,7 @@ try {
   assert.equal(report.valid, true); assert.equal(report.closed, true); assert.ok(report.volumeMm3 > 0); assert.ok(report.boundsMm.z > 90);
   assert.equal(typeof report.stepRoundTrip?.withinTolerance, "boolean", "every canonical B-Rep must publish a component STEP round-trip verdict for the manufacturing gate");
   assert.ok(report.silhouette?.length >= 12, "the persisted OCCT tessellation must expose an exterior contour for image-evidence verification");
+  assert.ok(report.silhouette[0].radiusNorm > .1 && report.silhouette.at(-1).radiusNorm > .1, "a closed revolved solid must measure its adjacent exterior at the first and last contour sections instead of collapsing both boundary poles to zero");
   for (const suffix of ["step", "brep", "stl"]) assert.ok((await fs.stat(`${stem}.${suffix}`)).size > 100);
   const curvedGraph = structuredClone(canonical.graph);
   const curvedNode = curvedGraph.nodes.find((node) => node.componentId === component.id && node.parameters.profile?.length >= 4);
@@ -164,7 +165,7 @@ try {
   const roofedOutput = fixtureGraphOutput({ product: { name: "roofed closure proof" }, prompt: "tapered ribbed closure", requestedComponents: ["마개"], imageIds: [] });
   const roofBase = roofedOutput.components[0].features[0];
   roofBase.key = "roof-base"; roofBase.operation = "revolve"; roofBase.inputKeys = [];
-  roofBase.parameters = { ...roofBase.parameters, primitive: null, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 25, yMm: 0, zMm: 0 }, { xMm: 25, yMm: 0, zMm: 2 }, { xMm: 22, yMm: 0, zMm: 2 }, { xMm: 22, yMm: 0, zMm: 20 }, { xMm: 0, yMm: 0, zMm: 22 }, { xMm: 0, yMm: 0, zMm: 0 }], dimensionsMm: null, radiusMm: null, heightMm: null, thicknessMm: null, count: null, spacingMm: null, depthMm: null };
+  roofBase.parameters = { ...roofBase.parameters, primitive: null, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 25, yMm: 0, zMm: 0 }, { xMm: 25, yMm: 0, zMm: 2 }, { xMm: 22, yMm: 0, zMm: 2 }, { xMm: 18, yMm: 0, zMm: 20 }, { xMm: 0, yMm: 0, zMm: 22 }, { xMm: 0, yMm: 0, zMm: 0 }], dimensionsMm: null, radiusMm: null, heightMm: null, thicknessMm: null, count: null, spacingMm: null, depthMm: null };
   const roofShell = { ...structuredClone(roofBase), key: "roof-shell", operation: "shell", inputKeys: [roofBase.key], parameters: { ...roofBase.parameters, profile: null, thicknessMm: 2, cavityOpenAt: "bottom" } };
   const roofRib = { ...structuredClone(roofBase), key: "roof-rib", operation: "rib", inputKeys: [roofShell.key], parameters: { ...roofBase.parameters, profile: null, heightMm: 15, thicknessMm: null, spacingMm: 1.2, depthMm: 1.4, count: null, transform: { translationMm: { x: 0, y: 0, z: 3 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
   const roofPattern = { ...structuredClone(roofBase), key: "roof-rib-pattern", operation: "pattern", inputKeys: [roofShell.key, roofRib.key], parameters: { ...roofBase.parameters, profile: null, heightMm: null, count: 36, spacingMm: null, depthMm: null, thicknessMm: null } };
@@ -175,6 +176,16 @@ try {
   assert.equal(roofRun.status, 0, `${roofRun.stdout}\n${roofRun.stderr}`);
   const roofReport = JSON.parse(await fs.readFile(`${roofStem}.validation.json`, "utf8"));
   assert.equal(roofReport.solidCount, 1, "a roofed shell with surface-following ribs must remain one B-Rep solid");
+  assert.ok(roofReport.silhouette[48].radiusNorm < roofReport.silhouette[16].radiusNorm * .96, `a rib on a tapered host must follow the host radius toward the roof instead of remaining a vertical constant-radius box (lower=${roofReport.silhouette[16].radiusNorm}, upper=${roofReport.silhouette[48].radiusNorm})`);
+  // A component-local worker must not compile an unrelated broken graph node.
+  // Parent XDE assembly is responsible for placing child B-Reps; a preflight
+  // of child A is not a covert full-assembly compile.
+  const isolatedRequest = path.join(temporary, "isolated.request.json");
+  const isolatedPayload = JSON.parse(await fs.readFile(roofRequest, "utf8"));
+  isolatedPayload.graphNodes.push({ id: "unrelated-invalid", componentId: "other-component", operation: "boolean", inputNodeIds: [], parameters: { operation: "cut" } });
+  await fs.writeFile(isolatedRequest, JSON.stringify(isolatedPayload));
+  const isolatedRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), isolatedRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(isolatedRun.status, 0, "a component-local B-Rep compile must ignore invalid features owned by another component");
   const assemblyRequest = path.join(temporary, "assembly.request.json"); const assemblyPaths = { xbf: path.join(temporary, "assembly.xbf"), step: path.join(temporary, "assembly.step"), report: path.join(temporary, "assembly.validation.json") };
   await fs.writeFile(assemblyRequest, JSON.stringify({ name: "DURAN proof", components: [{ id: component.id, brep: `${stem}.brep` }], paths: assemblyPaths, toleranceMm: .01 }));
   const assemblyRun = spawnSync(python, [path.join(here, "cad-assembly-worker.py"), assemblyRequest], { encoding: "utf8", timeout: 120000 });

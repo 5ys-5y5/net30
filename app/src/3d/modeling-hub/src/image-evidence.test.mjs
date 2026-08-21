@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { alignArtworkCropToPhysicalPlacement, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, fitApprovedRadialAssemblyDatum, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -19,10 +19,14 @@ assert.equal(evidence.images.filter((item) => item.ok).length, 3, "all fixed fix
 const primarySilhouette = evidence.images.find((item) => item.ok && item.measurement?.filename === "Duran laboratory bottles 100.jpg")?.measurement?.silhouette ?? [];
 assert.ok(primarySilhouette.length >= 12, "the primary product image must expose a usable assembly silhouette");
 assert.equal(evidence.images[0].measurement.bounds.topY, evidence.images[0].measurement.cap.contourTopY, "a detected wide coloured closure must define the product top instead of a stray sub-cap pixel");
+assert.ok(evidence.images[0].measurement.bounds.rawBottomY > evidence.images[0].measurement.bounds.bottomY, "a one-row anti-aliased terminal shadow must not become a manufacturing silhouette datum");
+assert.ok(primarySilhouette.at(-1)?.radiusNorm >= .75, "the primary silhouette must retain the continuous bottle base instead of an isolated terminal pixel");
 assert.ok(evidence.images[0].measurement.cap.silhouette[0]?.radiusNorm >= .5, "the measured cap contour must begin with a substantial closure width");
 assert.ok(evidence.images[0].measurement.cap.bottomY < evidence.images[0].measurement.bounds.bottomY, "primary image must isolate a cap boundary from the bottle");
 assert.ok(evidence.images[0].measurement.cap.outerDiameterRatio > .8, "primary image must expose a measured cap envelope separately from the bottle contour");
 assert.ok(evidence.images[0].measurement.cap.silhouette.length >= 12, "primary image must expose a separate closure outline for the revolved B-Rep");
+assert.equal(evidence.images[0].measurement.cap.silhouetteSource, "foreground_product_contour_with_blue_band_crop", "closure geometry must use the measured foreground outline after the blue band identifies its scope");
+assert.ok(evidence.images[0].measurement.cap.blueSilhouette.length >= 12, "blue-only closure samples must remain available as colour/repeat evidence rather than being mistaken for the exterior curve");
 
 const analysis = await analyseDraft({
   model: "fixture", product: { source: "new", name: "DURAN GL45 100 mL 실험용 병" },
@@ -61,6 +65,18 @@ assert.ok(fittedCurveSegments.length > 0, "the source feature must keep its decl
 const fittedCurveX = fittedCurveSegments.flatMap((segment) => segment.poles ?? segment.points ?? []).map((point) => point.xMm);
 assert.equal(Math.max(...fittedCurveX), 25, "radial fitting must update the NURBS/B\u00e9zier data OCCT actually compiles");
 
+// A measurement fit may deliberately make a coloured closure narrower than
+// the assembly datum. The contract remains authoritative for the finished
+// assembly: it must reassert the same radial B-Rep parameters rather than
+// hiding the discrepancy in a viewer transform.
+const datumGraph = structuredClone(radialGraph);
+datumGraph.nodes[0].parameters.profile.forEach((point) => { point.xMm *= .9; });
+datumGraph.nodes[0].parameters.curveSegments[0].poles.forEach((point) => { point.xMm *= .9; });
+const datumFit = fitApprovedRadialAssemblyDatum(datumGraph, { widthMm: 50, depthMm: 50 });
+assert.equal(datumFit.applied, true, "an approved radial datum must restore an undersized centred B-Rep assembly after curve fitting");
+assert.equal(Math.max(...datumFit.graph.nodes[0].parameters.profile.map((point) => point.xMm)), 25, "the approved datum must update the manufacturing curve itself");
+assert.equal(Math.max(...datumFit.graph.nodes[0].parameters.curveSegments[0].poles.map((point) => point.xMm)), 25, "the approved datum must keep the declared OCCT NURBS/B\u00e9zier curve in sync");
+
 const ribbedOutput = fixtureGraphOutput({ product: { name: "ribbed closure" }, prompt: "closure", requestedComponents: ["뚜껑"] });
 const ribBase = ribbedOutput.components[0].features[0];
 const ribParameters = { ...structuredClone(ribBase.parameters), primitive: null, profile: null, dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: 20, thicknessMm: null, count: null, spacingMm: 3, depthMm: 1.2, transform: { translationMm: { x: 0, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } };
@@ -74,6 +90,8 @@ const capAssemblyFit = fitMeasuredClosureAssembly(ribbedGraph, { widthMm: 56, de
 assert.equal(capAssemblyFit.applied, true, "a cap colour-band measurement must fit a patterned component without matching its display name");
 assert.equal(capAssemblyFit.closureHeightMm, 25);
 assert.equal(capAssemblyFit.adjustments[0]?.role, "patterned_closure_outline", "the outer closure profile must be measured independently from its axial placement");
+const edgeGapCapFit = fitMeasuredClosureAssembly(ribbedGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: .033 + index / 15 * .934, radiusNorm: index < 4 ? .94 : .86 })) } });
+assert.equal(edgeGapCapFit.adjustments[0]?.boundaryExtensions.length, 2, "small segmentation gaps at both cap boundaries must extend the adjacent measured face instead of closing the revolve to a false cone");
 const fittedClosure = capAssemblyFit.graph.components[0];
 assert.ok(fittedClosure.transform.translationMm.z > 0, "measured cap band must place the patterned closure above the component-local body datum");
 const closureProfiles = capAssemblyFit.graph.nodes.filter((node) => node.componentId === fittedClosure.id && Array.isArray(node.parameters?.profile)).flatMap((node) => node.parameters.profile);

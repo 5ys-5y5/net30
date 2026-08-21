@@ -4,6 +4,7 @@ import path from "node:path";
 
 const SECRET_KEY = /(authorization|api[-_]?key|token|secret|password|signed[-_]?url)/i;
 const ABSOLUTE_PATH = /(?:\/Users\/|\/home\/|\/root\/|[A-Za-z]:\\)/g;
+const MARKDOWN_PAYLOAD_LIMIT = 24 * 1024;
 
 export function dossierHash(value) {
   return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
@@ -20,11 +21,43 @@ export function sanitizeDossierValue(value, key = "") {
   return value;
 }
 
+function byteSize(value) {
+  return Buffer.byteLength(JSON.stringify(value));
+}
+
+/** A dossier is an auditable product record, not a second copy of every raw
+ * OpenAI response and graph snapshot. Keep its human-facing Markdown bounded,
+ * while the immutable NDJSON ledger and named JSON snapshots retain the exact
+ * decision data addressed by their hashes. */
+function compactPayload(payload) {
+  const bytes = byteSize(payload);
+  if (bytes <= MARKDOWN_PAYLOAD_LIMIT) return { bytes, value: payload, truncated: false };
+  const arraySummary = (value) => Array.isArray(value) ? { count: value.length, sample: value.slice(0, 8).map((item) => {
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).filter(([key]) => ["id", "name", "requestedName", "componentKey", "componentId", "status", "state", "operation", "path", "graphHash", "responseId", "model"].includes(key)).slice(0, 8));
+    return item;
+  }) } : undefined;
+  const summary = payload && typeof payload === "object" ? {
+    sha256: dossierHash(payload),
+    bytes,
+    keys: Object.keys(payload),
+    graphHash: payload.graphHash ?? payload.approvalHash ?? null,
+    id: payload.id ?? payload.jobId ?? payload.draftId ?? null,
+    status: payload.status ?? payload.state ?? null,
+    components: arraySummary(payload.components),
+    questions: arraySummary(payload.questions),
+    decisions: arraySummary(payload.decisions),
+    iterations: arraySummary(payload.iterations),
+    inference: arraySummary(payload.inference),
+  } : { sha256: dossierHash(payload), bytes, valueType: typeof payload };
+  return { bytes, value: summary, truncated: true };
+}
+
 export class ModelingDossier {
   constructor(root, identity) {
     this.root = root;
     this.identity = identity;
     this.events = [];
+    this.snapshots = [];
     this.previousHash = "0".repeat(64);
   }
 
@@ -43,18 +76,26 @@ export class ModelingDossier {
     const clean = sanitizeDossierValue(value);
     const content = `${JSON.stringify(clean, null, 2)}\n`;
     await fs.writeFile(target, content);
-    this.record("snapshot.written", { relativePath, sha256: dossierHash(content), bytes: Buffer.byteLength(content) });
-    return { relativePath, sha256: dossierHash(content), bytes: Buffer.byteLength(content) };
+    const snapshot = { relativePath, sha256: dossierHash(content), bytes: Buffer.byteLength(content) };
+    this.snapshots.push(snapshot);
+    this.record("snapshot.written", snapshot);
+    return snapshot;
   }
 
   markdown() {
     const rows = this.events.map((event) => `| ${event.index} | ${event.at} | ${event.type} | ${event.hash.slice(0, 12)} |`).join("\n");
     const errors = this.events.filter((event) => /fail|error|blocked/.test(event.type));
-    const details = this.events.map((event) => `### ${event.index}. ${event.type}\n\n- Time: ${event.at}\n- Event hash: \`${event.hash}\`\n- Previous hash: \`${event.previousHash}\`\n\n\`\`\`json\n${JSON.stringify(event.payload, null, 2)}\n\`\`\``).join("\n\n");
+    const snapshots = this.snapshots.map((item) => `- [\`${item.relativePath}\`](./${item.relativePath}) — ${item.bytes.toLocaleString()} bytes · \`${item.sha256}\``).join("\n");
+    const details = this.events.map((event) => {
+      const compact = compactPayload(event.payload);
+      const prefix = `### ${event.index}. ${event.type}\n\n- Time: ${event.at}\n- Event hash: \`${event.hash}\`\n- Previous hash: \`${event.previousHash}\`\n- Payload: ${compact.bytes.toLocaleString()} bytes · \`${dossierHash(event.payload)}\`${compact.truncated ? " · full record: `decisions/events.ndjson`" : ""}`;
+      return `${prefix}\n\n\`\`\`json\n${JSON.stringify(compact.value, null, 2)}\n\`\`\``;
+    }).join("\n\n");
     return `# MODELING DOSSIER\n\n` +
       `- Identity: \`${this.identity}\`\n- Events: ${this.events.length}\n- Ledger head: \`${this.previousHash}\`\n- Generated: ${new Date().toISOString()}\n\n` +
+      `## Evidence, graph, decisions and artifacts\n\n${snapshots || "- No snapshots recorded."}\n\n` +
       `## Event ledger\n\n| # | Time | Event | Hash |\n|---:|---|---|---|\n${rows || "| 0 | - | no events | - |"}\n\n` +
-      `## Failures and manufacturing blockers\n\n${errors.length ? errors.map((event) => `- ${event.type}: ${JSON.stringify(event.payload)}`).join("\n") : "- None recorded."}\n\n` +
+      `## Failures and manufacturing blockers\n\n${errors.length ? errors.map((event) => `- ${event.type}: ${JSON.stringify(compactPayload(event.payload).value)}`).join("\n") : "- None recorded."}\n\n` +
       `## Recorded judgments, evidence and artifacts\n\n${details || "- No detailed records."}\n`;
   }
 

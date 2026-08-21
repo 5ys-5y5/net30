@@ -411,6 +411,24 @@ function fitClosureOutline(graph, componentId, capMeasurement, approvedDimension
   // resolution photograph cannot turn one closure into a multi-minute CAD
   // operation. This is curve compression, not a mesh simplification.
   const compact = samples.length <= 24 ? samples : Array.from({ length: 24 }, (_, index) => samples[Math.round(index * (samples.length - 1) / 23)]);
+  // Foreground segmentation deliberately rejects anti-aliased edge pixels.
+  // That can leave the first/last usable scanline a few percent inside a
+  // physically flat cap face.  Closing the revolve directly from that row to
+  // the axis turns a missing image row into a false cone.  Extend only a
+  // small, bounded gap using the adjacent *measured* radius; a larger gap is
+  // evidence_missing and remains visible to the reviewer rather than being
+  // extrapolated as product geometry.
+  const boundaryExtensions = [];
+  const boundaryGapLimit = .05;
+  if (compact[0].zNorm > 1e-7 && compact[0].zNorm <= boundaryGapLimit) {
+    boundaryExtensions.push({ boundary: "min", fromZNorm: compact[0].zNorm, toZNorm: 0, radiusNorm: compact[0].radiusNorm, source: "segmentation_edge_continuation" });
+    compact.unshift({ ...compact[0], zNorm: 0 });
+  }
+  if (compact.at(-1).zNorm < 1 - 1e-7 && compact.at(-1).zNorm >= 1 - boundaryGapLimit) {
+    const last = compact.at(-1);
+    boundaryExtensions.push({ boundary: "max", fromZNorm: last.zNorm, toZNorm: 1, radiusNorm: last.radiusNorm, source: "segmentation_edge_continuation" });
+    compact.push({ ...last, zNorm: 1 });
+  }
   const outer = compact.map((sample) => ({
     xMm: Number((Math.max(.01, Number(sample.radiusNorm) * targetRadius)).toFixed(6)),
     yMm: 0,
@@ -549,7 +567,7 @@ function fitClosureOutline(graph, componentId, capMeasurement, approvedDimension
       cavityCutAnchors.push({ booleanNodeId: cut.id, cutterNodeId: cutter.id, source: "measured_closure_roof_margin", zStartMm: zStart, previousHeightMm: height, heightMm: cutter.parameters.heightMm, roofMarginMm });
     }
   }
-  return { nodeId: target.id, samples: outer.length, source: "primary_cap_silhouette_measurement", patternSeedAnchors: anchors, cavityCutAnchors };
+  return { nodeId: target.id, samples: outer.length, source: "primary_cap_silhouette_measurement", boundaryExtensions, patternSeedAnchors: anchors, cavityCutAnchors };
 }
 
 function radiusFromProfile(profile, zMm) {
@@ -781,6 +799,51 @@ export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null, prim
     adjustments.push({ componentId: component.id, sourceRadiusMm: envelope, targetRadiusMm: outsideMaximum ? targetRadius : measuredTargetRadius, scale, source: outsideMaximum ? "approved_assembly_envelope" : "primary_cap_measurement" });
   }
   return { graph: next, applied: adjustments.length > 0, adjustments };
+}
+
+/**
+ * Reassert an approved radial assembly datum after a compiled-contour fit.
+ *
+ * A photograph supplies a *shape ratio*, but its foreground mask cannot
+ * supersede an approved external width/depth.  The iterative compiled-contour
+ * fitter changes local curve ordinates to reduce residuals; without a final
+ * datum constraint it can silently shrink an otherwise good assembly below
+ * the user/official dimension.  This function is intentionally limited to a
+ * centred, z-axis B-Rep assembly whose radial envelope is calculable from the
+ * supported feature graph.  It changes the same curve/feature parameters the
+ * OCCT compiler consumes -- never a viewer-only scale -- and leaves off-axis
+ * or non-radial products for an explicit review question.
+ */
+export function fitApprovedRadialAssemblyDatum(graph, approvedDimensions = null) {
+  const targetDiameter = Math.min(Number(approvedDimensions?.widthMm), Number(approvedDimensions?.depthMm));
+  if (!Number.isFinite(targetDiameter) || targetDiameter <= 0) return { graph, applied: false, adjustments: [], reason: "approved_radial_datum_missing" };
+  const targetRadius = targetDiameter / 2;
+  const next = structuredClone(graph);
+  const nodes = new Map(next.nodes.map((node) => [node.id, node]));
+  const radialCandidates = [];
+  for (const component of next.components) {
+    if (component.representation !== "brep_solid") continue;
+    const translation = component.transform?.translationMm ?? {};
+    const rotation = component.transform?.rotationDeg ?? {};
+    if (Math.hypot(Number(translation.x ?? 0), Number(translation.y ?? 0)) > 1e-6 || Math.abs(Number(rotation.x ?? 0)) > 1e-6 || Math.abs(Number(rotation.y ?? 0)) > 1e-6) continue;
+    const envelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, new Map())).filter(Number.isFinite));
+    if (Number.isFinite(envelope) && envelope > 0) radialCandidates.push({ component, envelope });
+  }
+  const currentRadius = Math.max(...radialCandidates.map((item) => item.envelope));
+  if (!Number.isFinite(currentRadius) || currentRadius <= 0) return { graph, applied: false, adjustments: [], reason: "radial_envelope_unmeasurable" };
+  const scale = targetRadius / currentRadius;
+  if (Math.abs(scale - 1) <= 1e-6) return { graph, applied: false, adjustments: [], sourceRadiusMm: currentRadius, targetRadiusMm: targetRadius, reason: "approved_radial_datum_already_satisfied" };
+  for (const { component } of radialCandidates) {
+    for (const node of componentNodes(next, component.id)) node.parameters = scaleRadialParameters(node.parameters, scale);
+  }
+  return {
+    graph: next,
+    applied: true,
+    sourceRadiusMm: currentRadius,
+    targetRadiusMm: targetRadius,
+    scale,
+    adjustments: radialCandidates.map(({ component, envelope }) => ({ componentId: component.id, sourceRadiusMm: envelope, targetRadiusMm: Number((envelope * scale).toFixed(6)), scale, source: "approved_assembly_radial_datum" })),
+  };
 }
 
 /** Fit centred component placement to the approved z-up overall-height datum.
@@ -1053,20 +1116,26 @@ export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryIm
       return rightRadius - leftRadius;
     })[0] ?? null;
   };
-  // The primary full-product silhouette supplies one exterior envelope; it
-  // cannot safely attribute a hidden liner or a narrow annular ring to a
-  // specific contour row. Those parts have their own measured feature/crop
-  // fits. Use this global residual only for the largest eligible B-Rep body,
-  // rather than distorting every overlapping component to chase the same
-  // pixel. This is a geometry/evidence rule, not a product-name heuristic.
-  const primaryBodyId = [...placed].sort((left, right) => (right.zMax - right.zMin) - (left.zMax - left.zMin))[0]?.componentId ?? null;
+  // Attribute a full-product residual only to the component that is actually
+  // visible at that axial section.  This is more precise than the former
+  // "largest body only" shortcut: a ribbed closure or an annular ring can be
+  // the observed outer envelope, while hidden liners and transparent necks
+  // remain untouched.  Visibility is computed from assembled B-Rep bounds
+  // and PBR opacity/transmission, never from a component's display name.
   const next = structuredClone(graph); const diagnosticsById = new Map(placed.map((item) => [item.componentId, item])); const adjustments = [];
-  for (const component of next.components.filter((item) => item.representation === "brep_solid" && item.id === primaryBodyId)) {
+  for (const component of next.components.filter((item) => item.representation === "brep_solid")) {
     const diagnostic = diagnosticsById.get(component.id); const node = outerRevolveNode(next, component.id);
     if (!diagnostic || !node) continue;
     const profile = node.parameters?.profile ?? []; const localHeight = Number(diagnostic.boundsMm.z);
+    // A revolve whose raw profile never reaches two distinct axis datums is
+    // an annular/ring section.  Its compiler uses the declared closed wire,
+    // not an axis-closed Bézier face, so generic exterior-knot insertion would
+    // be invalid. Leave it to its own annular feature fit instead of changing
+    // topology merely to chase a full-product silhouette sample.
+    const axisDatums = profile.filter((point) => Math.abs(Number(point.xMm)) <= 1e-7).map((point) => Number(point.zMm));
+    if (axisDatums.length < 2 || Math.max(...axisDatums) - Math.min(...axisDatums) <= 1e-6) continue;
     const placementZ = Number(component.transform?.translationMm?.z ?? 0);
-    const nextProfile = profile.map((point) => {
+    let nextProfile = profile.map((point) => {
       const radius = Math.abs(Number(point.xMm)); if (!(radius > 1e-7)) return point;
       const globalZ = placementZ + Number(point.zMm);
       if (visibleAt(globalZ)?.componentId !== component.id) return point;
@@ -1077,7 +1146,45 @@ export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryIm
       const scale = Math.max(1 - maxScaleStep, Math.min(1 + maxScaleStep, 1 + gain * residual / compiledRadius));
       return { ...point, xMm: Number((Number(point.xMm) * scale).toFixed(6)) };
     });
-    if (!nextProfile.some((point, index) => Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8)) continue;
+    // A sparse initial feature plan can put one Bézier span across a measured
+    // neck groove, shoulder break, or heel.  Scaling only the existing end
+    // poles then converges to a smooth average and cannot express the actual
+    // continuous manufacturing curve.  Insert at most one measured radial
+    // control point at the largest *visible* residual.  This is bounded curve
+    // fitting (not mesh subdivision), applies only to ordinary Bézier/polyline
+    // declarations, and never rewrites an approved rational NURBS knot set.
+    const declaredCurves = Array.isArray(node.parameters.curveSegments) ? node.parameters.curveSegments : [];
+    const hasRationalNurbs = declaredCurves.some((segment) => segment.kind === "nurbs" && Array.isArray(segment.knots));
+    let insertedControlPoint = null;
+    const radialProfile = profile.filter((point) => Math.abs(Number(point.xMm)) > 1e-7).sort((left, right) => Number(left.zMm) - Number(right.zMm));
+    if (!hasRationalNurbs && radialProfile.length >= 2 && nextProfile.length < 63) {
+      const localMin = Math.min(...radialProfile.map((point) => Number(point.zMm)));
+      const localMax = Math.max(...radialProfile.map((point) => Number(point.zMm)));
+      const minimumSpacing = Math.max(.5, (localMax - localMin) / 120);
+      const candidates = measured.silhouette.map((sample) => {
+        const globalZ = zMin + Number(sample.zNorm) * (zMax - zMin); const localZ = globalZ - placementZ;
+        if (localZ <= localMin + minimumSpacing || localZ >= localMax - minimumSpacing || visibleAt(globalZ)?.componentId !== component.id) return null;
+        const compiledRadius = interpolate(diagnostic.silhouette, (localZ - localMin) / Math.max(1e-9, localHeight)) * diagnostic.radius;
+        const targetRadius = targetRadiusAt(globalZ); const residual = targetRadius - compiledRadius;
+        if (!(compiledRadius > 1e-6) || !Number.isFinite(residual) || Math.abs(residual) < minimumResidualMm) return null;
+        const bracket = radialProfile.findIndex((point) => Number(point.zMm) > localZ + minimumSpacing);
+        if (bracket <= 0 || localZ - Number(radialProfile[bracket - 1].zMm) < minimumSpacing || Number(radialProfile[bracket].zMm) - localZ < minimumSpacing) return null;
+        return { localZ, residual, compiledRadius, bracket };
+      }).filter(Boolean).sort((left, right) => Math.abs(right.residual) - Math.abs(left.residual));
+      const insertion = candidates[0];
+      if (insertion) {
+        const profileRadius = Math.abs(radiusFromProfile(nextProfile, insertion.localZ));
+        const scale = Math.max(1 - maxScaleStep, Math.min(1 + maxScaleStep, 1 + gain * insertion.residual / Math.max(profileRadius, 1e-6)));
+        const point = { xMm: Number((profileRadius * scale).toFixed(6)), yMm: 0, zMm: Number(insertion.localZ.toFixed(6)) };
+        const insertAt = nextProfile.findIndex((item) => Math.abs(Number(item.xMm)) > 1e-7 && Number(item.zMm) > point.zMm);
+        if (insertAt > 0) {
+          nextProfile = [...nextProfile.slice(0, insertAt), point, ...nextProfile.slice(insertAt)];
+          insertedControlPoint = { zMm: point.zMm, xMm: point.xMm, residualMm: Number(insertion.residual.toFixed(6)) };
+        }
+      }
+    }
+    const profileChanged = nextProfile.length !== profile.length || nextProfile.some((point, index) => index >= profile.length || Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8);
+    if (!profileChanged) continue;
     node.parameters.profile = nextProfile;
     // A Boolean helper profile can have two radial points on the same axial
     // datum. It remains a valid closed revolve wire, but cannot be presented
@@ -1090,9 +1197,8 @@ export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryIm
       const nextRadius = radiusFromProfile(nextProfile, zMm);
       return previousRadius > 1e-8 && Number.isFinite(nextRadius) ? nextRadius / previousRadius : 1;
     };
-    const declaredCurves = Array.isArray(node.parameters.curveSegments) ? node.parameters.curveSegments : [];
     const canPreserveDeclaredCurves = declaredCurves.length > 0 && declaredCurves.every((segment) => Array.isArray(segment.poles) || Array.isArray(segment.points));
-    if (canPreserveDeclaredCurves) {
+    if (canPreserveDeclaredCurves && !insertedControlPoint) {
       // A graph may declare rational NURBS with non-uniform knots and weights.
       // Replacing it with an interpolated Bézier chain after every residual
       // adjustment changes the CAD topology and can amplify a small correction
@@ -1111,8 +1217,8 @@ export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryIm
       const curveInput = exterior.length <= 65 ? exterior : Array.from({ length: 65 }, (_, index) => exterior[Math.round(index * (exterior.length - 1) / 64)]);
       if (curveInput.length >= 2) node.parameters.curveSegments = monotoneBezierSegments(curveInput);
     }
-    const changed = nextProfile.reduce((count, point, index) => count + (Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8 ? 1 : 0), 0);
-    adjustments.push({ componentId: component.id, nodeId: node.id, source: "compiled_occt_assembly_contour", changedControlPoints: changed, gain, maxScaleStep, minimumResidualMm });
+    const changed = nextProfile.reduce((count, point, index) => count + (index >= profile.length || Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8 ? 1 : 0), 0);
+    adjustments.push({ componentId: component.id, nodeId: node.id, source: "compiled_occt_assembly_contour", changedControlPoints: changed, insertedControlPoint, gain, maxScaleStep, minimumResidualMm });
   }
   return { graph: next, applied: adjustments.length > 0, adjustments, source: "occt_brep_assembly_tessellation" };
 }

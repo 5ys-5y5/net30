@@ -101,7 +101,7 @@ def analyse(item):
             # chamfer or a manufacturing contour.
             cap["contourTopY"] = cap_rows[0]["y"]
             cap["contourBottomY"] = cap_rows[-1]["y"]
-            cap["silhouette"] = [{
+            cap["blueSilhouette"] = [{
                 "zNorm": round((cap_bottom - row["y"]) / max(1, cap_bottom - cap_top), 7),
                 "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / rough_half_width, 7),
             } for row in cap_rows]
@@ -124,7 +124,23 @@ def analyse(item):
     # measured wide blue envelope already accepted as a closure evidence cue.
     if cap and cap.get("contourTopY", cap["topY"]) > top:
         top = int(cap.get("contourTopY", cap["topY"]))
+    # The last foreground row of a transparent product photo can be a lone
+    # anti-aliased shadow pixel.  It is not a legitimate conical endpoint if
+    # the two preceding measured rows form a continuous, broad base.  Trim
+    # only that specific one-row discontinuity; a real cone or chamfer has a
+    # progressive change over several samples and is retained.  This keeps
+    # the evidence extractor product-agnostic while preventing one noisy
+    # pixel from becoming a multi-millimetre B-Rep fitting target.
+    raw_bottom = bottom
     rows = _samples(foreground, top, bottom)
+    if len(rows) >= 3:
+        spans = [row["right"] - row["left"] + 1 for row in rows]
+        last, previous, before_previous = spans[-1], spans[-2], spans[-3]
+        abrupt_terminal_drop = last < previous * .60
+        stable_base_before_drop = abs(previous - before_previous) <= max(3, previous * .10)
+        if abrupt_terminal_drop and stable_base_before_drop:
+            bottom = int(rows[-2]["y"])
+            rows = _samples(foreground, top, bottom)
     if len(rows) < 12:
         raise RuntimeError("evidence_missing: insufficient measurable silhouette rows")
     center = float(np.median([(row["left"] + row["right"]) / 2 for row in rows]))
@@ -134,6 +150,20 @@ def analyse(item):
         "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
         "centerOffsetNorm": round((((row["left"] + row["right"]) / 2) - center) / half_width, 7),
     } for row in rows]
+    if cap and cap.get("contourTopY") is not None and cap.get("contourBottomY") is not None:
+        # Blue chroma reliably identifies the closure *band*, but specular
+        # rib highlights and shadows make it a poor exterior measuring mask.
+        # Once the band is known, fit its actual outline from the same
+        # foreground contour used for the complete product.  Keep the blue
+        # samples separately for repeat/material evidence; do not let colour
+        # threshold gaps narrow an otherwise measured B-Rep curve.
+        cap_foreground_rows = _samples(foreground, int(cap["contourTopY"]), int(cap["contourBottomY"]), 64)
+        if len(cap_foreground_rows) >= 12:
+            cap["silhouette"] = [{
+                "zNorm": round((int(cap["contourBottomY"]) - row["y"]) / max(1, int(cap["contourBottomY"]) - int(cap["contourTopY"])), 7),
+                "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
+            } for row in cap_foreground_rows]
+            cap["silhouetteSource"] = "foreground_product_contour_with_blue_band_crop"
     body_start = min(bottom, (cap["bottomY"] + 1) if cap else top)
     body_rows = _samples(foreground, body_start, bottom, 64)
     body = [{
@@ -146,7 +176,7 @@ def analyse(item):
         "backgroundRgb": [round(float(value), 2) for value in background],
         "axisXNorm": round(center / max(1, w), 7),
         "silhouette": silhouette, "bodySilhouette": body,
-        "bounds": {"topY": top, "bottomY": bottom, "halfWidthPx": round(float(half_width), 4)},
+        "bounds": {"topY": top, "bottomY": bottom, "rawBottomY": raw_bottom, "halfWidthPx": round(float(half_width), 4)},
         "cap": cap, "capRibHint": rib_hint,
         "measurementMethod": "corner-background-delta-horizontal-persistence-v1",
     }
