@@ -354,7 +354,7 @@ export function compilerReadiness(draft) {
 }
 export function draftReady(draft) {
   const blockers = draft.questions.filter((item) => item.required && !["accepted", "overridden"].includes(item.status));
-  const analysed = draft.questions.length > 0 && ["awaiting_product_review", "awaiting_component_review", "awaiting_parameter_review", "ready_to_build"].includes(draft.state);
+  const analysed = draft.questions.length > 0 && ["awaiting_product_review", "awaiting_component_review", "awaiting_parameter_review", "ready_to_build", "failed"].includes(draft.state);
   const compiler = compilerReadiness(draft);
   const activeIteration = (draft.iterations ?? []).find((item) => item.id === draft.activeIterationId);
   const sketchReady = !activeIteration || activeIteration.status === "approved";

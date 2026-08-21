@@ -95,7 +95,10 @@ def graph_texture_material(name, spec, image_input, job_dir):
     suffix=pathlib.Path(image_input.get("filename","artwork.png")).suffix or ".png"; image_path=pathlib.Path(job_dir)/("artwork-"+str(image_input.get("id","input"))+suffix)
     image_path.write_bytes(base64.b64decode(encoded)); image=bpy.data.images.load(str(image_path),check_existing=True)
     nodes=material.node_tree.nodes; links=material.node_tree.links; texture=nodes.new("ShaderNodeTexImage"); texture.image=image; bsdf=nodes.get("Principled BSDF"); links.new(texture.outputs["Color"],bsdf.inputs["Base Color"])
-    if "Alpha" in texture.outputs and "Alpha" in bsdf.inputs: links.new(texture.outputs["Alpha"],bsdf.inputs["Alpha"]); material.surface_render_method='DITHERED'
+    if "Alpha" in texture.outputs and "Alpha" in bsdf.inputs:
+        links.new(texture.outputs["Alpha"],bsdf.inputs["Alpha"])
+        if hasattr(material, "surface_render_method"): material.surface_render_method='DITHERED'
+        elif hasattr(material, "blend_method"): material.blend_method='BLEND'
     return material
 def graph_decal(name, params, radius, height, target, material):
     crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or 118)); h=max(.001,float(crop.get("height",.3))*height); z=max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM

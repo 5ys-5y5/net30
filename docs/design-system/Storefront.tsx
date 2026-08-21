@@ -955,7 +955,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     <input className={CLASS.modelingControl} type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
   </FormField>;
   const analysisInProgress = pending && !buildInProgress && (!draft || draft.state.startsWith("analyzing"));
-  const analysisFailed = Boolean(draft && ["failed", "analysis_incomplete", "needs_custom_recipe"].includes(draft.state));
+  const analysisFailed = Boolean(draft && (["analysis_incomplete", "needs_custom_recipe"].includes(draft.state) || (draft.state === "failed" && draft.questions.length === 0)));
+  const buildFailed = Boolean(draft?.state === "failed" && draft.questions.length > 0);
   const activeWorkflowIndex = draft ? workflowIndex(draft.state, Boolean(previewModel)) : 0;
   const flatAssetNodes = useMemo(() => activeParentTree ? flattenAssetTree(activeParentTree) : [], [activeParentTree]);
   const clearActiveParentSelection = useCallback(() => {
@@ -1023,7 +1024,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}><Label>{studio.resultTitle}</Label><Atom as={ELEMENT.span}>{error || result}</Atom>{downloadReady && <Link href={previewModel} download>{studio.downloadLabel}</Link>}</Atom>
         {draft ? <DecisionHistoryDisclosure label="승인 결정 내역 보기"><ReviewProgress>생성 당시 승인값 {draft.questions.length}개</ReviewProgress><DraftQuestionGroups draft={draft} readOnly /></DecisionHistoryDisclosure> : null}
       </ModelResultPanel> : draft ? <ReviewWorkspace>
-        <ReviewWorkspaceHeader><Label>OPENAI × BLENDER · 승인 워크플로</Label><ReviewStatus>{draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
+        <ReviewWorkspaceHeader><Label>{buildFailed ? "OPENAI × BLENDER · Blender 생성 실패" : "OPENAI × BLENDER · 승인 워크플로"}</Label><ReviewStatus>{buildFailed ? "재실행 가능" : draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
         <WorkflowStepper>{MODELING_WORKFLOW_STEPS.map((step, index) => <WorkflowStep status={index < activeWorkflowIndex ? "completed" : index === activeWorkflowIndex ? "current" : "upcoming"} key={step}>{index + 1}. {step}</WorkflowStep>)}</WorkflowStepper>
         <ReviewProgress>{draft.approval?.ready ? "모든 값 승인됨" : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</ReviewProgress>
         <ReviewScopeNavigator onKeyDown={(event) => { if (!reviewScopes.length || !["ArrowLeft", "ArrowRight"].includes(event.key)) return; event.preventDefault(); const index = reviewScopes.findIndex((scope) => scope.id === activeReviewScope); setActiveReviewScope(reviewScopes[(index + (event.key === "ArrowRight" ? 1 : reviewScopes.length - 1)) % reviewScopes.length].id); }}>
@@ -1034,7 +1035,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         {draft.components.length > 0 && activeReviewScope === "assembly" ? <ProposalCard><Label>지정한 구성 부품</Label>{draft.components.map((component) => <Copy key={component.id}>{component.displayName} · {component.semanticRole} · {component.recipe} · {component.quantity}개</Copy>)}</ProposalCard> : null}
         {!["assembly", "graphics"].includes(activeReviewScope) ? <ScopedApprovalBar><Copy>이 컴포넌트의 아직 수정하지 않은 권장값 {activeScopeQuestions.filter((question) => question.status === "proposed").length}개만 한 번에 승인합니다.</Copy><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeScopeQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveCurrentScope()}>현재 컴포넌트 권장값 일괄 승인</ActionButton></ScopedApprovalBar> : null}
         <DraftQuestionGroups draft={draft} questions={activeScopeQuestions} decisionPending={draftDecisionPending} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
-        <BuildGate><Copy>{draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
+        <BuildGate><Copy>{buildFailed ? "승인값과 스케치는 보존되었습니다. Blender 생성을 다시 실행할 수 있습니다." : draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : buildFailed ? "Blender 생성 다시 실행" : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
       </ReviewWorkspace> : <ModelingLibraryWorkspace>
       <ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY</Label><Atom as="h2">{studio.assetLibrary.title}</Atom><Copy>{studio.assetLibrary.copy}</Copy></ModelingWorkspaceIntro>
       <AssetLibraryGrid aria-label="조립 파일과 SKU 연결 카드 목록">

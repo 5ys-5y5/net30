@@ -82,6 +82,9 @@ const draft = {
   stickerSlots: analysis.stickerSlots,
 };
 assert.equal(draftReady(draft).ready, true);
+draft.state = "failed";
+assert.equal(draftReady(draft).ready, true, "an approved draft remains retryable after a Blender failure");
+draft.state = "awaiting_parameter_review";
 const spec = compileApprovedDraftToModelingSpec(draft);
 assert.deepEqual(spec.components.map((component) => component.component), ["cap"]);
 assert.deepEqual(spec.components.map((component) => component.componentInstanceId), [analysis.components[0].id]);
