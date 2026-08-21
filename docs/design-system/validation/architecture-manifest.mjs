@@ -35,6 +35,7 @@ export const ARCHITECTURE = Object.freeze({
     "destructiveActionGate",
     "assetEmptyState",
     "modelingWorkspaceIntro",
+    "modelingCatalogLayout",
     "modelingStudio",
     "modelingLibraryWorkspace",
     "modelingLibraryTree",

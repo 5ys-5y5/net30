@@ -83,7 +83,7 @@ try {
     await waitFor(`http://127.0.0.1:${modelingHubPort}/health`, "Modeling hub");
   }
 
-  launch("NET30 host", appDir, ["run", "dev:host"], {
+  launch("NET30 host", appDir, ["run", "dev:storefront"], {
     NET30_MODELING_HUB_PORT: String(modelingHubPort),
     NET30_3D_PROXY_URL: "http://127.0.0.1:5174",
     ...(useLocalBlender ? { NET30_MODELING_PROXY_URL: `http://127.0.0.1:${modelingHubPort}` } : {}),

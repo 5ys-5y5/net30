@@ -8,9 +8,10 @@ if (!root) throw new Error("3D service root not found");
 
 const query = new URLSearchParams(location.search);
 const captureMode = query.get("capture") === "1";
+const compactMode = query.get("compact") === "1";
 
 root.innerHTML = `
-  <section class="viewer${captureMode ? " viewer--capture" : ""}">
+  <section class="viewer${captureMode ? " viewer--capture" : ""}${compactMode ? " viewer--compact" : ""}">
     <canvas class="viewer__canvas" aria-label="NET30 독립 3D 비타민 병"></canvas>
     <div class="viewer__status"><strong>NET30 3D</strong><span data-status>독립 서비스 시작 중</span></div>
     <div class="viewer__controls">

@@ -17,4 +17,7 @@ body { background: #fff; }
 .viewer__error p { margin: 0; color: #64748b; }
 .viewer--capture .viewer__status,
 .viewer--capture .viewer__controls,
-.viewer--capture .viewer__help { display: none !important; }
+.viewer--capture .viewer__help,
+.viewer--compact .viewer__status,
+.viewer--compact .viewer__controls,
+.viewer--compact .viewer__help { display: none !important; }

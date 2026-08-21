@@ -34,6 +34,7 @@ import {
   DestructiveActionGate,
   AssetEmptyState,
   ModelingWorkspaceIntro,
+  ModelingCatalogLayout,
   ModelingStudio,
   ModelingLibraryWorkspace,
   ModelingLibraryTree,
@@ -1008,7 +1009,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     const item = child.model; const selected = Boolean(selectedVersions[child.id]); const canMutate = depth === 0 && root.selectedRevision.id === root.currentRevision?.id;
     return <AssetHierarchyItem key={child.id}>
       <header>
-        {item.selectedRevision.assetPath ? <ModelPreviewFrame title={`${item.name} 3D 미리보기`} src={modelPreviewSrc(item.selectedRevision.assetPath, item.selectedRevision.id)} /> : <AssetEmptyState><Copy>아직 GLB가 없습니다.</Copy></AssetEmptyState>}
+        {item.selectedRevision.assetPath ? <ModelPreviewFrame compact title={`${item.name} 3D 미리보기`} src={modelPreviewSrc(item.selectedRevision.assetPath, item.selectedRevision.id)} /> : <AssetEmptyState><Copy>아직 GLB가 없습니다.</Copy></AssetEmptyState>}
         <AssetIdentity><strong>{item.name}</strong><small>r{item.selectedRevision.ordinal} · {item.status} · 조립 순서 {child.order + 1}</small>{editingName?.id === item.id ? <InlineAssetEditor onSubmit={(event) => { event.preventDefault(); void saveModelName(); }}><FormField label="자산 이름"><input className={CLASS.modelingControl} value={editingName.value} onChange={(event) => setEditingName((current) => current ? { ...current, value: event.target.value } : current)} /></FormField><ActionButton className={CLASS.modelingAction} type="submit" disabled={assetActionPending === item.id}>저장</ActionButton></InlineAssetEditor> : null}</AssetIdentity>
         <AssetNodeActions aria-label={`${item.name} 작업`}><SelectionCardControl aria-pressed={selected} onClick={() => setSelectedVersions((current) => selected ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== child.id)) : { ...current, [child.id]: child.revisionId })}>{selected ? "조립에서 제외" : "조립에 포함"}</SelectionCardControl><ActionButton className={CLASS.modelingAction} onClick={() => setEditingName({ id: item.id, value: item.name, revision: item.revision })}>이름 수정</ActionButton><ActionButton className={CLASS.modelingAction} onClick={() => beginAssetRefine(root, child)}>OpenAI × Blender로 보완</ActionButton>{canMutate ? <><ActionButton className={CLASS.modelingAction} onClick={() => beginAddChild(root)}>하위 자산 추가</ActionButton><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === child.id} onClick={() => void removeChildAsset(root, child.id)}>삭제</ActionButton></> : null}</AssetNodeActions>
       </header>
@@ -1019,7 +1020,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const sectionPreview = draft ? <Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt) => void applySketchFeedback(iteration, feedbackPrompt)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom>
     : libraryPreviewModel ? <ModelPreviewFrame className={CLASS.modelingLibraryPreview} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
       : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{libraryPreviewPending ? studio.assetLibrary.previewPendingMessage : activeParentModelId ? studio.assetLibrary.previewIdleMessage : "부모 모델을 선택하면 조립 3D 미리보기가 여기에 표시됩니다."}</Copy></Atom>;
-  return <Container as={ELEMENT.section} className={CLASS.section} id={system.catalogId}>
+  return <ModelingCatalogLayout id={system.catalogId}>
     <ModelingStudio data-workspace={hasDecisionWorkspace}>
       <Surface className={CLASS.modelingForm}>
         <form onSubmit={submit}>
@@ -1076,7 +1077,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       <AssetLibraryGrid aria-label="제품 모델과 SKU 연결 카드 목록">
         {productModels.length === 0 ? <AssetLibraryCard><AssetEmptyState><Label>저장된 부모 모델이 없습니다.</Label><Copy>새 부모 모델의 첫 Blender 결과가 검증되면 이 목록에 추가됩니다.</Copy></AssetEmptyState></AssetLibraryCard> : productModels.map((productModel) => <AssetLibraryCard key={productModel.id} selected={productModel.id === activeParentModelId}>
           <SelectionCardControl aria-pressed={productModel.id === activeParentModelId} onClick={() => setActiveParentModelId(productModel.id)}>
-            <AssetIdentity>{productModel.currentRevision?.assetPath ? <ModelPreviewFrame title={`${productModel.name} 조립 3D 미리보기`} src={modelPreviewSrc(productModel.currentRevision.assetPath, productModel.currentRevision.id)} /> : <AssetEmptyState><Copy>아직 조립 GLB가 없습니다.</Copy></AssetEmptyState>}<strong>{productModel.name}</strong><small>최신 r{productModel.currentRevision?.ordinal ?? 0} · 게시 {productModel.publishedRevision ? `r${productModel.publishedRevision.ordinal}` : "없음"} · 직계 {productModel.directChildren} · 전체 {productModel.descendantCount}</small></AssetIdentity>
+            <AssetIdentity>{productModel.currentRevision?.assetPath ? <ModelPreviewFrame compact title={`${productModel.name} 조립 3D 미리보기`} src={modelPreviewSrc(productModel.currentRevision.assetPath, productModel.currentRevision.id)} /> : <AssetEmptyState><Copy>아직 조립 GLB가 없습니다.</Copy></AssetEmptyState>}<strong>{productModel.name}</strong><small>최신 r{productModel.currentRevision?.ordinal ?? 0} · 게시 {productModel.publishedRevision ? `r${productModel.publishedRevision.ordinal}` : "없음"} · 직계 {productModel.directChildren} · 전체 {productModel.descendantCount}</small></AssetIdentity>
           </SelectionCardControl>
           <FormField label="판매 SKU" className={CLASS.modelingField}><select className={CLASS.modelingControl} disabled={bindingPendingId === productModel.id} value={productModel.linkedSkuId ?? ""} onChange={(event) => void bindSku(productModel, event.target.value || null)}><option value="">연결 없음</option>{skuOptions.map((sku) => { const linked = productModels.find((item) => item.linkedSkuId === sku.id && item.id !== productModel.id); return <option value={sku.id} disabled={Boolean(linked)} key={sku.id}>{sku.label}{linked ? ` · ${linked.name}에 연결됨` : ""}</option>; })}</select></FormField>
           <ReviewStatus>{bindingPendingId === productModel.id ? "저장 중" : productModel.status}</ReviewStatus>
@@ -1121,7 +1122,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <Link href="/">홈페이지 3D 뷰어 열기</Link>
       </Surface>
     </ModelingOutputSections>
-  </Container>;
+  </ModelingCatalogLayout>;
 }
 
 function CatalogRegion(props: { definition: ProductPageDefinition; onRenderedLabel: (value: ActiveRenderedLabel | null) => void }) {

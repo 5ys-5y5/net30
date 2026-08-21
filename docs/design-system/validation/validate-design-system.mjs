@@ -70,7 +70,7 @@ export async function validateDesignSystem(root = repositoryRoot) {
   if (!/<ModelingWorkspaceIntro><Label>OPENAI × BLENDER<\/Label>/.test(storefront) || !/<ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY<\/Label>/.test(storefront)) {
     failures.push("Storefront.tsx must integrate OpenAI and product asset library identities inside their workspaces");
   }
-  for (const atom of ["ModelingStudio", "ModelingLibraryWorkspace", "ModelingLibraryTree", "ModelingOutputSections"]) {
+  for (const atom of ["ModelingCatalogLayout", "ModelingStudio", "ModelingLibraryWorkspace", "ModelingLibraryTree", "ModelingOutputSections"]) {
     if (!new RegExp(`<${atom}\\b`).test(storefront)) failures.push(`Storefront.tsx must compose modeling layout with ${atom}`);
   }
   if (/<Atom\s+className=\{CLASS\.(?:modelingStudio|modelingLibraryWorkspace|modelingOutputSections)\}/.test(storefront)) {
@@ -78,6 +78,9 @@ export async function validateDesignSystem(root = repositoryRoot) {
   }
   if (/<SectionHeading\s+\{\.\.\.(?:modelingSection|assetLibrarySection)\}/.test(storefront)) {
     failures.push("Storefront.tsx must not create page-level section headers around modeling workspaces");
+  }
+  if (!/\.ds-modeling-catalog-layout\{display:grid;grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)/.test(system)) {
+    failures.push("system.css must arrange the studio and product asset library as a two-column direct-sibling layout");
   }
   if (!/@media\(min-width:720px\)\{\.ds-asset-library-grid\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}\}/.test(system) || !/@media\(min-width:1120px\)\{\.ds-asset-library-grid\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)\}\}/.test(system)) {
     failures.push("system.css must define the centralized 1/2/3-column asset library card grid");

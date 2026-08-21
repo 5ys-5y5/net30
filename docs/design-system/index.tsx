@@ -167,10 +167,11 @@ export function SelectionCard({
 }
 
 /** A shared iframe atom for persisted product-model assets and their fixed web-only graphics. */
-export function ModelPreviewFrame({ className = "", loading = "lazy", labelPayload, src = "", ...props }: IframeHTMLAttributes<HTMLIFrameElement> & { labelPayload?: ThreeDLabelPayload }) {
+export function ModelPreviewFrame({ className = "", compact = false, loading = "lazy", labelPayload, src = "", ...props }: IframeHTMLAttributes<HTMLIFrameElement> & { compact?: boolean; labelPayload?: ThreeDLabelPayload }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
-  useEffect(() => { sendLabelPayloadToFrame(frameRef.current, labelPayload, src); }, [labelPayload, src]);
-  return <iframe ref={frameRef} onLoad={() => sendLabelPayloadToFrame(frameRef.current, labelPayload, src)} className={joinClasses(CLASS.modelPreviewFrame, className)} loading={loading} src={src} {...props} />;
+  const frameSrc = compact && src ? `${src}${src.includes("?") ? "&" : "?"}compact=1` : src;
+  useEffect(() => { sendLabelPayloadToFrame(frameRef.current, labelPayload, frameSrc); }, [labelPayload, frameSrc]);
+  return <iframe ref={frameRef} onLoad={() => sendLabelPayloadToFrame(frameRef.current, labelPayload, frameSrc)} className={joinClasses(CLASS.modelPreviewFrame, className)} loading={loading} src={frameSrc} {...props} />;
 }
 
 /** The selectable portion of a card stays keyboard-operable without nesting action buttons. */
@@ -232,6 +233,11 @@ export function AssetEmptyState({ className = "", ...props }: HTMLAttributes<HTM
 /** Keeps a modeling workspace's identity inside the workspace instead of creating a second page-level header. */
 export function ModelingWorkspaceIntro({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={joinClasses(CLASS.modelingWorkspaceIntro, className)} {...props} />;
+}
+
+/** A non-visual section layout that keeps the studio, library, and output regions as direct siblings. */
+export function ModelingCatalogLayout({ className = "", ...props }: HTMLAttributes<HTMLElement>) {
+  return <Container as={ELEMENT.section} className={joinClasses(CLASS.section, CLASS.modelingCatalogLayout, className)} {...props} />;
 }
 
 /** Layout-only composition for the form and its mutually exclusive decision or result workspace. */
