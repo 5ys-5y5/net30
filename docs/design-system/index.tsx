@@ -240,6 +240,11 @@ export function ModelingCatalogLayout({ className = "", ...props }: HTMLAttribut
   return <Container as={ELEMENT.section} className={joinClasses(CLASS.section, CLASS.modelingCatalogLayout, className)} {...props} />;
 }
 
+/** The single, route-level modeling preview sits between navigation and the studio/library workspace. */
+export function ModelingPreviewStage({ className = "", ...props }: HTMLAttributes<HTMLElement>) {
+  return <Container as={ELEMENT.section} className={joinClasses(CLASS.section, CLASS.modelingPreviewStage, className)} {...props} />;
+}
+
 /** Layout-only composition for the form and its mutually exclusive decision or result workspace. */
 export function ModelingStudio({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={joinClasses(CLASS.modelingStudio, className)} {...props} />;

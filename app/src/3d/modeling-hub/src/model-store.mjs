@@ -79,12 +79,12 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
     const value = { id, name: String(name ?? "새 모델").trim() || "새 모델", parentId, source, revision: 0, revisions: [], currentRevisionId: null, publishedRevisionId: null, skuId: null, archivedAt: null, createdAt, updatedAt: createdAt };
     manifest.models[id] = value; return value;
   }
-  function createRevision(value, { artifactId = null, children = [], state = artifactId ? "ready" : "empty", source = "manual", summary = "" } = {}) {
+  function createRevision(value, { artifactId = null, children = [], selectionPaths = null, state = artifactId ? "ready" : "empty", source = "manual", summary = "" } = {}) {
     const id = `${value.id}-r${value.revisions.length + 1}`;
-    const revision = { id, ordinal: value.revisions.length + 1, artifactId, children: children.map(childRef), state, source, summary, createdAt: now() };
+    const revision = { id, ordinal: value.revisions.length + 1, artifactId, children: children.map(childRef), selectionPaths: Array.isArray(selectionPaths) ? [...selectionPaths] : null, state, source, summary, createdAt: now() };
     value.revisions.push(revision); value.currentRevisionId = id; value.updatedAt = now(); value.revision += 1; return revision;
   }
-  function publicRevision(revision) { return { id: revision.id, ordinal: revision.ordinal, state: revision.state, source: revision.source, summary: revision.summary, artifactId: revision.artifactId, assetPath: revision.artifactId ? `/api/modeling/artifacts/${revision.artifactId}` : null, childCount: revision.children.length, createdAt: revision.createdAt }; }
+  function publicRevision(revision) { return { id: revision.id, ordinal: revision.ordinal, state: revision.state, source: revision.source, summary: revision.summary, artifactId: revision.artifactId, assetPath: revision.artifactId ? `/api/modeling/artifacts/${revision.artifactId}` : null, childCount: revision.children.length, selectionPaths: revision.selectionPaths ?? null, createdAt: revision.createdAt }; }
   function countDescendants(manifest, id, revisionId, seen = new Set()) {
     const key = `${id}:${revisionId ?? "current"}`; if (seen.has(key)) return 0; seen.add(key);
     const value = manifest.models[id]; if (!value) return 0; const revision = revisionOf(value, revisionId);
@@ -101,10 +101,10 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
     const current = value.currentRevisionId ? revisionOf(value) : null; const published = value.publishedRevisionId ? revisionOf(value, value.publishedRevisionId) : null;
     return { id: value.id, name: value.name, parentId: value.parentId ?? null, revision: value.revision, linkedSkuId: value.skuId ?? null, currentRevision: current && publicRevision(current), publishedRevision: published && publicRevision(published), directChildren: current?.children.length ?? 0, descendantCount: current ? countDescendants(manifest, value.id, current.id) : 0, status: statusFor(value, current, published), archivedAt: value.archivedAt ?? null, createdAt: value.createdAt, updatedAt: value.updatedAt, source: value.source };
   }
-  function tree(manifest, id, revisionId, seen = new Set()) {
+  function tree(manifest, id, revisionId, seen = new Set(), prefix = "") {
     const value = model(manifest, id, { includeArchived: true }); const revision = revisionOf(value, revisionId); const key = `${id}:${revision.id}`;
     if (seen.has(key)) throw new ModelStoreError("cycle_detected", "모델 트리에 순환 참조가 있습니다."); seen.add(key);
-    return { ...summary(manifest, value), selectedRevision: publicRevision(revision), children: [...revision.children].sort((a, b) => a.order - b.order).map((ref) => ({ ...clone(ref), model: tree(manifest, ref.modelId, ref.revisionId, new Set(seen)) })) };
+    return { ...summary(manifest, value), selectedRevision: publicRevision(revision), children: [...revision.children].sort((a, b) => a.order - b.order).map((ref) => { const refPath = prefix ? `${prefix}/${ref.id}` : ref.id; return { ...clone(ref), path: refPath, model: tree(manifest, ref.modelId, ref.revisionId, new Set(seen), refPath) }; }) };
   }
   function ensureBase(parent, expectedRevision, baseRevisionId = parent.currentRevisionId) {
     if (expectedRevision !== parent.revision || baseRevisionId !== parent.currentRevisionId) throw new ModelStoreError("revision_conflict", "모델 목록 또는 조립 기준 리비전이 최신이 아닙니다.", { model: summaryFromError(parent), latestRevision: parent.revision, currentRevisionId: parent.currentRevisionId });
@@ -112,6 +112,25 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
   function summaryFromError(value) { return { id: value.id, revision: value.revision, currentRevisionId: value.currentRevisionId }; }
   function parentChildren(parent) { return clone(revisionOf(parent).children); }
   function nodeArtifactPath(artifactId) { return path.join(root, "artifacts", `${cleanId(artifactId)}.glb`); }
+  function selectionPathsFor(manifest, parent, revision, rawPaths) {
+    const available = new Set();
+    const collect = (value, current, prefix, seen = new Set()) => {
+      const key = `${value.id}:${current.id}`; if (seen.has(key)) throw new ModelStoreError("cycle_detected", "모델 트리에 순환 참조가 있습니다."); seen.add(key);
+      for (const ref of current.children) { const refPath = prefix ? `${prefix}/${ref.id}` : ref.id; available.add(refPath); const child = model(manifest, ref.modelId, { includeArchived: true }); collect(child, revisionOf(child, ref.revisionId), refPath, new Set(seen)); }
+    };
+    collect(parent, revision, "");
+    if (rawPaths == null) return null;
+    const unique = [...new Set(rawPaths.map((item) => String(item)).filter(Boolean))];
+    for (const item of unique) if (!available.has(item)) throw new ModelStoreError("selection_not_found", "선택한 하위 자산 경로를 찾을 수 없습니다.", { path: item });
+    return unique.sort((left, right) => left.length - right.length).filter((item, index, values) => !values.slice(0, index).some((ancestor) => item.startsWith(`${ancestor}/`)));
+  }
+  function combineTransform(parentTransform, childTransform) {
+    if (!parentTransform) return childTransform ?? null; if (!childTransform) return clone(parentTransform);
+    if (typeof parentTransform !== "object" || typeof childTransform !== "object" || Array.isArray(parentTransform) || Array.isArray(childTransform)) return clone(childTransform);
+    const combined = { ...parentTransform, ...childTransform };
+    for (const key of ["xMm", "yMm", "zMm", "x", "y", "z", "rotationX", "rotationY", "rotationZ"]) if (Number.isFinite(parentTransform[key]) || Number.isFinite(childTransform[key])) combined[key] = Number(parentTransform[key] ?? 0) + Number(childTransform[key] ?? 0);
+    return combined;
+  }
 
   async function createParent({ name, source = "draft" } = {}) { return mutate(async (manifest) => { const parent = createNode(manifest, { name: name ?? "새 제품 모델", source }); createRevision(parent, { state: "empty", source, summary: "구성 부품을 기다리는 빈 부모 모델입니다." }); return summary(manifest, parent); }); }
   async function createChild({ parentModelId, expectedRevision, baseRevisionId, name, source = "manual", assemblyPath = null }) {
@@ -158,12 +177,30 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
     });
   }
   async function attachLibraryAssembly({ parentModelId, componentVersions, assemblyPath, expectedRevision, baseRevisionId, summary: note = "선택한 자산 라이브러리 조립" }) { return attachBuild({ parentModelId, componentVersions, assemblyPath, expectedRevision, baseRevisionId, status: "complete", summary: note }); }
-  async function createAssemblyRevision({ parentModelId, expectedRevision, baseRevisionId, childRefIds, assemblyPath, summary: note = "선택한 하위 자산 조립" }) { return mutate(async (manifest) => { const parent = rootModel(manifest, parentModelId); ensureBase(parent, expectedRevision, baseRevisionId); const selected = new Set(childRefIds ?? []); const children = parentChildren(parent).filter((ref) => selected.has(ref.id)); if (!children.length) throw new ModelStoreError("empty_selection", "조립할 하위 자산을 선택하세요."); const revision = createRevision(parent, { artifactId: await storeArtifact(manifest, assemblyPath), children, state: "ready", source: "library", summary: note }); return { model: summary(manifest, parent), revision: publicRevision(revision) }; }); }
+  async function createAssemblyRevision({ parentModelId, expectedRevision, baseRevisionId, selectedNodePaths, childRefIds, assemblyPath, summary: note = "선택한 하위 자산 조립" }) { return mutate(async (manifest) => { const parent = rootModel(manifest, parentModelId); ensureBase(parent, expectedRevision, baseRevisionId); const base = revisionOf(parent, baseRevisionId); const selection = selectionPathsFor(manifest, parent, base, selectedNodePaths ?? childRefIds); if (!selection?.length) throw new ModelStoreError("empty_selection", "조립할 하위 자산을 선택하세요."); const revision = createRevision(parent, { artifactId: await storeArtifact(manifest, assemblyPath), children: parentChildren(parent), selectionPaths: selection, state: "ready", source: "library", summary: note }); return { model: summary(manifest, parent), revision: publicRevision(revision) }; }); }
   async function listRoots({ includeArchived = false } = {}) { const manifest = await load(); return Object.values(manifest.models).filter((value) => !value.parentId && (includeArchived || !value.archivedAt)).map((value) => summary(manifest, value)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   async function getRoot(id, options) { const manifest = await load(); return summary(manifest, rootModel(manifest, id, options)); }
   async function getTree(id, revisionId) { const manifest = await load(); return tree(manifest, id, revisionId); }
   async function revisions(id) { const manifest = await load(); return model(manifest, id, { includeArchived: true }).revisions.map(publicRevision); }
-  async function assemblyInputs(id, revisionId) { const manifest = await load(); const parent = rootModel(manifest, id, { includeArchived: true }); const revision = revisionOf(parent, revisionId); return revision.children.map((ref) => { const child = model(manifest, ref.modelId, { includeArchived: true }); const childRevision = revisionOf(child, ref.revisionId); if (!childRevision.artifactId) throw new ModelStoreError("child_artifact_missing", `${child.name} 하위 자산에 GLB가 없습니다.`); return { component: ref.id, versionId: childRevision.id, sourcePath: nodeArtifactPath(childRevision.artifactId), transform: ref.transform }; }); }
+  async function assemblyInputs(id, revisionId, selectedNodePaths = undefined) {
+    const manifest = await load(); const parent = rootModel(manifest, id, { includeArchived: true }); const revision = revisionOf(parent, revisionId);
+    const selection = selectionPathsFor(manifest, parent, revision, selectedNodePaths === undefined ? revision.selectionPaths : selectedNodePaths);
+    const results = [];
+    const visit = (value, current, prefix, inheritedTransform, forceInclude = false, seen = new Set()) => {
+      const key = `${value.id}:${current.id}`; if (seen.has(key)) throw new ModelStoreError("cycle_detected", "모델 트리에 순환 참조가 있습니다."); seen.add(key);
+      for (const ref of current.children) {
+        const refPath = prefix ? `${prefix}/${ref.id}` : ref.id;
+        const directlySelected = forceInclude || selection === null || selection.includes(refPath);
+        const hasSelectedDescendant = selection?.some((item) => item.startsWith(`${refPath}/`)) ?? false;
+        if (!directlySelected && !hasSelectedDescendant) continue;
+        const child = model(manifest, ref.modelId, { includeArchived: true }); const childRevision = revisionOf(child, ref.revisionId); const transform = combineTransform(inheritedTransform, ref.transform);
+        if (directlySelected && childRevision.artifactId) { results.push({ component: refPath, versionId: childRevision.id, sourcePath: nodeArtifactPath(childRevision.artifactId), transform }); continue; }
+        if (childRevision.children.length) { visit(child, childRevision, refPath, transform, directlySelected, new Set(seen)); continue; }
+        throw new ModelStoreError("child_artifact_missing", `${child.name} 하위 자산에 GLB가 없습니다.`);
+      }
+    };
+    visit(parent, revision, "", null); return results;
+  }
   async function childInput(id) { const manifest = await load(); const child = model(manifest, id, { includeArchived: true }); const revision = revisionOf(child); if (!revision.artifactId) throw new ModelStoreError("child_artifact_missing", `${child.name} 하위 자산에 GLB가 없습니다.`); return { component: `restore-${child.id}`, versionId: revision.id, sourcePath: nodeArtifactPath(revision.artifactId), transform: null }; }
   async function bindSku(id, skuId, expectedRevision) { return mutate(async (manifest) => { const value = rootModel(manifest, id); if (expectedRevision !== value.revision) throw new ModelStoreError("revision_conflict", "모델 목록이 최신이 아닙니다.", { model: summary(manifest, value) }); if (skuId !== null && !skuIds.has(skuId)) throw new ModelStoreError("unknown_sku", "알 수 없는 SKU입니다."); if (skuId) { const boundId = manifest.bindings[skuId]; if (boundId && boundId !== value.id) throw new ModelStoreError("sku_already_bound", "이 SKU는 다른 부모 모델에 이미 연결되어 있습니다.", { modelId: boundId }); } if (value.skuId && value.skuId !== skuId) delete manifest.bindings[value.skuId]; if (skuId) manifest.bindings[skuId] = value.id; value.skuId = skuId; value.revision += 1; value.updatedAt = now(); return summary(manifest, value); }); }
   async function publish(id, revisionId, expectedRevision) { return mutate(async (manifest) => { const parent = rootModel(manifest, id); if (expectedRevision !== parent.revision) throw new ModelStoreError("revision_conflict", "모델 목록이 최신이 아닙니다.", { model: summary(manifest, parent) }); const revision = revisionOf(parent, revisionId); if (!revision.artifactId) throw new ModelStoreError("empty_revision", "빈 부모 모델은 구성 부품을 추가한 뒤 게시할 수 있습니다."); const publication = Object.values(manifest.publications).find((item) => item.modelId === parent.id && item.revisionId === revision.id) ?? { id: `publication-${randomUUID().slice(0, 12)}`, modelId: parent.id, revisionId: revision.id, artifactId: revision.artifactId, createdAt: now() }; manifest.publications[publication.id] = publication; parent.publishedRevisionId = revision.id; parent.revision += 1; parent.updatedAt = now(); return { model: summary(manifest, parent), publication: { ...publication, assetPath: `/api/modeling/publications/${publication.id}/artifact` } }; }); }

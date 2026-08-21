@@ -110,6 +110,13 @@ def assemble_library(request):
         if not imported: raise RuntimeError(f"No mesh imported from {source}")
         for obj in imported:
             obj.name=f"{item['component']}_{obj.name}"; obj["net30_component"]=item["component"]; link(obj,assembly)
+            transform=item.get("transform") or {}
+            obj.location.x += float(transform.get("xMm",transform.get("x",0)))*MM
+            obj.location.y += float(transform.get("yMm",transform.get("y",0)))*MM
+            obj.location.z += float(transform.get("zMm",transform.get("z",0)))*MM
+            obj.rotation_euler.x += math.radians(float(transform.get("rotationX",0)))
+            obj.rotation_euler.y += math.radians(float(transform.get("rotationY",0)))
+            obj.rotation_euler.z += math.radians(float(transform.get("rotationZ",0)))
     destination=pathlib.Path(request["paths"]["assemblyGlb"])
     if not export(list(assembly.all_objects),destination): raise RuntimeError("No selected component mesh could be assembled")
     print("ASSEMBLY_GLB="+str(destination))

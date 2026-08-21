@@ -28,6 +28,11 @@ assert.equal((await store.runtimeForSku("all-in-one-pilot")).state, "ready");
 const beforeRefine = await store.getTree(first.id, attached.revision.id);
 const childId = beforeRefine.children[0].model.id;
 const childRevisionBefore = beforeRefine.children[0].revisionId;
+assert.equal(beforeRefine.children[0].path, beforeRefine.children[0].id);
+const selectedInputs = await store.assemblyInputs(first.id, attached.revision.id, [beforeRefine.children[0].path]);
+assert.equal(selectedInputs.length, 1);
+assert.equal(selectedInputs[0].component, beforeRefine.children[0].path);
+await assert.rejects(() => store.assemblyInputs(first.id, attached.revision.id, ["unknown-child-path"]), (error) => error instanceof ModelStoreError && error.code === "selection_not_found");
 const refined = await store.attachBuild({
   parentModelId: first.id,
   jobId: "refine-child",

@@ -19,13 +19,13 @@ function blenderBin() { const candidates = [env("BLENDER_BIN"), "/Applications/B
 export async function composeSelectedComponentGlbs(componentFiles, { assetRoot } = {}) {
   if (!Array.isArray(componentFiles) || componentFiles.length === 0) throw new Error("조립할 컴포넌트 버전을 선택하세요.");
   const items = [...componentFiles]
-    .map(({ component, versionId, sourcePath }) => ({ component: String(component), versionId: String(versionId), sourcePath: path.resolve(String(sourcePath)) }))
+    .map(({ component, versionId, sourcePath, transform = null }) => ({ component: String(component), versionId: String(versionId), sourcePath: path.resolve(String(sourcePath)), transform }))
     .sort((left, right) => left.component.localeCompare(right.component));
   if (new Set(items.map((item) => item.component)).size !== items.length) throw new Error("컴포넌트별로 하나의 버전만 조립할 수 있습니다.");
   for (const item of items) if (!existsSync(item.sourcePath)) throw new Error(`${item.component} 버전 GLB를 찾을 수 없습니다.`);
 
   const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../net30-3d-assets")));
-  const signature = createHash("sha256").update(items.map((item) => `${item.component}:${item.versionId}`).join("\n")).digest("hex").slice(0, 24);
+  const signature = createHash("sha256").update(items.map((item) => `${item.component}:${item.versionId}:${JSON.stringify(item.transform)}`).join("\n")).digest("hex").slice(0, 24);
   const assemblyId = `assembly-${signature}`;
   const outputPath = path.join(root, "component-library", "assemblies", `${assemblyId}.glb`);
   if (!existsSync(outputPath)) {
@@ -37,7 +37,7 @@ export async function composeSelectedComponentGlbs(componentFiles, { assetRoot }
   }
   const header = await fs.readFile(outputPath);
   if (header.length < 20 || header.subarray(0, 4).toString("ascii") !== "glTF") throw new Error("선택한 컴포넌트의 조립 GLB를 만들지 못했습니다.");
-  return { id: assemblyId, sourcePath: outputPath, components: items.map(({ component, versionId }) => ({ component, versionId })) };
+  return { id: assemblyId, sourcePath: outputPath, components: items.map(({ component, versionId, transform }) => ({ component, versionId, transform })) };
 }
 async function cadExports(spec, requestPath, cadDir) {
   const worker = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cad-worker.py"); const python = env("NET30_CADQUERY_BIN", "python3"); const manufacturable = spec.contract.unresolved.length === 0;
