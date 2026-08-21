@@ -52,3 +52,7 @@
   border: 0;
   object-fit: contain;
 }
+
+/* Keep the navigation and footer separated with transparent outer space. */
+.ds-container.nav{margin:12px var(--ds-page-gutter) 24px}
+.ds-container.footer{margin:24px var(--ds-page-gutter) 20px;background:transparent}
