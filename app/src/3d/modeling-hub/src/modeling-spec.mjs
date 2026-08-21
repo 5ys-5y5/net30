@@ -320,6 +320,32 @@ export function applyQuestionValue(draft, item, value) {
 export function modelingGraphComponents(graph) {
   return graph.components.map((component, index) => ({ id: component.id, requestedName: component.requestedName, displayName: component.requestedName, semanticRole: component.representation === "visual_surface" ? "accessory" : component.representation === "volume" || component.representation === "instance_set" ? "content" : "other", parentId: component.hostComponentId, quantity: 1, assemblyOrder: index, recipe: graph.nodes.find((node) => component.rootNodeIds.includes(node.id))?.operation ?? "primitive", representation: component.representation, summary: component.summary }));
 }
+
+function repairTargetKey(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^graph_repair_required:\s*([^\.]+)\./.exec(message)?.[1] ?? null;
+}
+
+/** A missing modifier operand belongs to one graph fragment. Keep every
+ * accepted sibling intact and ask for one strict replacement fragment instead
+ * of creating an unapproved fallback solid or repeating the whole analysis. */
+async function repairGraphComponent({ raw, componentKey, model, payload, evidenceManifest, imageInputs, runtime }) {
+  const index = raw.components.findIndex((component) => component.componentKey === componentKey);
+  if (index < 0) throw new Error(`component_repair_failed: ${componentKey}를 원본 그래프에서 찾을 수 없습니다.`);
+  await runtime.onGraphRepair?.({ componentKey, state: "running", message: `${componentKey}의 기준 생성 형상을 재분석합니다.` });
+  const images = imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl, detail: "high" }));
+  const repaired = await responseJson({
+    model,
+    name: "net30_modeling_graph_component_repair",
+    schema: modelingGraphJsonSchema(),
+    instructions: "Repair exactly one safe declarative ModelingGraph component fragment. Return exactly one component with its same immutable componentKey. A rib, pattern, shell, transform, mate, or boolean cut must reference a real preceding generating solid through inputKeys. Add only an image-supported, allowed generating feature if it is required for that connection. Preserve host/material intent. Never write code, paths, URLs, HTML, or executable expressions. Do not create unrelated components or alter the product.",
+    input: [{ role: "user", content: [{ type: "input_text", text: `Product (copy unchanged): ${JSON.stringify(raw.product)}\nRequested component: ${componentKey}\nOriginal fragment: ${JSON.stringify(raw.components[index])}\nRead-only interfaces: ${JSON.stringify(raw.interfaces)}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nReturn product unchanged, interfaces as [], and exactly one repaired component.` }, ...images] }],
+  }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
+  if (!repaired || !Array.isArray(repaired.components) || repaired.components.length !== 1 || repaired.components[0]?.componentKey !== componentKey) throw new Error(`component_repair_failed: ${componentKey} 재분석 응답이 안정적인 단일 컴포넌트를 반환하지 않았습니다.`);
+  await runtime.onGraphRepair?.({ componentKey, state: "complete", message: `${componentKey} 그래프 조각을 교체했습니다.` });
+  return { ...raw, components: raw.components.map((component, current) => current === index ? repaired.components[0] : component) };
+}
+
 export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const model = payload.model || defaultOpenAiModel(); if (!model || !openAiModels().includes(model)) throw new Error("허용된 OpenAI 모델을 선택하세요.");
   const requested = payload.requestedComponents ?? normaliseComponentInput(payload.componentInput);
@@ -340,7 +366,19 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
   let canonical;
-  try { canonical = canonicalizeGraph(raw, requested, payload.imageIds); } catch (error) { throw new Error(`analysis_incomplete: ${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    canonical = canonicalizeGraph(raw, requested, payload.imageIds);
+  } catch (error) {
+    const componentKey = repairTargetKey(error);
+    if (!componentKey || process.env.NET30_MODELING_DRAFT_FIXTURE === "true") throw new Error(`analysis_incomplete: ${error instanceof Error ? error.message : String(error)}`);
+    try {
+      raw = await repairGraphComponent({ raw, componentKey, model, payload, evidenceManifest, imageInputs, runtime });
+      canonical = canonicalizeGraph(raw, requested, payload.imageIds);
+    } catch (repairError) {
+      await runtime.onGraphRepair?.({ componentKey, state: "failed", message: repairError instanceof Error ? repairError.message : String(repairError) });
+      throw new Error(`analysis_incomplete: ${repairError instanceof Error ? repairError.message : String(repairError)}`);
+    }
+  }
   const evidenceScoped = enforceEvidenceScopes(canonical.graph, evidenceManifest);
   const primaryImageId = evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null;
   const fitted = fitPrimaryAxisymmetricComponent(evidenceScoped.graph, imageEvidence, primaryImageId);
