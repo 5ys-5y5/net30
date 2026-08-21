@@ -111,7 +111,13 @@ def graph_texture_material(name, spec, image_input, job_dir):
     # conservative luminance mask so white paper/background pixels do not
     # become a large opaque panel on the bottle.  The source crop stays in the
     # graph and this is only the deterministic web-artwork materialisation.
-    alpha_source=texture.outputs.get("Alpha") if getattr(image,"channels",4)>=4 else None
+    # Blender promotes JPEGs to four channels with an all-opaque alpha. That
+    # must not turn a photograph crop into an opaque rectangular decal over a
+    # transparent product. Only formats which can carry authored alpha use
+    # that channel; JPEG artwork gets a deterministic contrast matte instead.
+    data_url=image_input.get("dataUrl","").lower()
+    authored_alpha=data_url.startswith("data:image/png;") or data_url.startswith("data:image/webp;")
+    alpha_source=texture.outputs.get("Alpha") if authored_alpha else None
     if alpha_source is None:
         luminance=nodes.new("ShaderNodeRGBToBW"); invert=nodes.new("ShaderNodeMath"); invert.operation='SUBTRACT'; invert.inputs[0].default_value=1.0; links.new(texture.outputs["Color"],luminance.inputs["Color"]); links.new(luminance.outputs["Val"],invert.inputs[1]); alpha_source=invert.outputs[0]
     links.new(alpha_source,bsdf.inputs["Alpha"])
