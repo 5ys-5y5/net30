@@ -21,6 +21,7 @@ try {
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   const report = JSON.parse(await fs.readFile(`${stem}.validation.json`, "utf8"));
   assert.equal(report.valid, true); assert.equal(report.closed, true); assert.ok(report.volumeMm3 > 0); assert.ok(report.boundsMm.z > 90);
+  assert.equal(typeof report.stepRoundTrip?.withinTolerance, "boolean", "every canonical B-Rep must publish a component STEP round-trip verdict for the manufacturing gate");
   assert.ok(report.silhouette?.length >= 12, "the persisted OCCT tessellation must expose an exterior contour for image-evidence verification");
   for (const suffix of ["step", "brep", "stl"]) assert.ok((await fs.stat(`${stem}.${suffix}`)).size > 100);
   const curvedGraph = structuredClone(canonical.graph);
@@ -54,6 +55,7 @@ try {
   assert.equal(shellRun.status, 0, `${shellRun.stdout}\n${shellRun.stderr}`);
   const shellReport = JSON.parse(await fs.readFile(`${shellStem}.validation.json`, "utf8"));
   assert.equal(shellReport.valid, true); assert.equal(shellReport.closed, true); assert.equal(shellReport.solidCount, 1, "the NURBS outer wall and derived inner offset must remain one closed B-Rep solid");
+  assert.equal(typeof shellReport.stepRoundTrip?.withinTolerance, "boolean", "a shell must report its own STEP round-trip instead of relying only on a later assembly check");
   const bezierShellGraph = structuredClone(shellCanonical.graph);
   const bezierShellRevolve = bezierShellGraph.nodes.find((node) => node.componentId === shellComponent.id && node.operation === "revolve");
   bezierShellRevolve.parameters.curveSegments = monotoneBezierSegments(bezierShellRevolve.parameters.profile.filter((point) => point.xMm > 0).map(({ xMm, zMm }) => ({ xMm, zMm })));

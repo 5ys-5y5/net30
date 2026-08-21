@@ -648,11 +648,12 @@ def main():
     started = time.perf_counter(); request = json.loads(pathlib.Path(sys.argv[1]).read_text())
     graph_component, graph_nodes = request.get("graphComponent"), request.get("graphNodes", [])
     if not graph_component or graph_component.get("representation") != "brep_solid": raise SystemExit("not_brep_component: component does not define a B-Rep solid")
-    print("CAD_PHASE=compile", flush=True); shape = compile_graph(graph_component, graph_nodes); print("CAD_PHASE=validate", flush=True); solid = shape.val()
+    print("CAD_PHASE=compile", flush=True); shape = compile_graph(graph_component, graph_nodes)
+    print("CAD_PHASE=validate", flush=True); solid = shape.val()
     if not solid.isValid(): raise RuntimeError("brep_invalid: OpenCascade validity check failed")
     paths = request.get("paths") or {"step": request["output"]}; step = pathlib.Path(paths["step"]); step.parent.mkdir(parents=True, exist_ok=True)
     brep = pathlib.Path(paths.get("brep", step.with_suffix(".brep"))); stl = pathlib.Path(paths.get("stl", step.with_suffix(".stl"))); report = pathlib.Path(paths.get("report", step.with_suffix(".validation.json")))
-    print("CAD_PHASE=step", flush=True); cq.exporters.export(shape, str(step)); print("CAD_PHASE=brep", flush=True); solid.exportBrep(str(brep))
+    print("CAD_PHASE=brep", flush=True); solid.exportBrep(str(brep))
     # The B-Rep file is the manufacturing source of truth.  Some OCCT curve
     # wrappers expose a conservative in-memory BoundingBox until they are
     # serialised, while the stored shape has the exact declared pole bounds.
@@ -661,10 +662,33 @@ def main():
     # from the one exported as STEP/GLB source.
     persisted = cq.importers.importBrep(str(brep)).val()
     if not persisted.isValid(): raise RuntimeError("brep_invalid: persisted OpenCascade B-Rep validity check failed")
+    canonical = cq.Workplane(obj=persisted)
+    # Snapshot the canonical B-Rep dimensions before the STEP writer runs.
+    # OCCT's transfer layer may mutate a wrapper's cached bounding box while
+    # it prepares the export; the on-disk B-Rep remains unchanged.
+    box = canonical.val().BoundingBox()
+    source_bounds = {"x": float(box.xlen), "y": float(box.ylen), "z": float(box.zlen)}
+    # STEP and the display tessellation must derive from this reloaded B-Rep,
+    # never from the pre-healing transient shape.  Record the actual STEP
+    # round-trip per child so a visually plausible GLB cannot be mistaken for
+    # a releaseable manufacturing part.
+    print("CAD_PHASE=step", flush=True); cq.exporters.export(canonical, str(step)); step_shape = cq.importers.importStep(str(step)).val()
+    if not step_shape.isValid(): raise RuntimeError("step_roundtrip_invalid: exported STEP cannot be imported as a valid OCCT shape")
     tolerance = float(request.get("tessellation", {}).get("chordMm", .05)); angular = math.radians(float(request.get("tessellation", {}).get("angularDeg", 7)))
-    print("CAD_PHASE=tessellate", flush=True); cq.exporters.export(shape, str(stl), tolerance=tolerance, angularTolerance=angular)
+    print("CAD_PHASE=tessellate", flush=True); cq.exporters.export(canonical, str(stl), tolerance=tolerance, angularTolerance=angular)
     shells = persisted.Shells(); closed = bool(shells) and all(item.Closed() for item in shells)
-    box = persisted.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
+    # CadQuery's Shape wrapper can report a conservative box for a persisted
+    # compound. Query the canonical workplane value instead; it is the same
+    # B-Rep exported as STEP/STL and therefore the only valid manufacturing
+    # datum for this report.
+    step_box = step_shape.BoundingBox()
+    step_bounds = {"x": float(step_box.xlen), "y": float(step_box.ylen), "z": float(step_box.zlen)}
+    step_shells = step_shape.Shells()
+    bounds_delta = {axis: abs(source_bounds[axis] - step_bounds[axis]) for axis in source_bounds}
+    volume_delta = abs(persisted.Volume() - step_shape.Volume()) / max(abs(persisted.Volume()), 1e-9)
+    step_closed = bool(step_shells) and all(item.Closed() for item in step_shells)
+    step_round_trip = {"valid": step_shape.isValid(), "closed": step_closed, "solidCount": len(step_shape.Solids()), "boundsDeltaMm": bounds_delta, "volumeDeltaRatio": volume_delta, "withinTolerance": step_closed and len(step_shape.Solids()) == 1 and max(bounds_delta.values(), default=0) <= .01 and volume_delta <= .001}
+    payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": source_bounds, "stepRoundTrip": step_round_trip, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
     report.write_text(json.dumps(payload, indent=2) + "\n")
     if not closed or payload["solidCount"] != 1:
         raise RuntimeError(f"brep_preflight_failed: closed={closed}, solidCount={payload['solidCount']}")
