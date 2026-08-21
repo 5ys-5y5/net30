@@ -105,12 +105,18 @@ export function monotoneBezierSegments(points) {
   });
   return points.slice(1).map((end, index) => {
     const start = points[index]; const dz = Number(end.zMm) - Number(start.zMm);
+    const minX = Math.min(Number(start.xMm), Number(end.xMm)); const maxX = Math.max(Number(start.xMm), Number(end.xMm));
+    // A cubic Bézier is confined to its control hull, not merely its two end
+    // points. Clamp both tangent handles to the measured interval so a noisy
+    // local slope cannot create an unmeasured shoulder bulge in the B-Rep.
+    const handleStartX = Math.min(maxX, Math.max(minX, Number(start.xMm) + derivatives[index] * dz / 3));
+    const handleEndX = Math.min(maxX, Math.max(minX, Number(end.xMm) - derivatives[index + 1] * dz / 3));
     return {
       kind: "bezier",
       points: [
         { xMm: Number(start.xMm), zMm: Number(start.zMm) },
-        { xMm: Number((Number(start.xMm) + derivatives[index] * dz / 3).toFixed(6)), zMm: Number((Number(start.zMm) + dz / 3).toFixed(6)) },
-        { xMm: Number((Number(end.xMm) - derivatives[index + 1] * dz / 3).toFixed(6)), zMm: Number((Number(end.zMm) - dz / 3).toFixed(6)) },
+        { xMm: Number(handleStartX.toFixed(6)), zMm: Number((Number(start.zMm) + dz / 3).toFixed(6)) },
+        { xMm: Number(handleEndX.toFixed(6)), zMm: Number((Number(end.zMm) - dz / 3).toFixed(6)) },
         { xMm: Number(end.xMm), zMm: Number(end.zMm) },
       ],
       periodic: false,
@@ -340,12 +346,11 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // point becomes the manufacturing source.
   const poles = fitted.filter((point) => point.xMm > 1e-8).map(({ xMm, zMm }) => ({ xMm, zMm }));
   // A hollow revolution needs both outer and inner walls to share a validated
-  // offset construction.  OCCT rejects a Bézier outer wall combined with a
-  // legacy polyline cavity as a null Boolean.  Until the graph carries a
-  // paired inner offset declaration, retain the measured closed wire for that
-  // shell. Solid components use the C1 Bézier path immediately; the product
-  // dossier records this gated distinction rather than claiming an unsafe
-  // curve conversion succeeded.
+  // offset construction. OCCT rejects a Bézier outer wall combined with a
+  // legacy polyline cavity as a null Boolean. Until the fitter emits a
+  // dimension-checked paired inner Bézier offset, retain the measured closed
+  // wire for a shell. This is a B-Rep surface of revolution, not a mesh or a
+  // cylinder fallback; the dossier records the gated curve distinction.
   const shellBacked = next.nodes.some((candidate) => candidate.componentId === node.componentId && candidate.operation === "shell");
   node.parameters.curveSegments = shellBacked ? null : monotoneBezierSegments(poles);
   return {

@@ -11,6 +11,7 @@ import {
   responseJson,
 } from "./modeling-spec.mjs";
 import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphHash, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
+import { monotoneBezierSegments } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -32,6 +33,17 @@ auditStrictSchema(modelingGraphJsonSchema());
 auditStrictSchema(modelingComponentRepairJsonSchema());
 auditStrictSchema(modelingPatchJsonSchema());
 assert.equal(ANALYSIS_OPERATIONS.includes("fillet"), false);
+const boundedBezier = monotoneBezierSegments([
+  { xMm: 20, zMm: 0 },
+  { xMm: 8, zMm: 10 },
+  { xMm: 24, zMm: 20 },
+]);
+for (const segment of boundedBezier) {
+  const [start, startHandle, endHandle, end] = segment.points;
+  const lower = Math.min(start.xMm, end.xMm); const upper = Math.max(start.xMm, end.xMm);
+  assert.ok(startHandle.xMm >= lower && startHandle.xMm <= upper, "a fitted Bézier start handle must remain within measured radial bounds");
+  assert.ok(endHandle.xMm >= lower && endHandle.xMm <= upper, "a fitted Bézier end handle must remain within measured radial bounds");
+}
 const strictFeatureOperations = modelingGraphJsonSchema().properties.components.items.properties.features.items.anyOf.map((variant) => variant.properties.operation.const);
 assert.equal(strictFeatureOperations.includes("fillet"), false);
 assert.equal(strictFeatureOperations.includes("boolean"), true);
