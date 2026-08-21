@@ -6,6 +6,7 @@ import {
   draftPayloadSchema,
   draftReady,
   normaliseComponentInput,
+  normaliseAxisymmetricCavityFeatures,
   responseJson,
 } from "./modeling-spec.mjs";
 import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
@@ -135,6 +136,15 @@ const crossingInner = { ...structuredClone(outerBottle), key: "crossing-inner", 
 const crossingBoolean = { ...structuredClone(outerBottle), key: "final-cut", operation: "boolean", inputKeys: [outerBottle.key, crossingInner.key], parameters: { ...outerBottle.parameters, profile: null, operation: "cut" } };
 crossingCavityOutput.components[0].features = [outerBottle, crossingInner, crossingBoolean];
 assert.throws(() => canonicalizeGraph(crossingCavityOutput, ["유리병"], []), /graph_repair_required: component-1\.boolean\.cavityWithinOuter/);
+const measuredCavityOutput = fixtureGraphOutput({ product: { name: "측정 공동" }, prompt: "measured bottle cavity", requestedComponents: ["유리병"], imageIds: [] });
+const measuredOuter = { ...structuredClone(measuredCavityOutput.components[0].features[0]), key: "measured-outer", inputKeys: [], parameters: { ...measuredCavityOutput.components[0].features[0].parameters, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 100 }, { xMm: 0, yMm: 0, zMm: 100 }] } };
+const measuredInner = { ...structuredClone(measuredOuter), key: "measured-inner", parameters: { ...measuredOuter.parameters, profile: [{ xMm: 0, yMm: 0, zMm: 3 }, { xMm: 26, yMm: 0, zMm: 3 }, { xMm: 26, yMm: 0, zMm: 50 }, { xMm: 25, yMm: 0, zMm: 96 }, { xMm: 0, yMm: 0, zMm: 96 }] } };
+const measuredCut = { ...structuredClone(measuredOuter), key: "measured-cavity-cut", operation: "boolean", inputKeys: [measuredOuter.key, measuredInner.key], parameters: { ...measuredOuter.parameters, profile: null, operation: "cut" } };
+measuredCavityOutput.components[0].features = [measuredOuter, measuredInner, measuredCut];
+const measuredCavity = normaliseAxisymmetricCavityFeatures(measuredCavityOutput);
+assert.equal(measuredCavity.converted, 1);
+assert.deepEqual(measuredCavity.raw.components[0].features.map((feature) => feature.operation), ["revolve", "shell"]);
+assert.doesNotThrow(() => canonicalizeGraph(measuredCavity.raw, ["유리병"], []));
 const reversedCutOutput = fixtureGraphOutput({ product: { name: "역전 cut" }, prompt: "cut", requestedComponents: ["마개"], imageIds: [] });
 const smallBase = { ...structuredClone(reversedCutOutput.components[0].features[0]), key: "small-base", operation: "primitive", inputKeys: [], parameters: { ...reversedCutOutput.components[0].features[0].parameters, profile: null, primitive: "cylinder", radiusMm: 18, heightMm: 20, dimensionsMm: null } };
 const largerCutter = { ...structuredClone(smallBase), key: "larger-cutter", parameters: { ...smallBase.parameters, radiusMm: 22 } };

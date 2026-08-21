@@ -328,6 +328,61 @@ function repairTargetKey(error) {
   return /^graph_repair_required:\s*([^\.]+)\./.exec(message)?.[1] ?? null;
 }
 
+function radialProfileAt(profile, zMm) {
+  const points = (profile ?? []).filter((point) => Number.isFinite(point?.xMm) && Number.isFinite(point?.zMm) && point.xMm > 1e-6).slice().sort((left, right) => left.zMm - right.zMm);
+  if (points.length < 2 || zMm < points[0].zMm - 1e-6 || zMm > points.at(-1).zMm + 1e-6) return null;
+  for (let index = 1; index < points.length; index += 1) {
+    const right = points[index]; if (zMm > right.zMm + 1e-6) continue;
+    const left = points[index - 1]; const ratio = Math.max(0, Math.min(1, (zMm - left.zMm) / Math.max(1e-9, right.zMm - left.zMm)));
+    return left.xMm + (right.xMm - left.xMm) * ratio;
+  }
+  return points.at(-1).xMm;
+}
+
+/**
+ * The LLM selects the discrete fact that an axisymmetric body is hollow; it
+ * must not be the authority for two nearly coincident continuous curves. When
+ * it does emit outer/inner revolutions, derive the cavity from their measured
+ * radial separation and compile an explicit shell. This replaces only a
+ * standard axisymmetric `outer - inner` pair; grooves, holes and arbitrary
+ * Boolean cuts remain explicit graph operations and still require repair.
+ */
+export function normaliseAxisymmetricCavityFeatures(raw) {
+  const next = structuredClone(raw); let converted = 0;
+  for (const component of next.components ?? []) {
+    const byKey = new Map((component.features ?? []).map((feature) => [feature.key, feature]));
+    const referenceCount = new Map(); for (const key of (component.features ?? []).flatMap((feature) => feature.inputKeys ?? [])) referenceCount.set(key, (referenceCount.get(key) ?? 0) + 1);
+    const replacement = new Map(); const remove = new Set();
+    for (const feature of component.features ?? []) {
+      if (feature.operation !== "boolean" || feature.parameters?.operation !== "cut" || feature.inputKeys?.length !== 2) continue;
+      const [outerKey, innerKey] = feature.inputKeys; const outer = byKey.get(outerKey); const inner = byKey.get(innerKey);
+      if (outer?.operation !== "revolve" || inner?.operation !== "revolve" || !outer.parameters?.profile || !inner.parameters?.profile) continue;
+      const gaps = inner.parameters.profile
+        .filter((point) => point.xMm > 1e-6)
+        .map((point) => { const radius = radialProfileAt(outer.parameters.profile, point.zMm); return radius === null ? null : radius - point.xMm; })
+        .filter((gap) => Number.isFinite(gap) && gap > .15)
+        .sort((left, right) => left - right);
+      // At least three independently observed radii are required. The lower
+      // quartile is conservative: it preserves the thinnest observed wall
+      // without turning a local neck/bead into a global wall thickness.
+      if (gaps.length < 3) continue;
+      const wallMm = gaps[Math.floor((gaps.length - 1) * .25)];
+      if (!Number.isFinite(wallMm) || wallMm < .2 || wallMm > 20 || (referenceCount.get(innerKey) ?? 0) > 1) continue;
+      replacement.set(feature.key, {
+        ...feature,
+        operation: "shell",
+        inputKeys: [outerKey],
+        parameters: { ...feature.parameters, operation: null, thicknessMm: wallMm, profile: null, profiles: null, primitive: null, dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null, angleDeg: null, count: null, spacingMm: null, depthMm: null, offsetMm: null, axis: null, projection: null, hostComponentKey: null, artworkImageId: null, artworkCrop: null, wrapDegrees: null, quantity: null, distribution: null, interfaceKey: null, transform: null },
+        rationale: `${feature.rationale} Inner cavity was deterministically derived from measured outer/inner radial separation (${wallMm.toFixed(3)} mm).`,
+        confidence: Math.min(feature.confidence ?? 1, inner.confidence ?? 1),
+      });
+      remove.add(innerKey); converted += 1;
+    }
+    if (replacement.size) component.features = component.features.filter((feature) => !remove.has(feature.key)).map((feature) => replacement.get(feature.key) ?? feature);
+  }
+  return { raw: next, converted };
+}
+
 /** A missing modifier operand belongs to one graph fragment. Keep every
  * accepted sibling intact and ask for one strict replacement fragment instead
  * of creating an unapproved fallback solid or repeating the whole analysis. */
@@ -379,6 +434,8 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   // otherwise valid cap/print plan, while avoiding an unbounded costly loop.
   for (let attempt = 0; attempt <= Math.min(3, requested.length); attempt += 1) {
     try {
+      const normalisedCavities = normaliseAxisymmetricCavityFeatures(raw); raw = normalisedCavities.raw;
+      if (normalisedCavities.converted) await runtime.onGraphRepair?.({ componentKey: "geometry-fitter", state: "complete", message: `축대칭 내부 공동 ${normalisedCavities.converted}개를 측정 기반 shell로 파생했습니다.` });
       canonical = canonicalizeGraph(raw, requested, payload.imageIds);
       break;
     } catch (error) {
