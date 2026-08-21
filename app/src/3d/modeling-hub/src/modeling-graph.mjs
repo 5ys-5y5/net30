@@ -132,7 +132,9 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       return source ? { ...feature, inputKeys: feature.inputKeys.filter((key) => key !== source.key), parameters: { ...feature.parameters, profile: source.parameters.profile } } : feature;
     });
     if (!features.length) throw new Error(`unsupported_operation: ${component.componentKey}.profile에는 revolve·extrude 같은 생성 연산이 필요합니다.`);
-    return { ...component, features };
+    const featureHostKeys = [...new Set(features.map((feature) => feature.parameters.hostComponentKey).filter(Boolean))];
+    if (featureHostKeys.length > 1 || (component.hostComponentKey && featureHostKeys.length && component.hostComponentKey !== featureHostKeys[0])) throw new Error(`graph_invalid: ${component.componentKey}의 부착 대상 참조가 충돌합니다.`);
+    return { ...component, hostComponentKey: component.hostComponentKey ?? featureHostKeys[0] ?? null, features };
   });
   const nodeKeyToId = new Map(); for (const component of normalizedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
   const components = normalizedComponents.map((item, index) => ({ id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: item.features.map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }));

@@ -89,6 +89,10 @@ const printNode = printCanonical.graph.nodes.find((item) => item.componentId ===
 assert.equal(printComponent.representation, "visual_surface");
 assert.equal(printNode.operation, "surface_decal");
 assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).components[0].points.length >= 4);
+const nodeHostedPrint = fixtureGraphOutput({ product: { name: "노드 host 인쇄" }, prompt: "test", requestedComponents: ["유리병", "전면 인쇄"], imageIds: ["image-1"] });
+nodeHostedPrint.components[1].hostComponentKey = null;
+const nodeHostedCanonical = canonicalizeGraph(nodeHostedPrint, ["유리병", "전면 인쇄"], ["image-1"]);
+assert.equal(nodeHostedCanonical.graph.components[1].hostComponentId, nodeHostedCanonical.graph.components[0].id);
 const splitProfileOutput = fixtureGraphOutput({ product: { name: "분리 프로필" }, prompt: "test", requestedComponents: ["유리병"], imageIds: [] });
 const revolveFeature = splitProfileOutput.components[0].features[0];
 const profileFeature = { ...structuredClone(revolveFeature), key: "bottle-profile", operation: "profile", inputKeys: [] };
