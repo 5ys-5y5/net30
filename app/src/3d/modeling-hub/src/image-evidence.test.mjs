@@ -62,6 +62,34 @@ const compiledDatumFit = fitCompiledClosureDatum(capAssemblyFit.graph, { diagnos
 assert.equal(compiledDatumFit.applied, true, "the assembly datum must use the actual compiled child B-Rep height when it differs from the conservative graph envelope");
 assert.equal(compiledDatumFit.graph.components[0].transform.translationMm.z, 75.5);
 
+// A graph may use a transformed primitive as the seed for a radial feature.
+// The measured closure outline must constrain that real graph feature instead
+// of treating it as a display-only rib or relying on its requested name.
+const seededOutput = fixtureGraphOutput({ product: { name: "measured patterned closure" }, prompt: "closure", requestedComponents: ["임의 부품"] });
+const seededBase = seededOutput.components[0].features[0];
+const seededParameters = structuredClone(seededBase.parameters);
+seededParameters.primitive = "box"; seededParameters.profile = null; seededParameters.dimensionsMm = { x: 1.4, y: 4, z: 40 }; seededParameters.radiusMm = null; seededParameters.innerRadiusMm = null; seededParameters.heightMm = null; seededParameters.thicknessMm = null; seededParameters.count = null; seededParameters.depthMm = null;
+const seededTransform = structuredClone(seededBase.parameters);
+Object.assign(seededTransform, { primitive: null, profile: null, dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null, thicknessMm: null, count: null, depthMm: null, transform: { translationMm: { x: 27, y: 0, z: 2 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } });
+const seededPattern = structuredClone(seededBase.parameters);
+Object.assign(seededPattern, { primitive: null, profile: null, dimensionsMm: null, radiusMm: 27, innerRadiusMm: null, heightMm: null, thicknessMm: null, count: 24, depthMm: null, transform: null, distribution: "radial" });
+const seededBoolean = structuredClone(seededBase.parameters);
+Object.assign(seededBoolean, { primitive: null, profile: null, dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null, thicknessMm: null, count: null, depthMm: null, transform: null, operation: "union" });
+seededOutput.components[0].features = [
+  seededBase,
+  { key: "seed-box", operation: "primitive", inputKeys: [], parameters: seededParameters, rationale: "radial seed", confidence: .8 },
+  { key: "seed-place", operation: "transform", inputKeys: ["seed-box"], parameters: seededTransform, rationale: "radial seed placement", confidence: .8 },
+  { key: "seed-pattern", operation: "pattern", inputKeys: [seededBase.key, "seed-place"], parameters: seededPattern, rationale: "radial pattern", confidence: .8 },
+  { key: "seed-root", operation: "boolean", inputKeys: [seededBase.key, "seed-pattern"], parameters: seededBoolean, rationale: "closure union", confidence: .8 },
+];
+const seededGraph = canonicalizeGraph(seededOutput, ["임의 부품"]).graph;
+const seededFit = fitMeasuredClosureAssembly(seededGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15 * .7, radiusNorm: .9 })) } });
+const fittedSeed = seededFit.graph.nodes.find((node) => node.operation === "primitive");
+const fittedSeedPlacement = seededFit.graph.nodes.find((node) => node.operation === "transform");
+assert.ok(fittedSeed.parameters.dimensionsMm.z < 40, "measured taper must clip an overlong patterned primitive instead of allowing it to flatten the closure apex");
+assert.ok(fittedSeedPlacement.parameters.transform.translationMm.x < 27, "measured outer rib envelope must reposition the transformed seed without a product-name rule");
+assert.ok(seededFit.adjustments[0].patternSeedAnchors.length === 1, "the fitting dossier must retain the measured pattern anchor for review");
+
 const localGraph = structuredClone(radialGraph);
 localGraph.nodes[0].parameters.profile.forEach((point) => { point.zMm += 83; });
 const localFit = normaliseComponentLocalCoordinates(localGraph);

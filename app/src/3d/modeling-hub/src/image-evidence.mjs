@@ -312,12 +312,37 @@ function fitClosureOutline(graph, componentId, capMeasurement, approvedDimension
     const translation = seed.parameters?.transform?.translationMm ?? {};
     const zMm = Number(translation.z ?? 0);
     if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(zMm)) continue;
-    // The pattern seed is a centred box. Its inner half must overlap the
-    // measured base surface; a tangent seed frequently produces a null OCCT
-    // fuse after fitting even though it looks connected in a 2D sketch.
+    // The colour silhouette measures the *outermost* repeated rib, not the
+    // un-ribbed host cylinder. Move the centred seed inward from the historic
+    // outer-host placement while retaining a bounded material overlap. Exact
+    // tangency/embedding can make OCCT's multi-rib Boolean ill-conditioned,
+    // so this is a stable geometric fit rather than a fake mesh offset.
     const surfaceRadius = radiusAt(zMm);
-    seed.parameters.transform = { ...seed.parameters.transform, translationMm: { ...translation, x: Number((surfaceRadius + width * .15).toFixed(6)) } };
-    anchors.push({ patternNodeId: pattern.id, seedNodeId: seed.id, zMm, surfaceRadiusMm: surfaceRadius, overlapMm: width * .35 });
+    seed.parameters.transform = { ...seed.parameters.transform, translationMm: { ...translation, x: Number((Math.max(.01, surfaceRadius - width * .15)).toFixed(6)) } };
+    // Legacy planners can express a rib seed as a transformed box. It is a
+    // valid feature representation, but its vertical extent must not run
+    // beyond the measured closure outline and flatten a rounded cap apex.
+    // Clip only an explicit radial-pattern seed, in the same component and
+    // only against observed cap coverage; unrelated boxes are untouched.
+    const seedHeight = Number(primitive?.parameters?.dimensionsMm?.z);
+    const measuredTop = outer.at(-1)?.zMm;
+    let clippedHeightMm = null;
+    if (primitive?.operation === "primitive" && Number.isFinite(seedHeight) && seedHeight > 0 && Number.isFinite(measuredTop) && zMm + seedHeight > measuredTop + 1e-6) {
+      // A rigid patterned box cannot follow a tapering/receding host surface.
+      // Stop it at the last measured ordinate whose radial change remains
+      // inside its declared penetration overlap. A planner that needs ribs on
+      // a continuously tapering surface must choose a sweep/rib feature;
+      // silently leaving a rectangular pattern floating outside the B-Rep is
+      // less faithful and can invalidate a manufacturing Boolean.
+      const maximumDeviation = width * .35;
+      const supportedTop = outer.filter((point) => point.zMm >= zMm - 1e-6 && Math.abs(point.xMm - surfaceRadius) <= maximumDeviation + 1e-6).at(-1)?.zMm ?? measuredTop;
+      const nextHeight = Math.min(measuredTop, supportedTop) - zMm;
+      if (nextHeight > .05) {
+        primitive.parameters.dimensionsMm = { ...primitive.parameters.dimensionsMm, z: Number(nextHeight.toFixed(6)) };
+        clippedHeightMm = Number(nextHeight.toFixed(6));
+      }
+    }
+    anchors.push({ patternNodeId: pattern.id, seedNodeId: seed.id, zMm, surfaceRadiusMm: surfaceRadius, outerDatumMm: surfaceRadius, overlapMm: width * .65, clippedHeightMm });
   }
   return { nodeId: target.id, samples: outer.length, source: "primary_cap_silhouette_measurement", patternSeedAnchors: anchors };
 }
@@ -404,16 +429,35 @@ export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, pri
   // and place it at the measured closure-bottom datum. Small liners and
   // off-axis parts are intentionally left untouched.
   const targetRadius = Math.min(Number(approvedDimensions?.widthMm), Number(approvedDimensions?.depthMm)) / 2;
+  const primarySilhouette = Array.isArray(primaryMeasurement?.silhouette) ? primaryMeasurement.silhouette : [];
   const nodes = new Map(next.nodes.map((node) => [node.id, node]));
   for (const component of next.components) {
     if (component.id === closure.id || component.id === bodyComponentId || component.representation !== "brep_solid") continue;
     const current = component.transform?.translationMm ?? {};
-    if (Math.abs(Number(current.x ?? 0)) > 1e-6 || Math.abs(Number(current.y ?? 0)) > 1e-6 || Math.abs(Number(current.z ?? 0)) > 1e-6) continue;
+    if (Math.abs(Number(current.x ?? 0)) > 1e-6 || Math.abs(Number(current.y ?? 0)) > 1e-6) continue;
     const range = localAxialRange(next, component);
     const radius = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, new Map())).filter(Number.isFinite));
-    if (!range || !Number.isFinite(radius) || !(radius >= targetRadius * .7 && radius <= targetRadius * 1.05) || range.max - range.min > targetClosureHeight) continue;
-    component.transform = { ...(component.transform ?? {}), translationMm: { ...current, z: Number((closureBottomZ - range.min).toFixed(6)) } };
-    adjustments.push({ componentId: component.id, role: "centred_annular_insert", source: "primary_cap_band_datum", assemblyZMm: closureBottomZ - range.min });
+    const currentZ = Number(current.z ?? 0);
+    const globalMin = currentZ + (range?.min ?? 0), globalMax = currentZ + (range?.max ?? 0);
+    const overlapsClosureBand = globalMax >= closureBottomZ - 1e-6 && globalMin <= overallHeight + 1e-6;
+    if (!range || !Number.isFinite(radius) || !(radius >= targetRadius * .7 && radius <= targetRadius * 1.05) || range.max - range.min > targetClosureHeight || !overlapsClosureBand) continue;
+    // A zero Z placement is an unplaced local insert; otherwise preserve the
+    // user/graph-approved datum and only fit its measured exterior.
+    const assemblyZMm = Math.abs(currentZ) <= 1e-6 ? closureBottomZ - range.min : currentZ;
+    component.transform = { ...(component.transform ?? {}), translationMm: { ...current, z: Number(assemblyZMm.toFixed(6)) } };
+    // A separate centred annular part (ring/liner/insert) belongs to the
+    // closure datum, not automatically to the product's widest body
+    // diameter. Its actual exterior is observable at that assembly ordinate.
+    // This is intentionally topology- and placement-based: display names do
+    // not decide whether a part is fitted.
+    const zNorm = (assemblyZMm + (range.min + range.max) / 2) / overallHeight;
+    const measuredRadius = primarySilhouette.length >= 12 ? interpolate(primarySilhouette, zNorm) * targetRadius : null;
+    let radialScale = null;
+    if (Number.isFinite(measuredRadius) && measuredRadius > targetRadius * .4 && Math.abs(measuredRadius - radius) > .05) {
+      radialScale = measuredRadius / radius;
+      for (const node of componentNodes(next, component.id)) node.parameters = scaleRadialParameters(node.parameters, radialScale);
+    }
+    adjustments.push({ componentId: component.id, role: "centred_annular_insert", source: "primary_cap_band_datum", assemblyZMm, measuredRadiusMm: measuredRadius, radialScale });
   }
   return { graph: next, applied: true, closureBottomZMm: closureBottomZ, closureHeightMm: targetClosureHeight, adjustments };
 }
@@ -699,5 +743,19 @@ export function compareBrepAssemblyContour(preflight, evidence, primaryImageId =
   const rmsMm = Math.sqrt(diffs.reduce((sum, item) => sum + item ** 2, 0) / diffs.length) * maxRadius;
   const sorted = [...diffs].sort((left, right) => left - right); const hausdorff95Mm = sorted[Math.floor((sorted.length - 1) * .95)] * maxRadius;
   const modelArea = measured.silhouette.reduce((sum, item) => sum + interpolate(assemblySamples, item.zNorm), 0); const targetArea = measured.silhouette.reduce((sum, item) => sum + item.radiusNorm, 0); const intersection = measured.silhouette.reduce((sum, item) => sum + Math.min(interpolate(assemblySamples, item.zNorm), item.radiusNorm), 0); const union = modelArea + targetArea - intersection;
-  return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "occt_brep_assembly_tessellation", componentIds: placed.map((item) => item.componentId) };
+  // Keep the individual, calibrated residuals with the gate result.  The
+  // optimiser and the product dossier need to identify an actual region of
+  // the compiled B-Rep to improve; an aggregate score alone encourages
+  // opaque, product-specific nudges.  These values are derived only from the
+  // same normalized target contour and OCCT tessellation used above.
+  const worstSamples = measured.silhouette.map((target, index) => {
+    const modelRadiusNorm = interpolate(assemblySamples, target.zNorm);
+    return {
+      zNorm: Number(target.zNorm.toFixed(6)),
+      targetRadiusNorm: Number(target.radiusNorm.toFixed(6)),
+      modelRadiusNorm: Number(modelRadiusNorm.toFixed(6)),
+      residualMm: Number(((modelRadiusNorm - target.radiusNorm) * maxRadius).toFixed(6)),
+    };
+  }).sort((left, right) => Math.abs(right.residualMm) - Math.abs(left.residualMm)).slice(0, 12);
+  return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "occt_brep_assembly_tessellation", componentIds: placed.map((item) => item.componentId), worstSamples };
 }
