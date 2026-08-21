@@ -9,6 +9,7 @@ import { z } from "zod";
 import { COMPONENTS, fallbackComponent, fallbackContract, modelingSpecSchema } from "./modeling-spec.mjs";
 import { ModelingDossier } from "./modeling-dossier.mjs";
 import { qualityGates } from "./modeling-graph-v3.mjs";
+import { compareAxisymmetricContour } from "./image-evidence.mjs";
 
 const componentSchema = z.string().trim().min(1).max(100);
 const settingsSchema = z.object({ sizeXmm: z.coerce.number().positive().max(500).optional(), sizeYmm: z.coerce.number().positive().max(800).optional(), sizeZmm: z.coerce.number().positive().max(500).optional(), shellThicknessMm: z.coerce.number().positive().max(30).optional(), widthMm: z.coerce.number().positive().max(500).optional(), heightMm: z.coerce.number().positive().max(800).optional(), depthMm: z.coerce.number().positive().max(500).optional(), wallMm: z.coerce.number().positive().max(30).optional() }).passthrough();
@@ -83,6 +84,8 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   await dossier.writeSnapshot("graph/modeling-graph.json", modelingSpec.modelingGraph);
   if (payload.approvedDraft?.modelingGraphV3) await dossier.writeSnapshot("graph/modeling-graph-v3.json", payload.approvedDraft.modelingGraphV3);
   if (payload.approvedDraft?.evidenceManifest) await dossier.writeSnapshot("evidence/manifest.json", payload.approvedDraft.evidenceManifest);
+  if (payload.approvedDraft?.imageEvidence) await dossier.writeSnapshot("evidence/image-measurements.json", payload.approvedDraft.imageEvidence);
+  if (payload.approvedDraft?.fit) await dossier.writeSnapshot("validation/curve-fit.json", payload.approvedDraft.fit);
   await dossier.writeSnapshot("reports/assembly-contract.json", modelingSpec.contract);
   await dossier.writeSnapshot("inference/analysis.request.json", { model: payload.model, prompt: payload.prompt, imageIds: payload.imageIds, componentIds: payload.components, qualityProfile: payload.quality, graphHash: payload.graphHash });
   for (const [index, response] of (payload.approvedDraft?.inference ?? []).entries()) await dossier.writeSnapshot(`inference/${String(index + 1).padStart(2, "0")}.response.json`, response);
@@ -102,7 +105,9 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   // pass.  OCCT's validity/closed-shell facts and STEP round-trip dimensions
   // are known; interference needs a dedicated contact analysis and stays
   // explicitly not-measured until that analyser is available.
-  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
+  const primaryImageId = payload.approvedDraft?.evidenceManifest?.items?.find((item) => item.role === "primary_product")?.imageId ?? null;
+  const contour = modelingSpec.modelingGraph ? compareAxisymmetricContour(modelingSpec.modelingGraph, payload.approvedDraft?.imageEvidence, primaryImageId) : null;
+  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
   await dossier.writeSnapshot("validation/quality-gates.json", qualityReport);
   dossier.record("quality.gates", qualityReport);
   const dossierManifest = await dossier.finalize({ status: cad.manufacturingStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers, qualityReport });

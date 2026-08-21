@@ -114,10 +114,16 @@ export function qualityGates({ graphHash, contour = null, landmarks = null, brep
 /** Transitional adapter.  v1/v2 assets stay readable, while every newly
  * analysed draft gets an explicit component-local v3 envelope and provenance.
  * It intentionally does not pretend a GLB-only legacy asset is parametric. */
-export function adaptGraphToV3(graph, evidenceManifest) {
+export function adaptGraphToV3(graph, evidenceManifest, imageEvidence = null) {
+  const measuredPrimary = imageEvidence?.images?.find((item) => item.ok && item.measurement?.bodySilhouette?.length >= 12)?.measurement ?? null;
+  const largestProfileComponentId = graph.nodes
+    .filter((node) => Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 2)
+    .map((node) => ({ id: node.componentId, span: Math.max(...node.parameters.profile.map((point) => point.zMm)) - Math.min(...node.parameters.profile.map((point) => point.zMm)) }))
+    .sort((left, right) => right.span - left.span)[0]?.id ?? null;
   const components = graph.components.map((component) => {
     const profile = graph.nodes.find((node) => node.componentId === component.id && Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 2)?.parameters.profile ?? [];
-    const provenance = { source: "derived", imageId: evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null, crop: null, measurementMethod: "legacy-graph-adapter", confidence: .5, toleranceMm: null, approvalStatus: "proposed" };
+    const fitted = component.id === largestProfileComponentId && measuredPrimary;
+    const provenance = { source: fitted ? "image_measurement" : "derived", imageId: fitted ? measuredPrimary.imageId : evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null, crop: null, measurementMethod: fitted ? measuredPrimary.measurementMethod : "legacy-graph-adapter", confidence: fitted ? .82 : .5, toleranceMm: fitted ? .35 : null, approvalStatus: "proposed" };
     return {
       id: component.id, requestedName: component.requestedName, representation: component.representation,
       localCoordinateSystem: "component-local",

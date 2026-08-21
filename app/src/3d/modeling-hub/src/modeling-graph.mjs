@@ -240,11 +240,11 @@ export function applyModelingPatch(graph, patch) {
 }
 
 export function graphSketchPlan(product, graph) {
-  const width = 1000, height = 680; const views = ["front", "side", "isometric", "section", "exploded"];
+  const width = 1000, height = 680; const views = [{ id: "front", label: "정면" }, { id: "side", label: "측면" }, { id: "section", label: "단면" }, { id: "isometric", label: "등각" }, { id: "exploded", label: "분해" }];
   const scale = Math.min((width - 180) / Math.max(1, product.widthMm), (height - 120) / Math.max(1, product.heightMm));
   const originX = width / 2; const baseY = height - 46;
   const project = (xMm, zMm) => ({ x: originX + xMm * scale, y: baseY - zMm * scale });
-  const components = graph.components.map((component) => {
+  const components = graph.components.map((component, componentIndex) => {
     const componentNodes = graph.nodes.filter((node) => node.componentId === component.id);
     const transform = component.transform?.translationMm ?? { x: 0, y: 0, z: 0 };
     const profileNode = componentNodes.find((node) => node.parameters.profile?.length);
@@ -266,7 +266,16 @@ export function graphSketchPlan(product, graph) {
       const artworkHeight = Number(artwork?.parameters.heightMm ?? product.heightMm * .35); const radius = product.widthMm * .48;
       worldPoints = [{ xMm: -radius, zMm: hostZ + product.heightMm * .25 }, { xMm: radius, zMm: hostZ + product.heightMm * .25 }, { xMm: radius, zMm: hostZ + product.heightMm * .25 + artworkHeight }, { xMm: -radius, zMm: hostZ + product.heightMm * .25 + artworkHeight }];
     }
-    return { id: component.id, label: component.requestedName, representation: component.representation, nodeIds: componentNodes.map((node) => node.id), points: worldPoints.map((point) => project(point.xMm, point.zMm)), color: component.material.baseColor, note: component.summary };
+    const front = worldPoints.map((point) => project(point.xMm, point.zMm));
+    // Axisymmetric profiles share front/side geometry.  The alternate views
+    // still derive from the same graph coordinates (rather than a decorative
+    // AI image), and make the assembly transform/part relationship visible.
+    const side = worldPoints.map((point) => project(-point.xMm, point.zMm));
+    const section = worldPoints.map((point) => project(point.xMm * .72, point.zMm));
+    const isometric = worldPoints.map((point) => ({ x: originX + (point.xMm + point.zMm * .28) * scale, y: baseY - point.zMm * scale * .82 }));
+    const explodedOffset = (componentIndex - (graph.components.length - 1) / 2) * Math.max(35, product.widthMm * .85);
+    const exploded = worldPoints.map((point) => project(point.xMm + explodedOffset, point.zMm));
+    return { id: component.id, label: component.requestedName, representation: component.representation, nodeIds: componentNodes.map((node) => node.id), points: front, views: { front, side, section, isometric, exploded }, color: component.material.baseColor, note: component.summary };
   });
-  return { version: "net30.graph-sketch.v2", graphHash: graphHash(graph), width, height, title: `${product.name} 조립 좌표 실형상 그래프 검토`, views, components, annotations: [{ label: "승인 대상 ModelingGraph의 동일 조립 좌표·재질·노드 경계를 투영한 전면 검토 보기입니다.", x: 36, y: 42 }] };
+  return { version: "net30.graph-sketch.v3", graphHash: graphHash(graph), width, height, title: `${product.name} 조립 좌표 실형상 그래프 검토`, views, components, annotations: [{ label: "승인 대상 ModelingGraph의 동일 조립 좌표·재질·노드 경계를 투영한 검토 보기입니다.", x: 36, y: 42 }] };
 }

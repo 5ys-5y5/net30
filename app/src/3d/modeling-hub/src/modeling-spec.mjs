@@ -14,6 +14,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
+import { compareAxisymmetricContour, fitPrimaryAxisymmetricComponent, measureImageEvidence } from "./image-evidence.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
 export const JOB_STATES = ["researching", "awaiting_input", "planning", "building_components", "validating", "assembling", "refining", "review_required", "complete", "failed"];
@@ -323,6 +324,11 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const model = payload.model || defaultOpenAiModel(); if (!model || !openAiModels().includes(model)) throw new Error("허용된 OpenAI 모델을 선택하세요.");
   const requested = payload.requestedComponents ?? normaliseComponentInput(payload.componentInput);
   const evidenceManifest = buildEvidenceManifest(imageInputs);
+  // Continuous geometry comes from the deterministic measurement worker, not
+  // from an LLM's coordinate guess.  Failure to measure never falls back to a
+  // made-up profile; the LLM topology is retained and the missing evidence is
+  // surfaced to review instead.
+  const imageEvidence = await measureImageEvidence(imageInputs).catch((error) => ({ version: "net30.image-evidence.v1", images: imageInputs.map((image) => ({ ok: false, imageId: image.id, error: error instanceof Error ? error.message : String(error) })) }));
   let raw = null; let lastError = null;
   if (process.env.NET30_MODELING_DRAFT_FIXTURE === "true") raw = fixtureGraphOutput({ ...payload, requestedComponents: requested });
   else {
@@ -336,13 +342,16 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   let canonical;
   try { canonical = canonicalizeGraph(raw, requested, payload.imageIds); } catch (error) { throw new Error(`analysis_incomplete: ${error instanceof Error ? error.message : String(error)}`); }
   const evidenceScoped = enforceEvidenceScopes(canonical.graph, evidenceManifest);
-  canonical.graph = validateGraph(evidenceScoped.graph);
+  const primaryImageId = evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null;
+  const fitted = fitPrimaryAxisymmetricComponent(evidenceScoped.graph, imageEvidence, primaryImageId);
+  canonical.graph = validateGraph(fitted.graph);
   canonical.graphHash = graphHash(canonical.graph);
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
-  const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest);
-  const qualityReport = qualityGates({ graphHash: canonical.graphHash, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest, imageEvidence);
+  const contour = compareAxisymmetricContour(canonical.graph, imageEvidence, primaryImageId);
+  const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, evidenceComplete: false });
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, contour }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {
@@ -425,5 +434,5 @@ export function compileApprovedDraftToModelingSpec(draft) {
 }
 export function approvedDraftToLegacyPayload(draft) {
   const compiledSpec = compileApprovedDraftToModelingSpec(draft);
-  return { version: "net30.modeling-job.v3", components: compiledSpec.components.map((item) => item.componentInstanceId), prompt: draft.input.prompt, imageIds: draft.input.imageIds ?? [], model: draft.input.model, dimensionOverrides: compiledSpec.contract.dimensionsMm, settings: {}, quality: draft.input.qualityProfile ?? "balanced", compiledSpec, graphHash: compiledSpec.modelingGraph ? graphHash(compiledSpec.modelingGraph) : null, approvedDraft: { id: draft.id, revision: draft.revision, approvalHash: approvalHash(draft), product: draft.product, components: draft.components, questions: draft.questions, stickerSlots: draft.stickerSlots, inference: draft.inference ?? [], progress: draft.progress ?? [], iterations: draft.iterations ?? [], modelingGraphV3: draft.modelingGraphV3 ?? null, evidenceManifest: draft.evidenceManifest ?? null, qualityReport: draft.qualityReport ?? null, productModelingFile: draft.productModelingFile ?? null } };
+  return { version: "net30.modeling-job.v3", components: compiledSpec.components.map((item) => item.componentInstanceId), prompt: draft.input.prompt, imageIds: draft.input.imageIds ?? [], model: draft.input.model, dimensionOverrides: compiledSpec.contract.dimensionsMm, settings: {}, quality: draft.input.qualityProfile ?? "balanced", compiledSpec, graphHash: compiledSpec.modelingGraph ? graphHash(compiledSpec.modelingGraph) : null, approvedDraft: { id: draft.id, revision: draft.revision, approvalHash: approvalHash(draft), product: draft.product, components: draft.components, questions: draft.questions, stickerSlots: draft.stickerSlots, inference: draft.inference ?? [], progress: draft.progress ?? [], iterations: draft.iterations ?? [], modelingGraphV3: draft.modelingGraphV3 ?? null, evidenceManifest: draft.evidenceManifest ?? null, imageEvidence: draft.imageEvidence ?? null, fit: draft.fit ?? null, qualityReport: draft.qualityReport ?? null, productModelingFile: draft.productModelingFile ?? null } };
 }

@@ -4,7 +4,9 @@ RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender ca-certificates python3-numpy python3-pip \
   && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir --break-system-packages cadquery==2.6.1
+# Pillow is used only by the static evidence-measurement worker.  The worker
+# extracts image contours locally; model-authored code is never executed.
+RUN pip3 install --no-cache-dir --break-system-packages cadquery==2.6.1 Pillow==11.3.0
 
 WORKDIR /app
 COPY app/src/3d/modeling-hub/package.json app/src/3d/modeling-hub/package-lock.json ./
