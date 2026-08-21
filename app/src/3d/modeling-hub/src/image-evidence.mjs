@@ -300,12 +300,38 @@ function patternedRadialComponent(graph, nodes = new Map(graph.nodes.map((node) 
   const candidates = graph.components
     .filter((component) => component.representation === "brep_solid")
     .map((component) => {
-      const hasPattern = componentNodes(graph, component.id).some((node) => node.operation === "pattern" && node.inputNodeIds.length >= 1);
+      const hasPattern = componentNodes(graph, component.id).some((node) =>
+        (node.operation === "pattern" && node.inputNodeIds.length >= 1)
+        // v1/v2 revisions persisted this same radial topology as a translated
+        // primitive with a declared repeat count and an explicit host union.
+        // It is a feature-graph signal, not a component-name heuristic.
+        || (node.operation === "primitive" && node.inputNodeIds.length >= 1 && node.parameters?.operation === "union" && Number(node.parameters?.count) >= 2),
+      );
       const envelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, new Map())).filter(Number.isFinite));
       return { component, hasPattern, envelope };
     })
     .filter((item) => item.hasPattern && Number.isFinite(item.envelope));
   return candidates.sort((left, right) => right.envelope - left.envelope)[0] ?? null;
+}
+
+/** Place a declared radial closure on the approved assembly top when an older
+ * graph has no image-fit record. This is a deterministic datum migration for
+ * a topology that already states its repeated closure feature; it neither
+ * invents a cap from a name nor changes arbitrary unpatterned components. */
+export function fitPatternedClosureToAssemblyTop(graph, approvedDimensions = null) {
+  const targetHeight = Number(approvedDimensions?.heightMm);
+  if (!Number.isFinite(targetHeight) || targetHeight <= 0) return { graph, applied: false, adjustments: [], reason: "assembly_height_missing" };
+  const candidate = patternedRadialComponent(graph);
+  if (!candidate) return { graph, applied: false, adjustments: [], reason: "patterned_closure_not_found" };
+  const range = localAxialRange(graph, candidate.component);
+  if (!range || !(range.max > range.min) || range.max - range.min > targetHeight + 1e-6) return { graph, applied: false, adjustments: [], reason: "closure_height_unmeasurable" };
+  const targetZ = targetHeight - range.max;
+  const currentZ = Number(candidate.component.transform?.translationMm?.z ?? 0);
+  if (Math.abs(currentZ - targetZ) <= 1e-6) return { graph, applied: false, adjustments: [], reason: "already_aligned" };
+  const next = structuredClone(graph); const component = next.components.find((item) => item.id === candidate.component.id);
+  const transform = component.transform ?? {}; const translation = transform.translationMm ?? {};
+  component.transform = { ...transform, translationMm: { ...translation, z: Number(targetZ.toFixed(6)) } };
+  return { graph: next, applied: true, adjustments: [{ componentId: component.id, source: "patterned_closure_assembly_top_datum", previousZMm: currentZ, targetZMm: Number(targetZ.toFixed(6)), localMaxZMm: range.max, assemblyTopMm: targetHeight }] };
 }
 
 function scaleAxialParameters(parameters, scale, originZ) {

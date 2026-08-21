@@ -687,6 +687,16 @@ def compile_graph(graph_component, graph_nodes):
         if op not in ("transform", "mate", "rib"):
             shape = transform_shape(shape, params.get("transform"))
         legacy_boolean = params.get("operation")
+        # Earlier graph revisions represented a radial rib array as one
+        # translated box primitive with ``count`` and an inline union against
+        # its host.  That is still an explicit, measurable feature contract;
+        # dropping its count produced a smooth cap even though the approved
+        # graph requested 36 ribs.  Preserve the declared topology by
+        # materialising the radial instances before the explicit host union.
+        # New graphs emit the clearer rib -> pattern nodes above, while this
+        # adapter keeps historic, user-approved revisions visually faithful.
+        if op == "primitive" and legacy_boolean == "union" and inputs and params.get("count") is not None:
+            shape = radial_pattern(shape, params.get("count"))
         # A dedicated Boolean node already consumed its operands above.  The
         # legacy inline operation is only for compatibility on a generating
         # node; applying it again inverted a cap cavity into a void B-Rep.

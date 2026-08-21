@@ -81,6 +81,24 @@ try {
   const capReport = JSON.parse(await fs.readFile(`${capStem}.validation.json`, "utf8"));
   assert.equal(capReport.valid, true); assert.equal(capReport.closed, true); assert.equal(capReport.solidCount, 1, "a patterned ribbed closure must be fused into one B-Rep solid");
   assert.ok(Math.abs(capReport.localDatumShiftMm ?? Infinity) <= 1e-6, "a component already authored on its local assembly datum must not receive an extra placement shift");
+  // Old, already-approved product files encoded a radial cap rib array as a
+  // translated box with a positive count and inline union. It is not an
+  // unknown-shape fallback: the graph still supplies the host, cross-section,
+  // radial datum, axial height and exact instance count. Keep that historic
+  // feature visible while new analyses use the explicit rib -> pattern DAG.
+  const legacyRibCanonical = structuredClone(capCanonical);
+  const legacyRibComponent = legacyRibCanonical.graph.components[0];
+  const legacyBase = legacyRibCanonical.graph.nodes.find((node) => node.componentId === legacyRibComponent.id && node.operation === "primitive");
+  const legacyRib = { ...structuredClone(legacyBase), id: "legacy-cap-rib-array", operation: "primitive", inputNodeIds: [legacyBase.id], parameters: { ...legacyBase.parameters, primitive: "box", dimensionsMm: { x: 1.3, y: 4, z: 16 }, radiusMm: null, heightMm: 16, count: 36, operation: "union", transform: { translationMm: { x: 25.5, y: 0, z: 2 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
+  legacyRibCanonical.graph.nodes = [legacyBase, legacyRib];
+  legacyRibComponent.rootNodeIds = [legacyRib.id];
+  const legacyRibStem = path.join(temporary, legacyRibComponent.id); const legacyRibRequest = path.join(temporary, "legacy-rib.request.json");
+  await fs.writeFile(legacyRibRequest, JSON.stringify({ graphComponent: legacyRibComponent, graphNodes: legacyRibCanonical.graph.nodes, paths: { step: `${legacyRibStem}.step`, brep: `${legacyRibStem}.brep`, stl: `${legacyRibStem}.stl`, report: `${legacyRibStem}.validation.json` }, tessellation: { chordMm: .2, angularDeg: 15 } }));
+  const legacyRibRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), legacyRibRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(legacyRibRun.status, 0, `${legacyRibRun.stdout}\n${legacyRibRun.stderr}`);
+  const legacyRibReport = JSON.parse(await fs.readFile(`${legacyRibStem}.validation.json`, "utf8"));
+  assert.equal(legacyRibReport.valid, true); assert.equal(legacyRibReport.closed, true); assert.equal(legacyRibReport.solidCount, 1, "a legacy counted radial primitive must remain one fused cap solid");
+  assert.ok(legacyRibReport.surfaceAreaMm2 > 2 * Math.PI * 25 * 20, "all declared legacy rib instances must contribute actual B-Rep surface, not collapse to one box");
   const preflight = await preflightBrepGraph(capCanonical.graph, { preview: { title: "ribbed closure B-Rep review", maxTriangles: 80 } });
   assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
   assert.equal(preflight.sketchPlan?.version, "net30.brep-sketch.v1", "an approvable sketch must be derived from the same OCCT preflight solid");

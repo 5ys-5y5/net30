@@ -175,11 +175,24 @@ def graph_texture_material(name, spec, image_input, job_dir):
     elif hasattr(material, "blend_method"): material.blend_method='BLEND'
     return material
 def graph_decal(name, params, radius, height, target, material):
-    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or (360*float(crop.get("width",.33))))); dimensions=params.get("dimensionsMm") or {}; approved_height=float(params.get("heightMm") or dimensions.get("y") or 0)*MM; h=max(.001,approved_height if approved_height>0 else float(crop.get("height",.3))*height); anchor=float((params.get("transform") or {}).get("translationMm",{}).get("z") or 0)*MM; z=max(0,anchor-h/2) if anchor>0 else max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM
+    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or (360*float(crop.get("width",.33))))); dimensions=params.get("dimensionsMm") or {}; approved_height=float(params.get("heightMm") or dimensions.get("y") or 0)*MM; h=max(.001,approved_height if approved_height>0 else float(crop.get("height",.3))*height)
+    # A cylindrical artwork transform describes a point on the host's radial
+    # datum, not a second Cartesian placement for the completed curved sheet.
+    # The previous implementation built a sheet at ``radius`` and then added
+    # its approved radial ``x`` coordinate again.  That detached a front
+    # print from the bottle by roughly one radius.  Consume the radial datum,
+    # axial anchor and azimuth here exactly once; only an explicitly supported
+    # surface projection may decide how these values are interpreted.
+    transform=params.get("transform") or {}; translation=transform.get("translationMm") or {}
+    radial_x=float(translation.get("x") or 0); radial_y=float(translation.get("y") or 0)
+    radial_datum=math.hypot(radial_x,radial_y)*MM
+    host_radius=radial_datum if radial_datum > 1e-7 else radius
+    anchor=float(translation.get("z") or 0)*MM; z=max(0,anchor-h/2) if anchor>0 else max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=host_radius+float(params.get("offsetMm") or .15)*MM
+    azimuth=math.radians(float((transform.get("rotationDeg") or {}).get("z") or 0))
     segments=64; vs=[]; fs=[]
     for j in range(2):
         for i in range(segments+1):
-            a=-sweep/2+sweep*i/segments; vs.append((r*math.sin(a),-r*math.cos(a),z+j*h))
+            a=azimuth-sweep/2+sweep*i/segments; vs.append((r*math.sin(a),-r*math.cos(a),z+j*h))
     for i in range(segments): fs.append((i,i+1,segments+2+i,segments+1+i))
     mesh=bpy.data.meshes.new(name+"Mesh"); mesh.from_pydata(vs,[],fs); mesh.update(); uv=mesh.uv_layers.new(name="UVMap")
     for polygon in mesh.polygons:
@@ -220,10 +233,9 @@ def build_graph_visual_features(component, nodes, contract, image_inputs, job_di
         params=node["parameters"]; op=node["operation"]
         if op in ["surface_decal","surface_artwork"]:
             image=next((item for item in image_inputs if item.get("id")==params.get("artworkImageId")),None); decal_material=graph_texture_material(component["id"]+"Artwork",component["material"],image,job_dir); obj=graph_decal(component["requestedName"],params,radius,height,target,decal_material)
-            # graph_decal consumes its approved axial anchor while building the
-            # host surface; only lateral/rotational graph adjustments remain.
-            node_transform=params.get("transform") or {}; translation=node_transform.get("translationMm") or {}
-            apply_graph_transform([obj],{**node_transform,"translationMm":{**translation,"z":0}})
+            # graph_decal consumes the approved radial datum, axial anchor and
+            # azimuth. Applying its generic transform a second time would
+            # detach the curved artwork from its declared host surface.
         elif op in ["instance_distribution","volume"]:
             dimensions=params.get("dimensionsMm") or {"x":8,"y":8,"z":16}; quantity=min(120,int(params.get("quantity") or 1))
             for index in range(quantity):

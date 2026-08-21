@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { alignArtworkCropToPhysicalPlacement, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -79,6 +79,15 @@ assert.equal(typeof graphHash(capAssemblyFit.graph), "string", "a fitted Bézier
 const compiledDatumFit = fitCompiledClosureDatum(capAssemblyFit.graph, { diagnostics: [{ componentId: fittedClosure.id, code: "ok", boundsMm: { z: 24.5 } }] }, { heightMm: 100 });
 assert.equal(compiledDatumFit.applied, true, "the assembly datum must use the actual compiled child B-Rep height when it differs from the conservative graph envelope");
 assert.equal(compiledDatumFit.graph.components[0].transform.translationMm.z, 75.5);
+
+const legacyClosureGraph = structuredClone(ribbedGraph);
+const legacyClosure = legacyClosureGraph.components[0];
+const legacyBaseNode = legacyClosureGraph.nodes.find((node) => node.componentId === legacyClosure.id && node.operation === "revolve");
+const legacyRadialNode = { ...structuredClone(legacyBaseNode), id: "legacy-radial-closure", operation: "primitive", inputNodeIds: [legacyBaseNode.id], parameters: { ...legacyBaseNode.parameters, primitive: "box", profile: null, dimensionsMm: { x: 1.2, y: 4, z: 20 }, radiusMm: null, heightMm: 20, count: 36, operation: "union", transform: { translationMm: { x: 26, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
+legacyClosureGraph.nodes = [legacyBaseNode, legacyRadialNode]; legacyClosure.rootNodeIds = [legacyRadialNode.id]; legacyClosure.transform.translationMm.z = 0;
+const legacyClosureFit = fitPatternedClosureToAssemblyTop(legacyClosureGraph, { heightMm: 100 });
+assert.equal(legacyClosureFit.applied, true, "a stored counted radial primitive is a closure topology signal, not a name-based fallback");
+assert.equal(legacyClosureFit.graph.components[0].transform.translationMm.z, 80, "a legacy closure must be placed on the approved assembly top exactly once");
 
 // A graph may use a transformed primitive as the seed for a radial feature.
 // The measured closure outline must constrain that real graph feature instead

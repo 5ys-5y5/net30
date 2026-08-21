@@ -15,7 +15,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
-import { alignArtworkCropToPhysicalPlacement, compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
@@ -637,7 +637,16 @@ export function compileApprovedDraftToModelingSpec(draft) {
   const dimensionsMm = { widthMm: Number(questionValue(draft, "product.dimensionsMm.widthMm", 56)), heightMm: Number(questionValue(draft, "product.dimensionsMm.heightMm", 105)), depthMm: Number(questionValue(draft, "product.dimensionsMm.depthMm", 56)), wallMm: Number(questionValue(draft, "product.dimensionsMm.wallMm", 2.2)) };
   const contract = assemblyContractSchema.parse({ ...fallbackContract({ prompt: draft.input.prompt, dimensionOverrides: dimensionsMm }), product: { name: String(questionValue(draft, "product.name", draft.product.name)), family: "bottle", capacityMl: draft.product.capacityMl ?? null }, dimensionsMm });
   const sharedHash = contractHash(contract);
-  const approvedGraph = draft.modelingGraph ? structuredClone(validateGraph(draft.modelingGraph)) : null;
+  let approvedGraph = draft.modelingGraph ? structuredClone(validateGraph(draft.modelingGraph)) : null;
+  // Existing v1/v2 drafts can be assembled and reviewed, but some were saved
+  // before child-local datums and measured cap placement became mandatory.
+  // Adapt only the compiled copy: the original immutable graph/revision stays
+  // intact, while a declared radial closure and an absolute-Z child get the
+  // same component-local/XDE convention used by current analyses.
+  if (approvedGraph && !draft.fit?.closureAssembly && !draft.fit?.compiledClosureDatum) {
+    approvedGraph = normaliseComponentLocalCoordinates(approvedGraph).graph;
+    approvedGraph = fitPatternedClosureToAssemblyTop(approvedGraph, dimensionsMm).graph;
+  }
   if (approvedGraph) for (const item of draft.questions) {
     const value = item.userValue ?? item.recommendedValue;
     const nodeMatch = /^graph\.nodes\.([^.]+)\.parameters\.([^.]+)$/.exec(item.path);
