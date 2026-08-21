@@ -105,6 +105,20 @@ draft.state = "awaiting_parameter_review";
 const spec = compileApprovedDraftToModelingSpec(draft);
 assert.deepEqual(spec.components.map((component) => component.componentInstanceId), [analysis.components[0].id]);
 assert.deepEqual(spec.components.map((component) => component.version), ["net30.graph-component-spec.v1"], "a graph-backed draft must not be reconstructed as a fixed bottle/cap recipe");
+const printInput = draftPayloadSchema.parse({ ...input, componentInput: "유리병, 전면 인쇄", prompt: "병 전면의 흰 눈금과 로고를 이미지 crop으로 인쇄", imageIds: ["11111111-1111-4111-8111-111111111111"] });
+// A dynamic print is permitted only when an actual evidence image is scoped
+// for artwork. Keep this separate from the no-image cap fixture above so the
+// test exercises the same EvidenceManifest gate used in production.
+const printAnalysis = await analyseDraft(printInput, [{
+  id: "11111111-1111-4111-8111-111111111111",
+  filename: "Duran laboratory bottles 100.jpg",
+  mimeType: "image/jpeg",
+  dataUrl: "data:image/jpeg;base64,AA==",
+}]);
+const printDraft = { ...draft, input: printInput, product: printAnalysis.product, components: printAnalysis.components, modelingGraph: printAnalysis.modelingGraph, modelingGraphHash: printAnalysis.modelingGraphHash, questions: printAnalysis.questions.map((question) => ({ ...question, status: "accepted", userValue: question.recommendedValue })), stickerSlots: printAnalysis.stickerSlots };
+const printSpec = compileApprovedDraftToModelingSpec(printDraft);
+assert.equal(printSpec.components.find((component) => component.displayName === "전면 인쇄")?.representation, "visual_surface", "a user-named front print must remain a graph surface instead of becoming a fixed recipe");
+assert.ok(printSpec.components.every((component) => component.version === "net30.graph-component-spec.v1"));
 const workingDraft = structuredClone(draft);
 const widthQuestion = workingDraft.questions.find((question) => question.path === "product.dimensionsMm.widthMm");
 const graphHashBeforeDimensionOverride = workingDraft.modelingGraphHash;
