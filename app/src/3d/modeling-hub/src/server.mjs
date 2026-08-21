@@ -13,6 +13,7 @@ import { createVersionStore } from "./version-store.mjs";
 import { createModelStore, ModelStoreError } from "./model-store.mjs";
 import { SKU_IDS, SKU_REGISTRY } from "./sku-registry.mjs";
 import { createDraftStore } from "./draft-store.mjs";
+import { ModelingDossier } from "./modeling-dossier.mjs";
 import { analyseDraft, analyseGraphPatch, approvedDraftToLegacyPayload, approvalHash, applyQuestionValue, draftPayloadSchema, draftReady, modelingGraphComponents, modelingGraphQuestions } from "./modeling-spec.mjs";
 import { canonicalizeGraph, graphHash, graphSketchPlan } from "./modeling-graph.mjs";
 
@@ -29,6 +30,26 @@ function emitDraft(draft, progress = null) { const detail={ eventId:progress?.ev
 async function saveDraft(draft, state, message) { draft.state=state; draft.message=message; draft.revision += 1; await drafts.save(draft); emitDraft(draft); return draft; }
 async function progressDraft(draft, progress) { const event=await drafts.appendProgress(draft,progress); emitDraft(draft,event); return event; }
 function publicDraft(draft) { return { ...draft, approval: draftReady(draft) }; }
+async function writeAnalysisDossier(draft, { status, error = null } = {}) {
+  // A failed analysis is a first-class product-modeling attempt. Keep its
+  // evidence and explicit OpenAI outputs for diagnosis, but never persist
+  // uploaded bytes, API credentials, or absolute local paths.
+  const root = path.join(assetRoot, "drafts", draft.id);
+  const dossier = new ModelingDossier(root, `draft:${draft.id}`);
+  dossier.record("draft.created", { id: draft.id, revision: draft.revision, state: draft.state, input: draft.input });
+  dossier.record("analysis.state", { status, error, message: draft.message, progress: draft.progress ?? [] });
+  for (const response of draft.inference ?? []) dossier.record("inference.completed", response);
+  await dossier.writeSnapshot("inference/analysis.request.json", { model: draft.input?.model, prompt: draft.input?.prompt, imageIds: draft.input?.imageIds ?? [], requestedComponents: draft.input?.requestedComponents ?? [], qualityProfile: draft.input?.qualityProfile ?? "balanced" });
+  if (draft.evidenceManifest) await dossier.writeSnapshot("evidence/manifest.json", draft.evidenceManifest);
+  if (draft.imageEvidence) await dossier.writeSnapshot("evidence/image-measurements.json", draft.imageEvidence);
+  if (draft.modelingGraph) await dossier.writeSnapshot("graph/modeling-graph.json", draft.modelingGraph);
+  if (draft.modelingGraphV3) await dossier.writeSnapshot("graph/modeling-graph-v3.json", draft.modelingGraphV3);
+  if (draft.fit) await dossier.writeSnapshot("validation/curve-fit.json", draft.fit);
+  if (draft.qualityReport) await dossier.writeSnapshot("validation/quality-gates.json", draft.qualityReport);
+  await dossier.writeSnapshot("decisions/proposed-decisions.json", { questions: draft.questions ?? [], iterations: draft.iterations ?? [] });
+  await dossier.writeSnapshot("performance/spans.json", { progress: draft.progress ?? [] });
+  await dossier.finalize({ status, graphHash: draft.modelingGraphHash, error });
+}
 function activeIteration(draft) { return (draft.iterations ?? []).find((item) => item.id === draft.activeIterationId) ?? null; }
 function createSketchIteration(draft, { prompt = "", markup = [], parentIterationId = null, patch = null, baseGraphHash = null } = {}) {
   const now = new Date().toISOString(); const ordinal = (draft.iterations ?? []).length + 1;
@@ -168,7 +189,8 @@ app.post("/api/modeling/drafts",async(req,res)=>{ if(!authorized(req)) return re
     createSketchIteration(draft, { prompt: payload.prompt });
     await progressDraft(draft,{operation:"analysis",stage:"질문 완전성 검사",state:"complete",completed:analysis.questions.length,total:analysis.questions.length,unit:"questions",message:"필수 승인 질문을 확인했습니다."});
     await saveDraft(draft,"awaiting_product_review","제품 식별과 전체 기준값을 검토하세요.");
-  } catch(error) { const message=error instanceof Error?error.message:String(error); await saveDraft(draft,message.startsWith("analysis_incomplete")?"analysis_incomplete":message.startsWith("needs_custom_recipe")?"needs_custom_recipe":"failed",message); await progressDraft(draft,{operation:"analysis",stage:"분석 실패",state:"failed",message}); } })();
+    await writeAnalysisDossier(draft,{status:"awaiting_product_review"});
+  } catch(error) { const message=error instanceof Error?error.message:String(error); const status=message.startsWith("analysis_incomplete")?"analysis_incomplete":message.startsWith("needs_custom_recipe")?"needs_custom_recipe":"failed"; await saveDraft(draft,status,message); await progressDraft(draft,{operation:"analysis",stage:"분석 실패",state:"failed",message}); await writeAnalysisDossier(draft,{status,error:message}).catch((dossierError)=>console.error("analysis dossier failed",dossierError)); } })();
 } catch(error) { return modelStoreFailure(res,error); }});
 app.get("/api/modeling/drafts/:id",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); return draft?res.json({ok:true,draft:publicDraft(draft)}):res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); });
 app.get("/api/modeling/drafts/:id/graph",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); if(!draft.modelingGraph) return res.status(404).json({ok:false,error:"이전 초안에는 ModelingGraph가 없습니다."}); return res.json({ok:true,graph:draft.modelingGraph,graphV3:draft.modelingGraphV3 ?? null,evidenceManifest:draft.evidenceManifest ?? null,imageEvidence:draft.imageEvidence ?? null,fit:draft.fit ?? null,qualityReport:draft.qualityReport ?? null,graphHash:draft.modelingGraphHash,compilerVersion:draft.compilerVersion,capabilityVersion:draft.capabilityVersion}); });
