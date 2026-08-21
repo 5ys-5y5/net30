@@ -21,7 +21,14 @@ def mat(name, spec):
     value = bpy.data.materials.new(name); value.use_nodes = True; p = value.node_tree.nodes.get("Principled BSDF")
     p.inputs["Base Color"].default_value = (*rgb(spec["color"]), 1); p.inputs["Roughness"].default_value = spec["roughness"]
     if "Transmission Weight" in p.inputs: p.inputs["Transmission Weight"].default_value = spec["transmission"]
-    if spec["transmission"]: p.inputs["IOR"].default_value = 1.52
+    if "IOR" in p.inputs: p.inputs["IOR"].default_value = float(spec.get("ior",1.52))
+    if "Alpha" in p.inputs: p.inputs["Alpha"].default_value = float(spec.get("opacity",1))
+    # Keep the approved PBR opacity in the GLB.  Leaving Blender's material in
+    # its opaque render mode makes a physically transmissive glass component
+    # look like white plastic even though the ModelingGraph specified glass.
+    if float(spec.get("opacity",1)) < .999:
+        if hasattr(value, "surface_render_method"): value.surface_render_method = 'DITHERED'
+        elif hasattr(value, "blend_method"): value.blend_method = 'BLEND'
     return value
 def smooth(obj, bevel=.0003):
     if obj.type != "MESH": return
@@ -75,7 +82,7 @@ def sticker_slot(name, source_id, radius, height, target, values):
     obj.data.materials.append(material)
     obj["net30_sticker_slot"]={"sourceGraphicId":source_id,"physicalWidthMm":width/MM,"physicalHeightMm":h/MM,"wrapDegrees":math.degrees(sweep),"surfaceOffsetMm":offset/MM}; return obj
 def graph_material(name, spec):
-    return mat(name,{"color":spec["baseColor"],"roughness":spec["roughness"],"transmission":spec["transmission"]})
+    return mat(name,{"color":spec["baseColor"],"roughness":spec["roughness"],"transmission":spec["transmission"],"ior":spec.get("ior",1.52),"opacity":spec.get("opacity",1)})
 def absolute_lathe(name, points, target, material, wall=0):
     if len(points)<2: raise RuntimeError(f"{name}: revolve profile needs at least two points")
     rings=128; vertices=[]; faces=[]
