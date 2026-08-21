@@ -267,7 +267,11 @@ app.post("/api/modeling/drafts/:id/reanalyze",async(req,res)=>{
   if(req.body?.expectedRevision!==draft.revision) return res.status(409).json({ok:false,error:"revision_conflict",draft:publicDraft(draft)});
   await saveDraft(draft,"analyzing_parameters","저장된 OpenAI 응답의 컴포넌트 단위 복구를 먼저 시도합니다.");
   try {
-    let analysis; const retainedOutput=draft.inference?.at(-1)?.output;
+    // A draft may contain both a complete ModelingGraph response and later
+    // one-component repair responses.  Only the former can seed a full
+    // reanalysis; using `.at(-1)` selected `{ component }` and made retrying
+    // a failed draft impossible after a useful repair had been recorded.
+    let analysis; const retainedOutput=[...(draft.inference ?? [])].reverse().map((record)=>record?.output).find((output)=>output&&typeof output.product === "object"&&Array.isArray(output.components)&&Array.isArray(output.interfaces));
     if(retainedOutput){
       const canonical=canonicalizeGraph(retainedOutput,draft.input.requestedComponents,draft.input.imageIds);
       const product={...canonical.product,family:"container",dimensionsMm:{widthMm:canonical.product.widthMm,heightMm:canonical.product.heightMm,depthMm:canonical.product.depthMm,wallMm:2.2}};
