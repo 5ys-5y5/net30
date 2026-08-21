@@ -234,6 +234,31 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       const candidates = feature.operation === "revolve" && feature.parameters.profile?.length ? [feature] : feature.inputKeys.flatMap((input) => outerRevolveFor(input, seen) ?? []);
       return candidates.sort((left, right) => (Math.max(...right.parameters.profile.map((point) => point.zMm)) - Math.min(...right.parameters.profile.map((point) => point.zMm))) - (Math.max(...left.parameters.profile.map((point) => point.zMm)) - Math.min(...left.parameters.profile.map((point) => point.zMm))))[0] ?? null;
     };
+    const radialAxialEnvelope = (key, seen = new Set()) => {
+      if (seen.has(key)) return null; seen.add(key);
+      const feature = currentFeatures.get(key); if (!feature) return null;
+      const params = feature.parameters ?? {}; const translation = params.transform?.translationMm ?? { x: 0, y: 0, z: 0 };
+      const inputs = feature.inputKeys.map((input) => radialAxialEnvelope(input, seen)).filter(Boolean);
+      if (feature.operation === "revolve") {
+        const profile = params.profile ?? []; if (!profile.length) return null;
+        return { radius: Math.max(...profile.map((point) => Math.abs(point.xMm))) + Math.hypot(translation.x ?? 0, translation.y ?? 0), zMin: Math.min(...profile.map((point) => point.zMm)) + (translation.z ?? 0), zMax: Math.max(...profile.map((point) => point.zMm)) + (translation.z ?? 0) };
+      }
+      if (["primitive", "extrude"].includes(feature.operation)) {
+        const dimensions = params.dimensionsMm; const radius = Number(params.radiusMm ?? (dimensions ? Math.max(dimensions.x, dimensions.y) / 2 : 0)); const height = Number(params.heightMm ?? dimensions?.z ?? 0);
+        return Number.isFinite(radius) && Number.isFinite(height) ? { radius: radius + Math.hypot(translation.x ?? 0, translation.y ?? 0), zMin: translation.z ?? 0, zMax: (translation.z ?? 0) + height } : null;
+      }
+      if (feature.operation === "rib") {
+        const base = inputs[0]; if (!base) return null; const depth = Number(params.depthMm ?? params.thicknessMm ?? 0); const height = Number(params.heightMm ?? 0); const z = Number(params.transform?.translationMm?.z ?? 0);
+        return { radius: base.radius + Math.max(0, depth) * .65, zMin: z, zMax: z + height };
+      }
+      if (feature.operation === "boolean") {
+        if (!inputs.length) return null;
+        if (params.operation === "cut") return inputs[0];
+        return { radius: Math.max(...inputs.map((item) => item.radius)), zMin: Math.min(...inputs.map((item) => item.zMin)), zMax: Math.max(...inputs.map((item) => item.zMax)) };
+      }
+      if (inputs.length) return { radius: Math.max(...inputs.map((item) => item.radius)), zMin: Math.min(...inputs.map((item) => item.zMin)), zMax: Math.max(...inputs.map((item) => item.zMax)) };
+      return null;
+    };
     for (const feature of features) {
       if (feature.inputKeys.some((key) => !currentFeatures.has(key))) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
       if (["revolve", "extrude", "primitive"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
@@ -266,6 +291,12 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
           // exact topology error and must return a contained cavity/profile.
           if (crossing) throw new Error(`graph_repair_required: ${component.componentKey}.boolean.cavityWithinOuter`);
         }
+        const baseEnvelope = radialAxialEnvelope(feature.inputKeys[0]);
+        const escapingCutter = feature.inputKeys.slice(1).map((key) => radialAxialEnvelope(key)).find((item) => item && (!baseEnvelope || item.radius > baseEnvelope.radius + .01 || item.zMax < baseEnvelope.zMin + .01 || item.zMin > baseEnvelope.zMax - .01));
+        // Boolean cut semantics are ordered.  A planner sometimes reverses a
+        // vessel's outer/inner profiles, which compiles without a syntax error
+        // but removes the intended solid and leaves disconnected remnants.
+        if (escapingCutter) throw new Error(`graph_repair_required: ${component.componentKey}.boolean.cutContainment`);
       }
     }
     /* A manufacturing component has exactly one terminal B-Rep root.  Several
