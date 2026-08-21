@@ -187,6 +187,15 @@ export function AssociationRow({ selected = false, className = "", ...props }: H
   return <li className={joinClasses(CLASS.associationRow, className)} data-selected={selected} {...props} />;
 }
 
+/** Product model cards have their own responsive collection; association rows remain relationship-list primitives. */
+export function AssetLibraryGrid({ className = "", ...props }: HTMLAttributes<HTMLUListElement>) {
+  return <ul className={joinClasses(CLASS.assetLibraryGrid, className)} {...props} />;
+}
+
+export function AssetLibraryCard({ selected = false, className = "", ...props }: HTMLAttributes<HTMLLIElement> & { selected?: boolean }) {
+  return <li className={joinClasses(CLASS.assetLibraryCard, className)} data-selected={selected} {...props} />;
+}
+
 export function AssetIdentity({ children, className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={joinClasses(CLASS.assetIdentity, className)} {...props}>{children}</div>;
 }
