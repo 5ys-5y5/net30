@@ -20,4 +20,5 @@ app/src/3d/*/.env
 *.pyc
 app/src/3d/modeling-hub/.env
 .net30-railway.env
+.net30-modeling-assets/
 .cadquery-venv/

@@ -22,7 +22,15 @@ import { preflightBrepGraph } from "./brep-preflight.mjs";
 const app = express(); const token = (process.env.NET30_MODELING_HUB_TOKEN ?? "").trim();
 const origins = (process.env.NET30_MODELING_ALLOWED_ORIGINS ?? "http://127.0.0.1:5173").split(",").map((value) => value.trim()).filter(Boolean);
 const env = (name, fallback = "") => process.env[name]?.trim() || fallback;
-const repoRoot = env("NET30_REPO", path.resolve(process.cwd(), "../../../..")); const assetRoot = env("NET30_3D_ASSET_ROOT", path.resolve(repoRoot, "../net30-3d-assets")); const jobsRoot = path.join(assetRoot, "jobs"); const storage = createAssetStorage(assetRoot); const versions = createVersionStore(assetRoot); const productModels = createModelStore(assetRoot,{skuIds:SKU_IDS});
+const repoRoot = env("NET30_REPO", path.resolve(process.cwd(), "../../../.."));
+// Keep local modeling state inside the checkout by default.  The former
+// sibling-directory default made `npm run dev` depend on a folder that often
+// did not exist or was not writable, which left the storefront proxy with an
+// empty response. Railway always supplies `/data`, so this does not alter
+// production persistence.
+const assetRoot = env("NET30_3D_ASSET_ROOT", path.join(repoRoot, ".net30-modeling-assets"));
+process.env.NET30_3D_ASSET_ROOT ??= assetRoot;
+const jobsRoot = path.join(assetRoot, "jobs"); const storage = createAssetStorage(assetRoot); const versions = createVersionStore(assetRoot); const productModels = createModelStore(assetRoot,{skuIds:SKU_IDS});
 const jobs = new Map(); const draftClients = new Map();
 const drafts = createDraftStore(assetRoot);
 function authorized(req) { if (!token) return true; const local=["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? ""); return local || req.headers.authorization === `Bearer ${token}`; }

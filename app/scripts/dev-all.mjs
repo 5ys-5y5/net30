@@ -7,6 +7,7 @@ const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serviceDir = resolve(appDir, "src/3d/vitamin-bottle-service");
 const hubDir = resolve(appDir, "src/3d/modeling-hub");
 const modelingHubPort = Number(process.env.NET30_MODELING_HUB_PORT ?? 8788);
+const modelingAssetRoot = process.env.NET30_3D_ASSET_ROOT ?? resolve(appDir, "..", ".net30-modeling-assets");
 // Local development should exercise the same OpenAI → Blender path as
 // production by default. Set NET30_USE_LOCAL_BLENDER=0 only when deliberately
 // working on the storefront without the modeling service.
@@ -79,7 +80,7 @@ try {
   await waitFor("http://127.0.0.1:5174/3d/", "3D service");
 
   if (useLocalBlender) {
-    launch("Modeling hub", hubDir, ["run", "dev"], { NET30_MODELING_HUB_PORT: String(modelingHubPort) });
+    launch("Modeling hub", hubDir, ["run", "dev"], { NET30_MODELING_HUB_PORT: String(modelingHubPort), NET30_3D_ASSET_ROOT: modelingAssetRoot });
     await waitFor(`http://127.0.0.1:${modelingHubPort}/health`, "Modeling hub");
   }
 

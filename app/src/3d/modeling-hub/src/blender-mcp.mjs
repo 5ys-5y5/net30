@@ -30,7 +30,7 @@ export async function composeSelectedComponentGlbs(componentFiles, { assetRoot }
   if (new Set(items.map((item) => item.component)).size !== items.length) throw new Error("컴포넌트별로 하나의 버전만 조립할 수 있습니다.");
   for (const item of items) if (!existsSync(item.sourcePath)) throw new Error(`${item.component} 버전 GLB를 찾을 수 없습니다.`);
 
-  const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../net30-3d-assets")));
+  const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../.net30-modeling-assets")));
   const signature = createHash("sha256").update(items.map((item) => `${item.component}:${item.versionId}:${JSON.stringify(item.transform)}`).join("\n")).digest("hex").slice(0, 24);
   const assemblyId = `assembly-${signature}`;
   const outputPath = path.join(root, "component-library", "assemblies", `${assemblyId}.glb`);
@@ -89,7 +89,7 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   // not rebuilt into the same canonical B-Rep pipeline.
   const compatibleSpec = spec?.modelingGraph ? { ...spec, modelingGraph: normaliseGraphCompatibility(spec.modelingGraph) } : spec;
   const modelingSpec = modelingSpecSchema.parse(compatibleSpec);
-  const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../net30-3d-assets"))); const jobDir = path.join(root, "jobs", jobId);
+  const root = path.resolve(assetRoot ?? env("NET30_3D_ASSET_ROOT", path.resolve(process.cwd(), "../../../../.net30-modeling-assets"))); const jobDir = path.join(root, "jobs", jobId);
   const renderDir = path.join(jobDir, "render"); const componentDir = path.join(jobDir, "components"); const cadDir = path.join(jobDir, "cad"); const requestPath = path.join(jobDir, "request.json"); const resultPath = path.join(jobDir, "result.json"); const assemblyGlb = path.join(renderDir, "assembly.glb");
   await Promise.all([fs.mkdir(renderDir, { recursive: true }), fs.mkdir(componentDir, { recursive: true }), fs.mkdir(cadDir, { recursive: true })]);
   const dossier = new ModelingDossier(jobDir, jobId); dossier.record("job.started", { jobId, quality: payload.quality, graphHash: payload.graphHash, components: payload.components, imageIds: payload.imageIds });
