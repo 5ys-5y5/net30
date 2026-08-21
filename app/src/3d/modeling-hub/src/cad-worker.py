@@ -26,7 +26,29 @@ def transform_shape(shape, transform):
 
 
 def revolve(params):
+    """Build an axisymmetric solid from a component-local generating curve.
+
+    The profile is deliberately kept in the part coordinate system.  Assembly
+    placement belongs exclusively to the XDE assembly, otherwise an exported
+    child GLB receives the same transform a second time when it is assembled.
+    ``curveSegments`` is the v3 representation; the legacy point list remains
+    a lossless compatibility input while existing assets are migrated.
+    """
+    segments = params.get("curveSegments") or []
     raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or [])]
+    if segments:
+        raw = []
+        for segment in segments:
+            kind = segment.get("kind")
+            if kind not in ("line", "arc", "bezier", "nurbs"):
+                raise RuntimeError(f"unsupported_operation: profile segment {kind}")
+            points = segment.get("points") or []
+            if kind == "nurbs":
+                points = segment.get("poles") or points
+            for point in points:
+                pair = (float(point["xMm"]), float(point["zMm"]))
+                if not raw or math.dist(pair, raw[-1]) > 1e-8:
+                    raw.append(pair)
     points = []
     for point in raw:
         if not points or math.dist(point, points[-1]) > 1e-8: points.append(point)
@@ -48,7 +70,9 @@ def primitive(params):
 
 
 def radial_pattern(shape, count):
-    count = max(1, min(512, int(count or 1))); result = None
+    if count is None or int(count) < 1:
+        raise RuntimeError("graph_invalid: radial pattern requires a positive count")
+    count = min(512, int(count)); result = None
     for index in range(count):
         instance = shape.rotate((0, 0, 0), (0, 0, 1), 360 * index / count)
         result = instance if result is None else result.union(instance)
@@ -76,15 +100,26 @@ def compile_graph(graph_component, graph_nodes):
             shape = inputs[0].union(patterned) if len(inputs) == 2 else patterned
         elif op == "rib":
             if len(inputs) < 1: raise RuntimeError(f"graph_invalid: rib node {node['id']} requires baseSolidNodeId input")
-            width = max(.05, float(params.get("spacingMm") or 1)); depth = max(.05, float(params.get("depthMm") or 1)); height = max(.05, float(params.get("heightMm") or 10))
-            rib = cq.Workplane("XY").box(width, depth, height).translate((float(params.get("radiusMm") or 1) + depth / 2, 0, height / 2))
+            required = ("count", "spacingMm", "depthMm", "heightMm")
+            missing = [key for key in required if params.get(key) is None]
+            if missing: raise RuntimeError(f"graph_invalid: rib node {node['id']} missing {','.join(missing)}")
+            width = max(.05, float(params["spacingMm"])); depth = max(.05, float(params["depthMm"])); height = max(.05, float(params["heightMm"]))
+            base_box = inputs[0].val().BoundingBox()
+            radius = float(params["radiusMm"]) if params.get("radiusMm") is not None else max(abs(base_box.xmin), abs(base_box.xmax), abs(base_box.ymin), abs(base_box.ymax))
+            z_center = float(params.get("zMm", (base_box.zmin + base_box.zmax) / 2))
+            # A radial rib is placed tangent to the exterior, then patterned
+            # around the part.  It is never silently substituted by a 1 mm box.
+            rib = cq.Workplane("XY").box(depth, width, height).translate((radius + depth / 2, 0, z_center))
             shape = inputs[0].union(radial_pattern(rib, params.get("count")))
         elif op in ("transform", "mate"):
             if len(inputs) != 1: raise RuntimeError(f"graph_invalid: {op} node {node['id']} requires one input")
             shape = transform_shape(inputs[0], params.get("transform"))
         elif op in ("surface_decal", "surface_artwork", "volume", "instance_distribution"): continue
         else: raise RuntimeError(f"unsupported_operation: {node['id']}.{op}")
-        shape = transform_shape(shape, params.get("transform"))
+        # transform/mate already consumed their transform above.  Applying it a
+        # second time used to shift caps and rings away from their assemblies.
+        if op not in ("transform", "mate"):
+            shape = transform_shape(shape, params.get("transform"))
         legacy_boolean = params.get("operation")
         if legacy_boolean in ("cut", "union", "intersect") and inputs:
             base = inputs[0]; shape = base.cut(shape) if legacy_boolean == "cut" else base.intersect(shape) if legacy_boolean == "intersect" else base.union(shape)
@@ -93,7 +128,9 @@ def compile_graph(graph_component, graph_nodes):
     if not roots: raise RuntimeError("graph_invalid: component has no compiled B-Rep root")
     shape = roots[0]
     for addition in roots[1:]: shape = shape.union(addition)
-    return transform_shape(shape, graph_component.get("transform"))
+    # Component transforms are assembly transforms.  B-Rep children are always
+    # exported in local coordinates; cad-assembly-worker/XDE owns placement.
+    return shape
 
 
 def main():

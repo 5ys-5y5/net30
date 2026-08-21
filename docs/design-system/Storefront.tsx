@@ -75,6 +75,8 @@ import {
   DecisionHistoryDisclosure,
   ReviewScopeNavigator,
   ReviewScopeControl,
+  ReviewStageNavigator,
+  ReviewStageControl,
   ScopedApprovalBar,
   ProcessProgressPanel,
   ProgressStageList,
@@ -598,6 +600,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [qualityProfile, setQualityProfile] = useState<"speed" | "balanced" | "quality">("balanced");
   const [draft, setDraft] = useState<ModelingDraft | null>(null);
   const [activeReviewScope, setActiveReviewScope] = useState("assembly");
+  const [activeReviewStage, setActiveReviewStage] = useState("product_assembly");
   const [draftDecisionPending, setDraftDecisionPending] = useState(false);
   const [draftEdits, setDraftEdits] = useState<Record<string, PendingDraftEdit>>({});
   const [buildInProgress, setBuildInProgress] = useState(false);
@@ -642,7 +645,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     void fetch(`${studio.endpoint.replace(/\/jobs$/, "/drafts")}/${encodeURIComponent(draftId)}`, { signal: controller.signal }).then(async (response) => {
       const body = await response.json() as { ok?: boolean; draft?: ModelingDraft; error?: string };
       if (!response.ok || !body.ok || !body.draft) throw new Error(body.error ?? "진행 중인 초안을 복원하지 못했습니다.");
-      setDraft(body.draft); setProgress(body.draft.message); setActiveReviewScope("assembly");
+      setDraft(body.draft); setProgress(body.draft.message); setActiveReviewScope("assembly"); setActiveReviewStage("product_assembly");
     }).catch((requestError) => { if (!controller.signal.aborted) setError(requestError instanceof Error ? requestError.message : String(requestError)); });
     return () => controller.abort();
   }, [studio.endpoint]);
@@ -947,6 +950,18 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     finally { setDraftDecisionPending(false); }
   };
   const reviewScopes = useMemo(() => draft ? [{ id: "assembly", label: "제품·조립" }, ...draft.components.map((component) => ({ id: component.id, label: component.displayName })), { id: "graphics", label: "고정 HTML 그래픽" }] : [], [draft]);
+  const reviewStages = [
+    { id: "product_assembly", label: "제품·조립" }, { id: "component_structure", label: "구성 부품" },
+    { id: "shape_dimensions", label: "형상·치수" }, { id: "material_surface", label: "재질·표면" },
+    { id: "interfaces", label: "결합·간극" }, { id: "prebuild", label: "최종 실형상" },
+  ] as const;
+  const stageForQuestion = (question: ModelingDraftQuestion) => {
+    if (["product", "assembly"].includes(question.scope)) return "product_assembly";
+    if (question.scope === "interface") return "interfaces";
+    if (question.scope === "sticker-slot" || /재질|표면|인쇄/.test(question.category)) return "material_surface";
+    if (/형상·치수|조립 위치/.test(question.category)) return "shape_dimensions";
+    return "component_structure";
+  };
   const activeScopeQuestions = useMemo(() => {
     if (!draft) return [];
     if (activeReviewScope === "assembly") return draft.questions.filter((question) => ["product", "assembly", "interface"].includes(question.scope));
@@ -954,6 +969,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     return draft.questions.filter((question) => question.scope === "component" && question.componentInstanceId === activeReviewScope);
   }, [activeReviewScope, draft]);
   const activeScopeLinkedQuestions = useMemo(() => !draft || ["assembly", "graphics"].includes(activeReviewScope) ? [] : draft.questions.filter((question) => ["assembly", "interface"].includes(question.scope) && question.appliesToComponentIds?.includes(activeReviewScope)), [activeReviewScope, draft]);
+  const activeStageQuestions = useMemo(() => activeScopeQuestions.filter((question) => stageForQuestion(question) === activeReviewStage), [activeScopeQuestions, activeReviewStage]);
   const approveQuestions = async (questions: readonly ModelingDraftQuestion[]) => {
     if (!draft) return;
     const proposed = questions.filter((question) => question.status === "proposed");
@@ -1084,16 +1100,17 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </ModelResultPanel> : draft ? <ReviewWorkspace>
         <ReviewWorkspaceHeader><Label>{buildFailed ? "OPENAI × BLENDER · Blender 생성 실패" : "OPENAI × BLENDER · 승인 워크플로"}</Label><ReviewStatus>{buildFailed ? "재실행 가능" : draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
         <WorkflowStepper>{MODELING_WORKFLOW_STEPS.map((step, index) => <WorkflowStep status={index < activeWorkflowIndex ? "completed" : index === activeWorkflowIndex ? "current" : "upcoming"} key={step}>{index + 1}. {step}</WorkflowStep>)}</WorkflowStepper>
-        <GraphBindingSummary><span>working graph · {draft.modelingGraphHash?.slice(0, 12) ?? "분석 중"}</span><span>범위 · {reviewScopes.find((scope) => scope.id === activeReviewScope)?.label ?? "제품·조립"}</span><span>승인값과 스케치는 같은 hash만 표시</span></GraphBindingSummary>
+        <GraphBindingSummary><span>working graph · {draft.modelingGraphHash?.slice(0, 12) ?? "분석 중"}</span><span>범위 · {reviewScopes.find((scope) => scope.id === activeReviewScope)?.label ?? "제품·조립"}</span><span>단계 · {reviewStages.find((stage) => stage.id === activeReviewStage)?.label}</span><span>승인값과 스케치는 같은 hash만 표시</span></GraphBindingSummary>
         <ReviewProgress>{draft.approval?.ready ? "모든 값 승인됨" : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</ReviewProgress>
         <ReviewScopeNavigator onKeyDown={(event) => { if (!reviewScopes.length || !["ArrowLeft", "ArrowRight"].includes(event.key)) return; event.preventDefault(); const index = reviewScopes.findIndex((scope) => scope.id === activeReviewScope); setActiveReviewScope(reviewScopes[(index + (event.key === "ArrowRight" ? 1 : reviewScopes.length - 1)) % reviewScopes.length].id); }}>
           {reviewScopes.map((scope) => { const questions = scope.id === "assembly" ? draft.questions.filter((question) => ["product", "assembly", "interface"].includes(question.scope)) : scope.id === "graphics" ? draft.questions.filter((question) => question.scope === "sticker-slot") : draft.questions.filter((question) => question.componentInstanceId === scope.id); const outstanding = questions.filter((question) => !["accepted", "overridden"].includes(question.status)).length; return <ReviewScopeControl active={activeReviewScope === scope.id} key={scope.id} onClick={() => setActiveReviewScope(scope.id)}>{scope.label} · {questions.length - outstanding}/{questions.length}</ReviewScopeControl>; })}
         </ReviewScopeNavigator>
+        <ReviewStageNavigator>{reviewStages.map((stage) => <ReviewStageControl active={activeReviewStage === stage.id} key={stage.id} onClick={() => setActiveReviewStage(stage.id)}>{stage.label}</ReviewStageControl>)}</ReviewStageNavigator>
         {activeReviewScope === "assembly" && draft.product ? <ProposalCard><Label>제품·조립 기준</Label><Copy>{draft.product.name} · {draft.product.intendedUse ?? "제품 용도 확인 필요"}</Copy></ProposalCard> : null}
         {!(["assembly", "graphics"].includes(activeReviewScope)) ? <ProposalCard><Label>선택한 구성 부품</Label><Copy>{draft.components.find((component) => component.id === activeReviewScope)?.summary ?? "지정된 컴포넌트의 형상·재질·결합값을 확인합니다."}</Copy>{activeScopeLinkedQuestions.map((question) => <Copy key={question.id}>연결된 제품·조립 기준 · {parameterLabel(question)}: {parameterValue(question)}</Copy>)}</ProposalCard> : null}
         {draft.components.length > 0 && activeReviewScope === "assembly" ? <ProposalCard><Label>지정한 구성 부품</Label>{draft.components.map((component) => <Copy key={component.id}>{component.displayName} · {component.semanticRole} · {component.recipe} · {component.quantity}개</Copy>)}</ProposalCard> : null}
-        <ScopedApprovalBar><Copy>현재 범위 {activeScopeQuestions.filter((question) => question.status === "proposed").length}개 · 전체 초안 {draft.questions.filter((question) => question.status === "proposed").length}개 승인 대기</Copy><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeScopeQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveCurrentScope()}>현재 범위 일괄 승인</ActionButton><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || draft.questions.every((question) => question.status !== "proposed")} onClick={() => void approveWholeDraft()}>전체 초안 일괄 승인</ActionButton></AssetNodeActions></ScopedApprovalBar>
-        <DraftQuestionGroups draft={draft} questions={activeScopeQuestions} decisionPending={draftDecisionPending} onEditStateChange={(questionId, edit) => setDraftEdits((current) => ({ ...current, [questionId]: edit }))} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
+        <ScopedApprovalBar><Copy>현재 단계 {activeStageQuestions.filter((question) => question.status === "proposed").length}개 · 현재 범위 {activeScopeQuestions.filter((question) => question.status === "proposed").length}개 · 전체 초안 {draft.questions.filter((question) => question.status === "proposed").length}개 승인 대기</Copy><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeStageQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveQuestions(activeStageQuestions)}>이 단계 일괄 승인</ActionButton><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeScopeQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveCurrentScope()}>현재 범위 일괄 승인</ActionButton><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || draft.questions.every((question) => question.status !== "proposed")} onClick={() => void approveWholeDraft()}>전체 초안 일괄 승인</ActionButton></AssetNodeActions></ScopedApprovalBar>
+        <DraftQuestionGroups draft={draft} questions={activeStageQuestions} decisionPending={draftDecisionPending} onEditStateChange={(questionId, edit) => setDraftEdits((current) => ({ ...current, [questionId]: edit }))} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
         <BuildGate><Copy>{buildFailed ? "승인값과 스케치는 보존되었습니다. Blender 생성을 다시 실행할 수 있습니다." : draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : buildFailed ? "Blender 생성 다시 실행" : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
       </ReviewWorkspace> : <ModelingLibraryWorkspace>
       <ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY</Label><Atom as="h2">{studio.assetLibrary.title}</Atom><Copy>{studio.assetLibrary.copy}</Copy></ModelingWorkspaceIntro>

@@ -8,6 +8,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { COMPONENTS, fallbackComponent, fallbackContract, modelingSpecSchema } from "./modeling-spec.mjs";
 import { ModelingDossier } from "./modeling-dossier.mjs";
+import { qualityGates } from "./modeling-graph-v3.mjs";
 
 const componentSchema = z.string().trim().min(1).max(100);
 const settingsSchema = z.object({ sizeXmm: z.coerce.number().positive().max(500).optional(), sizeYmm: z.coerce.number().positive().max(800).optional(), sizeZmm: z.coerce.number().positive().max(500).optional(), shellThicknessMm: z.coerce.number().positive().max(30).optional(), widthMm: z.coerce.number().positive().max(500).optional(), heightMm: z.coerce.number().positive().max(800).optional(), depthMm: z.coerce.number().positive().max(500).optional(), wallMm: z.coerce.number().positive().max(30).optional() }).passthrough();
@@ -62,7 +63,7 @@ async function cadExports(spec, cadDir, quality) {
   const assemblyDir = path.join(path.dirname(cadDir), "assembly"); await fs.mkdir(assemblyDir, { recursive: true });
   const assemblyPaths = { xbf: path.join(assemblyDir, "assembly.xbf"), step: path.join(assemblyDir, "assembly.step"), report: path.join(assemblyDir, "assembly.validation.json") };
   const assemblyRequest = path.join(assemblyDir, "assembly.request.json");
-  await fs.writeFile(assemblyRequest, JSON.stringify({ name: spec.contract.product.name, components: Object.entries(sources).map(([id, item]) => ({ id, brep: item.brep })), paths: assemblyPaths, toleranceMm: .01 }));
+  await fs.writeFile(assemblyRequest, JSON.stringify({ name: spec.contract.product.name, components: Object.entries(sources).map(([id, item]) => ({ id, brep: item.brep, transform: spec.modelingGraph?.components.find((component) => component.id === id)?.transform ?? null })), paths: assemblyPaths, toleranceMm: .01 }));
   await run(python, [path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cad-assembly-worker.py"), assemblyRequest], 4 * 60 * 1000);
   const assemblyValidation = JSON.parse(await fs.readFile(assemblyPaths.report, "utf8"));
   const geometryBlockers = Object.entries(validation).flatMap(([id, report]) => [report.valid ? null : `${id}: B-Rep validity failure`, report.closed ? null : `${id}: open shell/free edge review required`].filter(Boolean));
@@ -80,6 +81,8 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   dossier.record("decisions.approved", { draftId: payload.approvedDraft?.id, revision: payload.approvedDraft?.revision, approvalHash: payload.approvedDraft?.approvalHash, questions: payload.approvedDraft?.questions ?? [], iterations: payload.approvedDraft?.iterations ?? [] });
   for (const response of payload.approvedDraft?.inference ?? []) dossier.record("inference.completed", response);
   await dossier.writeSnapshot("graph/modeling-graph.json", modelingSpec.modelingGraph);
+  if (payload.approvedDraft?.modelingGraphV3) await dossier.writeSnapshot("graph/modeling-graph-v3.json", payload.approvedDraft.modelingGraphV3);
+  if (payload.approvedDraft?.evidenceManifest) await dossier.writeSnapshot("evidence/manifest.json", payload.approvedDraft.evidenceManifest);
   await dossier.writeSnapshot("reports/assembly-contract.json", modelingSpec.contract);
   await dossier.writeSnapshot("inference/analysis.request.json", { model: payload.model, prompt: payload.prompt, imageIds: payload.imageIds, componentIds: payload.components, qualityProfile: payload.quality, graphHash: payload.graphHash });
   for (const [index, response] of (payload.approvedDraft?.inference ?? []).entries()) await dossier.writeSnapshot(`inference/${String(index + 1).padStart(2, "0")}.response.json`, response);
@@ -95,7 +98,14 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   const header = await fs.readFile(assemblyGlb); if (header.length < 20 || header.subarray(0, 4).toString("ascii") !== "glTF") throw new Error("Blender가 유효한 assembly GLB를 생성하지 못했습니다.");
   const components = Object.fromEntries(await Promise.all(payload.components.map(async (component) => { const file = path.join(componentDir, `${component}.glb`); return [component, existsSync(file) ? `/api/modeling/jobs/${jobId}/artifacts/components/${component}.glb` : null]; })));
   dossier.record("glb.exported", { assemblyGlb: path.relative(jobDir, assemblyGlb), bytes: header.length });
-  const dossierManifest = await dossier.finalize({ status: cad.manufacturingStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers });
+  // Do not turn a value the compiler did not measure into a manufacturing
+  // pass.  OCCT's validity/closed-shell facts and STEP round-trip dimensions
+  // are known; interference needs a dedicated contact analysis and stays
+  // explicitly not-measured until that analyser is available.
+  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
+  await dossier.writeSnapshot("validation/quality-gates.json", qualityReport);
+  dossier.record("quality.gates", qualityReport);
+  const dossierManifest = await dossier.finalize({ status: cad.manufacturingStatus, graphHash: payload.graphHash, manufacturingBlockers: cad.blockers, qualityReport });
   const result = { summary: `${payload.components.join(", ")} 컴포넌트를 동일 B-Rep 정본에서 생성했습니다.`, status: cad.manufacturingStatus === "manufacturing_review_required" ? "review_required" : "complete", manufacturingStatus: cad.manufacturingStatus, jobId, assetPath: `/api/modeling/jobs/${jobId}/artifacts/render/assembly.glb`, artifact: { assemblyGlb: `/api/modeling/jobs/${jobId}/artifacts/render/assembly.glb`, components, dossier: `/api/modeling/jobs/${jobId}/artifacts/MODELING-DOSSIER.md`, report: `/api/modeling/jobs/${jobId}/artifacts/manifest.json` }, exportPaths: { assemblyGlb, componentDir, cadDir }, cad, dossier: dossierManifest, log: log.trim().slice(-4000) };
   await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`); return result;
 }

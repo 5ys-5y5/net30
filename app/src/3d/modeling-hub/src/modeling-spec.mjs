@@ -13,6 +13,7 @@ import {
   modelingGraphSchema,
   validateGraph,
 } from "./modeling-graph.mjs";
+import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
 export const JOB_STATES = ["researching", "awaiting_input", "planning", "building_components", "validating", "assembling", "refining", "review_required", "complete", "failed"];
@@ -321,21 +322,27 @@ export function modelingGraphComponents(graph) {
 export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const model = payload.model || defaultOpenAiModel(); if (!model || !openAiModels().includes(model)) throw new Error("허용된 OpenAI 모델을 선택하세요.");
   const requested = payload.requestedComponents ?? normaliseComponentInput(payload.componentInput);
+  const evidenceManifest = buildEvidenceManifest(imageInputs);
   let raw = null; let lastError = null;
   if (process.env.NET30_MODELING_DRAFT_FIXTURE === "true") raw = fixtureGraphOutput({ ...payload, requestedComponents: requested });
   else {
     if (!(process.env.OPENAI_API_KEY ?? "").trim()) throw new Error("OpenAI 분석 키가 설정되지 않았습니다. 기본 형상으로 대체하지 않았습니다.");
     const images = imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl, detail: "high" }));
     try {
-      raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and only the operations allowed by the supplied strict schema from the images and prompt; never classify by the component name alone. Express rounded silhouettes directly with sufficiently detailed profile curves rather than an unavailable fillet/chamfer operation. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
+      raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and only the operations allowed by the supplied strict schema from the images and prompt; never classify by the component name alone. Express rounded silhouettes directly with sufficiently detailed profile curves rather than an unavailable fillet/chamfer operation. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters. Respect EvidenceManifest allowedFor/excludedFrom exactly: only an image allowed for artwork may be artworkImageId; never transfer a different product's silhouette, dimensions, logo, or print.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
     } catch (error) { lastError = error; raw = null; }
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
   let canonical;
   try { canonical = canonicalizeGraph(raw, requested, payload.imageIds); } catch (error) { throw new Error(`analysis_incomplete: ${error instanceof Error ? error.message : String(error)}`); }
+  const evidenceScoped = enforceEvidenceScopes(canonical.graph, evidenceManifest);
+  canonical.graph = validateGraph(evidenceScoped.graph);
+  canonical.graphHash = graphHash(canonical.graph);
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest);
+  const qualityReport = qualityGates({ graphHash: canonical.graphHash, evidenceComplete: false });
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {
@@ -418,5 +425,5 @@ export function compileApprovedDraftToModelingSpec(draft) {
 }
 export function approvedDraftToLegacyPayload(draft) {
   const compiledSpec = compileApprovedDraftToModelingSpec(draft);
-  return { version: "net30.modeling-job.v3", components: compiledSpec.components.map((item) => item.componentInstanceId), prompt: draft.input.prompt, imageIds: draft.input.imageIds ?? [], model: draft.input.model, dimensionOverrides: compiledSpec.contract.dimensionsMm, settings: {}, quality: draft.input.qualityProfile ?? "balanced", compiledSpec, graphHash: compiledSpec.modelingGraph ? graphHash(compiledSpec.modelingGraph) : null, approvedDraft: { id: draft.id, revision: draft.revision, approvalHash: approvalHash(draft), product: draft.product, components: draft.components, questions: draft.questions, stickerSlots: draft.stickerSlots, inference: draft.inference ?? [], progress: draft.progress ?? [], iterations: draft.iterations ?? [] } };
+  return { version: "net30.modeling-job.v3", components: compiledSpec.components.map((item) => item.componentInstanceId), prompt: draft.input.prompt, imageIds: draft.input.imageIds ?? [], model: draft.input.model, dimensionOverrides: compiledSpec.contract.dimensionsMm, settings: {}, quality: draft.input.qualityProfile ?? "balanced", compiledSpec, graphHash: compiledSpec.modelingGraph ? graphHash(compiledSpec.modelingGraph) : null, approvedDraft: { id: draft.id, revision: draft.revision, approvalHash: approvalHash(draft), product: draft.product, components: draft.components, questions: draft.questions, stickerSlots: draft.stickerSlots, inference: draft.inference ?? [], progress: draft.progress ?? [], iterations: draft.iterations ?? [], modelingGraphV3: draft.modelingGraphV3 ?? null, evidenceManifest: draft.evidenceManifest ?? null, qualityReport: draft.qualityReport ?? null, productModelingFile: draft.productModelingFile ?? null } };
 }

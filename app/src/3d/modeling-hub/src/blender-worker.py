@@ -150,13 +150,20 @@ def build_graph_component(component, nodes, contract, image_inputs, job_dir, tar
             elif primitive=="box": bpy.ops.mesh.primitive_cube_add(); obj=bpy.context.object; obj.dimensions=(float(dimensions["x"])*MM,float(dimensions["y"])*MM,float(dimensions["z"])*MM); link(obj,target); obj.data.materials.append(base_material)
             elif primitive=="sphere": bpy.ops.mesh.primitive_uv_sphere_add(segments=48,ring_count=24); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
             else: cylinder(component["requestedName"],float(params.get("radiusMm") or dimensions["x"]/2)*MM,float(params.get("heightMm") or dimensions["z"])*MM,0,target,base_material)
-        elif op=="surface_decal":
-            image=next((item for item in image_inputs if item.get("id")==params.get("artworkImageId")),None); decal_material=graph_texture_material(component["id"]+"Artwork",component["material"],image,job_dir); graph_decal(component["requestedName"],params,radius,height,target,decal_material)
+        elif op in ["surface_decal","surface_artwork"]:
+            image=next((item for item in image_inputs if item.get("id")==params.get("artworkImageId")),None); decal_material=graph_texture_material(component["id"]+"Artwork",component["material"],image,job_dir); obj=graph_decal(component["requestedName"],params,radius,height,target,decal_material)
+            # Artwork anchors are component-local graph transforms.  Unlike
+            # the component transform (owned by the parent assembly), this
+            # node transform is the approved placement on its host surface.
+            apply_graph_transform([obj],params.get("transform") or {})
         elif op in ["instance_distribution","volume"]:
             dimensions=params.get("dimensionsMm") or {"x":8,"y":8,"z":16}; quantity=min(120,int(params.get("quantity") or 1))
             for index in range(quantity):
                 angle=math.tau*index/max(1,quantity); radial=radius*.45*((index%7)+1)/7; z=height*(.15+.65*((index*37)%101)/100); bpy.ops.mesh.primitive_uv_sphere_add(segments=20,ring_count=12,location=(radial*math.cos(angle),radial*math.sin(angle),z)); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
-    created=[obj for obj in target.objects if obj not in before]; apply_graph_transform(created,component["transform"])
+    # This function produces the *local* child asset.  Parent assembly
+    # transforms are applied only after its GLB is exported in main().
+    # Keeping this convention prevents an assembly preview from moving a cap or
+    # ring twice when a child is later selected from the product library.
 def build_component(component, contract, target):
     d=contract["dimensionsMm"]; kind=component["component"]; material=mat(kind+"Material",component["material"])
     features=component["features"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM; wall=float(features.get("wallMm",d["wallMm"]))*MM
@@ -217,7 +224,11 @@ def main():
         elif instance_id in graph_components: build_graph_component(graph_components[instance_id],[node for node in graph_nodes if node["componentId"]==instance_id],request["spec"]["contract"],request.get("imageInputs",[]),paths["jobDir"],part)
         else: build_component(component,request["spec"]["contract"],part)
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(instance_id+".glb"))
-        for obj in list(part.objects): link(obj,assembly)
+        # The part file above is component-local.  The assembly uses the exact
+        # same tessellation with its graph-approved parent transform once.
+        for obj in list(part.objects):
+            apply_graph_transform([obj], graph_components.get(instance_id, {}).get("transform", {}))
+            link(obj,assembly)
     approved=request.get("payload",{}).get("approvedDraft") or {}
     if approved.get("stickerSlots"):
         values={}

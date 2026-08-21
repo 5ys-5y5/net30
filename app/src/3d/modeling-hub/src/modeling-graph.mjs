@@ -163,11 +163,13 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
      * is part of the component command sequence, so this edge is deterministic
      * and can be repaired locally without re-running every OpenAI component. */
     let precedingSolidKey = null;
+    const componentGeneratorKey = features.find((candidate) => ["revolve", "extrude", "primitive", "loft", "sweep"].includes(candidate.operation))?.key ?? null;
     features = features.map((feature) => {
       const inlineBoolean = ["cut", "union", "intersect"].includes(feature.parameters?.operation);
       const needsBase = ["rib", "pattern", "shell", "transform", "mate"].includes(feature.operation) || inlineBoolean;
-      let repaired = needsBase && !feature.inputKeys.length && precedingSolidKey
-        ? { ...feature, inputKeys: [precedingSolidKey], rationale: `${feature.rationale} (서버가 직전 B-Rep source 연결을 복구함)` }
+      const deterministicBase = precedingSolidKey ?? componentGeneratorKey;
+      let repaired = needsBase && !feature.inputKeys.length && deterministicBase && deterministicBase !== feature.key
+        ? { ...feature, inputKeys: [deterministicBase], rationale: `${feature.rationale} (서버가 같은 구성요소의 생성 B-Rep source 연결을 복구함)` }
         : feature;
       /* Some models label the first generating solid as `union`. There is no
        * operand before it, so this means "start the result with this solid",

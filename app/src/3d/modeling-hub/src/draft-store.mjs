@@ -18,7 +18,7 @@ export function createDraftStore(assetRoot) {
   async function create(input) {
     const id = `draft-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
-    const value = { id, version: "net30.modeling-draft.v8", revision: 1, state: "analyzing_product", message: "제품과 입력 이미지를 분석 중입니다.", input, product: null, components: [], questions: [], modelingGraph: null, modelingGraphHash: null, baseGraphHash: null, compilerVersion: "modeling-graph-v1", capabilityVersion: "net30-safe-ops-v1", stickerSlots: [], iterations: [], activeIterationId: null, progress: [], nextProgressEventId: 1, jobId: null, events: [], createdAt: now, updatedAt: now };
+    const value = { id, version: "net30.modeling-draft.v8", revision: 1, state: "analyzing_product", message: "제품과 입력 이미지를 분석 중입니다.", input, product: null, components: [], questions: [], modelingGraph: null, modelingGraphV3: null, modelingGraphHash: null, evidenceManifest: null, qualityReport: null, productModelingFile: null, baseGraphHash: null, compilerVersion: "modeling-graph-v3", capabilityVersion: "net30-occt-v3", stickerSlots: [], iterations: [], activeIterationId: null, progress: [], nextProgressEventId: 1, jobId: null, events: [], createdAt: now, updatedAt: now };
     await write(id, value); return value;
   }
   async function get(id) { if (!existsSync(file(id))) return null; return JSON.parse(await fs.readFile(file(id), "utf8")); }

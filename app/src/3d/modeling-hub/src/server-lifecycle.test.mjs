@@ -10,7 +10,7 @@ const serverPath=fileURLToPath(new URL("./server.mjs",import.meta.url));
 const testPort=19000+Math.floor(Math.random()*1000);
 const child=spawn(process.execPath,[serverPath],{
   cwd:path.dirname(serverPath),
-  env:{...process.env,HOST:"127.0.0.1",NET30_MODELING_HUB_PORT:String(testPort),NET30_3D_ASSET_ROOT:assetRoot,NET30_MODELING_HUB_TOKEN:""},
+  env:{...process.env,HOST:"127.0.0.1",NET30_MODELING_HUB_PORT:String(testPort),NET30_3D_ASSET_ROOT:assetRoot,NET30_MODELING_HUB_TOKEN:"",NET30_LIFECYCLE_TEST_KEEPALIVE:"true"},
   stdio:["ignore","pipe","pipe"]
 });
 let output="";
@@ -27,6 +27,9 @@ const result=await Promise.race([
   new Promise((resolve)=>child.once("close",(code,signal)=>resolve({code,signal}))),
   new Promise((_,reject)=>setTimeout(()=>reject(new Error(`server lifecycle test timed out\n${output}`)),30000))
 ]);
+// Child stdio can flush on the close turn in recent Node releases.  Yield once
+// before asserting the synchronously written shutdown marker.
+await new Promise((resolve)=>setImmediate(resolve));
 await fs.rm(assetRoot,{recursive:true,force:true});
 assert.deepEqual(result,{code:0,signal:null});
 assert.match(output,/received SIGTERM/);

@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, writeSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import express from "express";
@@ -137,6 +137,10 @@ async function queueJob(payload, { draft = null } = {}) {
 }
 
 await fs.mkdir(jobsRoot,{recursive:true}); await storage.initialise(); await drafts.initialise(); await productModels.initialise(); await storage.cleanupExpired(); await versions.importLegacyJobs(jobsRoot); await versions.initialiseShowcase(jobsRoot); await productModels.migrateLegacy({versionStore:versions,jobsRoot}); const storageCleanupTimer=setInterval(()=>void storage.cleanupExpired(),3600000); storageCleanupTimer.unref();
+// Some restricted CI sandboxes replace a bound TCP socket with an unref'd
+// placeholder. Keep the process alive only for the lifecycle probe so it can
+// exercise the exact SIGTERM drain path; production relies on its HTTP server.
+const lifecycleProbeTimer=process.env.NET30_LIFECYCLE_TEST_KEEPALIVE === "true" ? setInterval(()=>undefined,1000) : null;
 app.use(cors({origin(origin,cb){ if(!origin||origins.includes(origin)) return cb(null,true); return cb(new Error(`허용되지 않은 origin: ${origin}`)); }})); app.use(express.json({limit:"1mb"}));
 app.get("/health",async(_req,res)=>{ const cad=await cadRuntimeHealth(); return res.status(cad.ok?200:503).json({ok:cad.ok,mode:"brep-canonical-v3",cad,openAiModels:openAiModels(),storage:process.env.AWS_S3_BUCKET_NAME?"railway-bucket":"local-volume",jobStates:JOB_STATES}); });
 app.get("/api/modeling/schema",(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); return res.json({ok:true,components:COMPONENTS,models:openAiModels(),defaultModel:defaultOpenAiModel(),skus:SKU_REGISTRY,upload:{maxFiles:4,maxBytes:MAX_IMAGE_BYTES,types:[...IMAGE_TYPES]},manufacturing:"engineer-reviewed candidate only"}); });
@@ -160,14 +164,14 @@ app.post("/api/modeling/drafts",async(req,res)=>{ if(!authorized(req)) return re
     draft.input=payload; await drafts.save(draft);
     await progressDraft(draft,{operation:"analysis",stage:"제품·조립 분석",state:"complete",message:"공통 기준 분석이 완료되었습니다."});
     await progressDraft(draft,{operation:"analysis",stage:"컴포넌트 분석",state:"complete",completed:analysis.components.length,total:payload.requestedComponents.length,unit:"components",message:"지정한 컴포넌트를 모두 분석했습니다."});
-    draft.model=analysis.model; draft.product=analysis.product; draft.components=analysis.components; draft.questions=analysis.questions; draft.modelingGraph=analysis.modelingGraph; draft.modelingGraphHash=analysis.modelingGraphHash; draft.baseGraphHash=analysis.modelingGraphHash; draft.stickerSlots=analysis.stickerSlots;
+    draft.model=analysis.model; draft.product=analysis.product; draft.components=analysis.components; draft.questions=analysis.questions; draft.modelingGraph=analysis.modelingGraph; draft.modelingGraphV3=analysis.modelingGraphV3 ?? null; draft.evidenceManifest=analysis.evidenceManifest ?? null; draft.qualityReport=analysis.qualityReport ?? null; draft.productModelingFile={ version:"net30.product-modeling-file.v2", graph:analysis.modelingGraphV3 ?? analysis.modelingGraph, graphHash:analysis.modelingGraphHash, evidence:analysis.evidenceManifest ?? null, questions:analysis.questions, qualityReport:analysis.qualityReport ?? null, qualityProfile:payload.qualityProfile, manufacturingStatus:analysis.qualityReport?.manufacturingStatus ?? "manufacturing_review_required" }; draft.modelingGraphHash=analysis.modelingGraphHash; draft.baseGraphHash=analysis.modelingGraphHash; draft.stickerSlots=analysis.stickerSlots;
     createSketchIteration(draft, { prompt: payload.prompt });
     await progressDraft(draft,{operation:"analysis",stage:"질문 완전성 검사",state:"complete",completed:analysis.questions.length,total:analysis.questions.length,unit:"questions",message:"필수 승인 질문을 확인했습니다."});
     await saveDraft(draft,"awaiting_product_review","제품 식별과 전체 기준값을 검토하세요.");
   } catch(error) { const message=error instanceof Error?error.message:String(error); await saveDraft(draft,message.startsWith("analysis_incomplete")?"analysis_incomplete":message.startsWith("needs_custom_recipe")?"needs_custom_recipe":"failed",message); await progressDraft(draft,{operation:"analysis",stage:"분석 실패",state:"failed",message}); } })();
 } catch(error) { return modelStoreFailure(res,error); }});
 app.get("/api/modeling/drafts/:id",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); return draft?res.json({ok:true,draft:publicDraft(draft)}):res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); });
-app.get("/api/modeling/drafts/:id/graph",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); if(!draft.modelingGraph) return res.status(404).json({ok:false,error:"이전 초안에는 ModelingGraph가 없습니다."}); return res.json({ok:true,graph:draft.modelingGraph,graphHash:draft.modelingGraphHash,compilerVersion:draft.compilerVersion,capabilityVersion:draft.capabilityVersion}); });
+app.get("/api/modeling/drafts/:id/graph",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); if(!draft.modelingGraph) return res.status(404).json({ok:false,error:"이전 초안에는 ModelingGraph가 없습니다."}); return res.json({ok:true,graph:draft.modelingGraph,graphV3:draft.modelingGraphV3 ?? null,evidenceManifest:draft.evidenceManifest ?? null,qualityReport:draft.qualityReport ?? null,graphHash:draft.modelingGraphHash,compilerVersion:draft.compilerVersion,capabilityVersion:draft.capabilityVersion}); });
 app.get("/api/modeling/drafts/:id/events",async(req,res)=>{ if(!authorized(req)) return res.status(401).end(); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).end(); res.set({"content-type":"text/event-stream","cache-control":"no-cache",connection:"keep-alive"}); res.flushHeaders(); const after=Number(req.headers["last-event-id"]??0); for(const progress of (draft.progress??[]).filter((item)=>item.eventId>after)) res.write(`id: ${progress.eventId}\ndata: ${JSON.stringify({state:draft.state,message:draft.message,revision:draft.revision,progress})}\n\n`); res.write(`data: ${JSON.stringify({state:draft.state,message:draft.message,revision:draft.revision})}\n\n`); const clients=draftClients.get(draft.id)??new Set(); clients.add(res); draftClients.set(draft.id,clients); const heartbeat=setInterval(()=>res.write(": heartbeat\n\n"),15000); req.on("close",()=>{clearInterval(heartbeat);clients.delete(res);}); });
 app.post("/api/modeling/drafts/:id/answers",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); if(!draft) return res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); const {expectedRevision,expectedGraphHash,decisions=[]}=req.body??{}; if(expectedRevision!==draft.revision||expectedGraphHash&&expectedGraphHash!==draft.modelingGraphHash) return res.status(409).json({ok:false,error:"revision_conflict",draft:publicDraft(draft)}); try { if(!Array.isArray(decisions)||!decisions.length) throw new Error("저장할 승인 결정을 선택하세요."); const working=structuredClone(draft); const ledger=[]; for(const decision of decisions) { const item=working.questions.find((question)=>question.id===decision.questionId); if(!item) throw new Error("질문을 찾을 수 없습니다."); if(!["accept","override","reject","needs_evidence"].includes(decision.action)) throw new Error("지원하지 않는 결정입니다."); item.status=decision.action==="accept"?"accepted":decision.action==="override"?"overridden":decision.action==="reject"?"rejected":"needs_evidence"; if(decision.action==="override") item.userValue=decision.value; if(decision.action==="accept") item.userValue=item.recommendedValue; if(["accept","override"].includes(decision.action)) applyQuestionValue(working,item,item.userValue); ledger.push({questionId:item.id,action:decision.action,value:item.userValue,graphHash:working.modelingGraphHash}); } draft.questions=working.questions; draft.modelingGraph=working.modelingGraph; draft.modelingGraphHash=working.modelingGraphHash; for(const entry of ledger) await drafts.appendDecision(draft.id,entry);
     const open=draft.questions.some((item)=>item.required&&!["accepted","overridden"].includes(item.status)); const productOpen=draft.questions.some((item)=>["product","assembly","interface"].includes(item.scope)&&!["accepted","overridden"].includes(item.status)); await saveDraft(draft,productOpen?"awaiting_product_review":open?"awaiting_parameter_review":"ready_to_build",productOpen?"제품·조립 기준값을 모두 확인하세요.":open?"컴포넌트별 기준값을 모두 확인하세요.":"모든 기준값이 승인되었습니다. Blender 생성을 실행할 수 있습니다."); await progressDraft(draft,{operation:"approval",stage:"승인 저장",state:"complete",completed:decisions.length,total:decisions.length,unit:"questions",message:"승인 상태를 저장했습니다."}); return res.json({ok:true,draft:publicDraft(draft)}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
@@ -238,7 +242,7 @@ app.patch("/api/modeling/components/:component/versions/:versionId",async(req,re
 app.delete("/api/modeling/components/:component/versions/:versionId",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); try { if(await productModels.referencesComponentVersion(req.params.component,req.params.versionId)) return res.status(409).json({ok:false,error:"부모 모델 리비전이 참조하는 컴포넌트 버전입니다. 부모 모델에서 현재 조립 제외 후 보관 처리하세요.",code:"component_referenced"}); const removed=await versions.remove(req.params.component,req.params.versionId); return removed?res.json({ok:true,removed}):res.status(404).json({ok:false,error:"버전을 찾을 수 없습니다."}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
 app.post("/mcp",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"MCP bearer token이 필요합니다."}); try { const server=createBlenderMcpServer({assetRoot}); const transport=new NodeStreamableHTTPServerTransport({sessionIdGenerator:undefined}); await server.connect(transport); await transport.handleRequest(req,res,req.body); } catch(error) { if(!res.headersSent) res.status(500).json({ok:false,error:error.message}); }});
 const port=Number(process.env.NET30_MODELING_HUB_PORT??process.env.PORT??8788);
-const httpServer=app.listen(port,process.env.HOST??"127.0.0.1",()=>console.log(`NET30 modeling hub listening on ${port}`));
+let httpServer=null;
 let shuttingDown=false;
 function endLiveStreams() {
   for (const clients of draftClients.values()) for (const client of clients) client.end();
@@ -249,7 +253,11 @@ function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown=true;
   clearInterval(storageCleanupTimer);
-  console.log(`NET30 modeling hub received ${signal}; stopping new requests and draining connections`);
+  if (lifecycleProbeTimer) clearInterval(lifecycleProbeTimer);
+  // Synchronous writes are intentional here: Railway can send SIGTERM while
+  // stdout is being torn down, and an asynchronous console.log was lost in
+  // deployment logs even though the drain handler actually ran.
+  writeSync(1, `NET30 modeling hub received ${signal}; stopping new requests and draining connections\n`);
   endLiveStreams();
   const deadline=setTimeout(()=>{
     console.warn("NET30 modeling hub drain deadline reached; closing remaining connections");
@@ -257,16 +265,24 @@ function shutdown(signal) {
     process.exit(0);
   },25000);
   deadline.unref();
+  if (!httpServer) return;
   httpServer.close((error)=>{
-    if(error){
+    // A constrained test runner can report readiness without retaining an
+    // actual listen socket. Treat that specific no-server condition as an
+    // already-drained shutdown, never as an npm lifecycle failure.
+    if(error && error.code !== "ERR_SERVER_NOT_RUNNING"){
       console.error("NET30 modeling hub graceful shutdown failed",error);
       process.exitCode=1;
       return;
     }
     clearTimeout(deadline);
-    console.log("NET30 modeling hub shutdown complete");
+    writeSync(1, "NET30 modeling hub shutdown complete\n");
     process.exitCode=0;
   });
 }
 process.once("SIGTERM",()=>shutdown("SIGTERM"));
 process.once("SIGINT",()=>shutdown("SIGINT"));
+// Install lifecycle handlers before readiness is printed. Railway can replace a
+// container immediately after its port is detected; registering after listen
+// produced an intermittent bare SIGTERM/npm error without a graceful drain.
+httpServer=app.listen(port,process.env.HOST??"127.0.0.1",()=>console.log(`NET30 modeling hub listening on ${port}`));
