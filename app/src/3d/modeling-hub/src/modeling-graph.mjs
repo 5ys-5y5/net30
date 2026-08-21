@@ -120,9 +120,23 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
   if (parsed.components.length !== requestedNames.length) throw new Error("analysis_incomplete: 입력한 컴포넌트 수와 모델링 그래프가 일치하지 않습니다.");
   const keyToId = new Map(); parsed.components.forEach((item, index) => keyToId.set(item.componentKey, `cmp-${randomUUID().slice(0, 12)}-${index + 1}`));
   if (keyToId.size !== parsed.components.length) throw new Error("analysis_incomplete: 모델링 그래프의 컴포넌트 키가 중복되었습니다.");
-  const nodeKeyToId = new Map(); for (const component of parsed.components) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
-  const components = parsed.components.map((item, index) => ({ id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: item.features.map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }));
-  const nodes = parsed.components.flatMap((component) => component.features.map((feature) => ({ id: nodeKeyToId.get(feature.key), componentId: keyToId.get(component.componentKey), operation: feature.operation, inputNodeIds: feature.inputKeys.map((key) => nodeKeyToId.get(key)).filter(Boolean), parameters: { ...feature.parameters, hostComponentKey: feature.parameters.hostComponentKey ? keyToId.get(feature.parameters.hostComponentKey) ?? null : null }, rationale: feature.rationale, confidence: feature.confidence })));
+  /* `profile` is a declarative geometry source, not an independently emitted
+   * solid. Structured output models naturally separate it from `revolve` or
+   * `extrude`, so normalize that valid graph form into the compiler's canonical
+   * embedded-profile representation instead of rejecting the component name. */
+  const normalizedComponents = parsed.components.map((component) => {
+    const byKey = new Map(component.features.map((feature) => [feature.key, feature]));
+    const features = component.features.filter((feature) => feature.operation !== "profile").map((feature) => {
+      if (feature.parameters.profile?.length) return feature;
+      const source = feature.inputKeys.map((key) => byKey.get(key)).find((candidate) => candidate?.operation === "profile" && candidate.parameters.profile?.length);
+      return source ? { ...feature, inputKeys: feature.inputKeys.filter((key) => key !== source.key), parameters: { ...feature.parameters, profile: source.parameters.profile } } : feature;
+    });
+    if (!features.length) throw new Error(`unsupported_operation: ${component.componentKey}.profile에는 revolve·extrude 같은 생성 연산이 필요합니다.`);
+    return { ...component, features };
+  });
+  const nodeKeyToId = new Map(); for (const component of normalizedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
+  const components = normalizedComponents.map((item, index) => ({ id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: item.features.map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }));
+  const nodes = normalizedComponents.flatMap((component) => component.features.map((feature) => ({ id: nodeKeyToId.get(feature.key), componentId: keyToId.get(component.componentKey), operation: feature.operation, inputNodeIds: feature.inputKeys.map((key) => nodeKeyToId.get(key)).filter(Boolean), parameters: { ...feature.parameters, hostComponentKey: feature.parameters.hostComponentKey ? keyToId.get(feature.parameters.hostComponentKey) ?? null : null }, rationale: feature.rationale, confidence: feature.confidence })));
   const graph = modelingGraphSchema.parse({ version: "net30.modeling-graph.v1", units: "mm", axis: "z-up", components, nodes, interfaces: parsed.interfaces.map((item) => ({ id: `interface-${randomUUID().slice(0, 10)}`, componentIds: item.componentKeys.map((key) => keyToId.get(key)).filter(Boolean), kind: item.kind, clearanceMm: item.clearanceMm, rationale: item.rationale })), evidence: [{ id: `evidence-${randomUUID().slice(0, 10)}`, kind: imageIds.length ? "image" : "user", label: imageIds.length ? "사용자 모델링 입력 이미지" : "사용자 프롬프트", imageId: imageIds[0] ?? null }] });
   validateGraph(graph); return { product: parsed.product, graph, graphHash: graphHash(graph) };
 }

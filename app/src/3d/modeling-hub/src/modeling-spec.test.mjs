@@ -89,6 +89,14 @@ const printNode = printCanonical.graph.nodes.find((item) => item.componentId ===
 assert.equal(printComponent.representation, "visual_surface");
 assert.equal(printNode.operation, "surface_decal");
 assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).components[0].points.length >= 4);
+const splitProfileOutput = fixtureGraphOutput({ product: { name: "분리 프로필" }, prompt: "test", requestedComponents: ["유리병"], imageIds: [] });
+const revolveFeature = splitProfileOutput.components[0].features[0];
+const profileFeature = { ...structuredClone(revolveFeature), key: "bottle-profile", operation: "profile", inputKeys: [] };
+revolveFeature.key = "bottle-revolve"; revolveFeature.inputKeys = [profileFeature.key]; revolveFeature.parameters.profile = null;
+splitProfileOutput.components[0].features = [profileFeature, revolveFeature];
+const normalizedProfile = canonicalizeGraph(splitProfileOutput, ["유리병"], []);
+assert.deepEqual(normalizedProfile.graph.nodes.map((node) => node.operation), ["revolve"]);
+assert.ok(normalizedProfile.graph.nodes[0].parameters.profile.length >= 4);
 assert.throws(() => validateGraph({ ...printCanonical.graph, nodes: [{ ...printCanonical.graph.nodes[0], operation: "eval" }] }), /지원하지 않는|Invalid/);
 const patched = applyModelingPatch(printCanonical.graph, { version: "net30.modeling-patch.v1", baseGraphHash: printCanonical.graphHash, scope: { stage: "material_surface", componentIds: [printComponent.id] }, changes: [{ op: "set_parameter", nodeId: printNode.id, field: "wrapDegrees", expectedValueHash: valueHash(printNode.parameters.wrapDegrees), value: 120, rationale: "사진의 감김 범위" }] });
 assert.equal(patched.graph.nodes.find((item) => item.id === printNode.id).parameters.wrapDegrees, 120);
