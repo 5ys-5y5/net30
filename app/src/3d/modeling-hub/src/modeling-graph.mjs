@@ -14,6 +14,7 @@ export const FEATURE_OPERATIONS = Object.freeze([
 ]);
 export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "primitive", "surface_decal", "volume", "instance_distribution"]);
 const NORMALIZED_MODIFIER_OPERATIONS = new Set(["shell", "rib", "pattern"]);
+export const ANALYSIS_OPERATIONS = Object.freeze(["profile", ...COMPILED_OPERATIONS, ...NORMALIZED_MODIFIER_OPERATIONS]);
 
 const featureParameters = z.object({
   primitive: z.enum(["box", "cylinder", "cone", "sphere", "torus"]).nullable(),
@@ -44,7 +45,7 @@ const featureParameters = z.object({
 
 const featureOutput = z.object({
   key: z.string().min(1).max(100),
-  operation: z.enum(FEATURE_OPERATIONS),
+  operation: z.enum(ANALYSIS_OPERATIONS),
   inputKeys: z.array(z.string().min(1).max(100)).max(32),
   parameters: featureParameters,
   rationale: z.string().max(600),

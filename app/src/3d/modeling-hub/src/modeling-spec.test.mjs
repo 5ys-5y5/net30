@@ -8,7 +8,7 @@ import {
   normaliseComponentInput,
   responseJson,
 } from "./modeling-spec.mjs";
-import { applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
+import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -28,6 +28,8 @@ function auditStrictSchema(schema, path = "root") {
 }
 auditStrictSchema(modelingGraphJsonSchema());
 auditStrictSchema(modelingPatchJsonSchema());
+assert.equal(ANALYSIS_OPERATIONS.includes("fillet"), false);
+assert.equal(modelingGraphJsonSchema().properties.components.items.properties.features.items.properties.operation.enum.includes("fillet"), false);
 
 const originalApiKey = process.env.OPENAI_API_KEY;
 process.env.OPENAI_API_KEY = "test-key";
