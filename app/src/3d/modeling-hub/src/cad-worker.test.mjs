@@ -55,7 +55,7 @@ try {
   assert.equal(shellRun.status, 0, `${shellRun.stdout}\n${shellRun.stderr}`);
   const shellReport = JSON.parse(await fs.readFile(`${shellStem}.validation.json`, "utf8"));
   assert.equal(shellReport.valid, true); assert.equal(shellReport.closed, true); assert.equal(shellReport.solidCount, 1, "the NURBS outer wall and derived inner offset must remain one closed B-Rep solid");
-  assert.equal(typeof shellReport.stepRoundTrip?.withinTolerance, "boolean", "a shell must report its own STEP round-trip instead of relying only on a later assembly check");
+  assert.equal(shellReport.stepRoundTrip?.withinTolerance, true, "the one-wire annular shell must retain its inner cavity through STEP export/import");
   const bezierShellGraph = structuredClone(shellCanonical.graph);
   const bezierShellRevolve = bezierShellGraph.nodes.find((node) => node.componentId === shellComponent.id && node.operation === "revolve");
   bezierShellRevolve.parameters.curveSegments = monotoneBezierSegments(bezierShellRevolve.parameters.profile.filter((point) => point.xMm > 0).map(({ xMm, zMm }) => ({ xMm, zMm })));
@@ -65,6 +65,7 @@ try {
   assert.equal(bezierShellRun.status, 0, `${bezierShellRun.stdout}\n${bezierShellRun.stderr}`);
   const bezierShellReport = JSON.parse(await fs.readFile(`${bezierShellStem}.validation.json`, "utf8"));
   assert.equal(bezierShellReport.valid, true); assert.equal(bezierShellReport.closed, true); assert.equal(bezierShellReport.solidCount, 1, "a measured Bézier exterior must keep a valid native OCCT shell");
+  assert.equal(bezierShellReport.stepRoundTrip?.withinTolerance, true, "a measured Bézier vessel must keep its curved inner wall through STEP export/import");
   assert.ok(Math.abs(bezierShellReport.boundsMm.z - shellReport.boundsMm.z) <= .01, "the Bézier shell must retain the approved mouth height");
   const capOutput = fixtureGraphOutput({ product: { name: "ribbed closure proof" }, prompt: "ribbed closure", requestedComponents: ["뚜껑"], imageIds: [] });
   const base = capOutput.components[0].features[0];
