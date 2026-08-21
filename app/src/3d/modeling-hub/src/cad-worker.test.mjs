@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
+import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../../../../../");
@@ -33,6 +34,8 @@ try {
   assert.equal(capRun.status, 0, `${capRun.stdout}\n${capRun.stderr}`);
   const capReport = JSON.parse(await fs.readFile(`${capStem}.validation.json`, "utf8"));
   assert.equal(capReport.valid, true); assert.equal(capReport.closed, true); assert.equal(capReport.solidCount, 1, "a patterned ribbed closure must be fused into one B-Rep solid");
+  const preflight = await preflightBrepGraph(capCanonical.graph);
+  assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
   const assemblyRequest = path.join(temporary, "assembly.request.json"); const assemblyPaths = { xbf: path.join(temporary, "assembly.xbf"), step: path.join(temporary, "assembly.step"), report: path.join(temporary, "assembly.validation.json") };
   await fs.writeFile(assemblyRequest, JSON.stringify({ name: "DURAN proof", components: [{ id: component.id, brep: `${stem}.brep` }], paths: assemblyPaths, toleranceMm: .01 }));
   const assemblyRun = spawnSync(python, [path.join(here, "cad-assembly-worker.py"), assemblyRequest], { encoding: "utf8", timeout: 120000 });

@@ -15,6 +15,7 @@ import {
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
 import { compareAxisymmetricContour, fitAxialAssemblyEnvelope, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
 export const JOB_STATES = ["researching", "awaiting_input", "planning", "building_components", "validating", "assembling", "refining", "review_required", "complete", "failed"];
@@ -329,7 +330,7 @@ function repairTargetKey(error) {
 /** A missing modifier operand belongs to one graph fragment. Keep every
  * accepted sibling intact and ask for one strict replacement fragment instead
  * of creating an unapproved fallback solid or repeating the whole analysis. */
-async function repairGraphComponent({ raw, componentKey, model, payload, evidenceManifest, imageInputs, runtime }) {
+async function repairGraphComponent({ raw, componentKey, model, payload, evidenceManifest, imageInputs, runtime, diagnostic = null }) {
   const index = raw.components.findIndex((component) => component.componentKey === componentKey);
   if (index < 0) throw new Error(`component_repair_failed: ${componentKey}를 원본 그래프에서 찾을 수 없습니다.`);
   await runtime.onGraphRepair?.({ componentKey, state: "running", message: `${componentKey}의 기준 생성 형상을 재분석합니다.` });
@@ -339,7 +340,7 @@ async function repairGraphComponent({ raw, componentKey, model, payload, evidenc
     name: "net30_modeling_graph_component_repair",
     schema: modelingGraphJsonSchema(),
     instructions: "Repair exactly one safe declarative ModelingGraph component fragment. Return exactly one component with its same immutable componentKey. A rib, shell, transform, mate, or boolean cut must reference a real preceding generating solid through inputKeys. A radial rib pattern has exactly two inputs in order: the base solid and one rib feature; the rib has exactly the base solid as its only input. Every rib must declare positive numeric heightMm, spacingMm, and depthMm; its count is either positive numeric count or supplied by its following pattern. Never use a whole body/cap as a pattern seed, never feed a pattern into a revolve, and do not give revolve/extrude/primitive features any inputs. Every revolve that creates a B-Rep solid must have a closed, non-zero-area section with at least four ordered profile points; never use a three-point decorative stroke as a solid cutter or ring. A brep_solid must have exactly one terminal B-Rep root: connect its body, ribs, rings, and cuts by explicit boolean/pattern feature inputs; never leave independent roots or duplicate an identical root feature. A cavity cutter profile must remain strictly inside the corresponding outer profile at every shared z value; if a wall thickness is not image- or user-supported, request it as an unresolved parameter instead of cutting through the external wall. A cavity cut must explicitly leave the intended wall/roof thickness or explicitly open at its datum face; it must not merely touch a closed outer face. Add only an image-supported, allowed generating feature if it is required for that connection. Preserve host/material intent. Never write code, paths, URLs, HTML, or executable expressions. Do not create unrelated components or alter the product.",
-    input: [{ role: "user", content: [{ type: "input_text", text: `Product (copy unchanged): ${JSON.stringify(raw.product)}\nRequested component: ${componentKey}\nOriginal fragment: ${JSON.stringify(raw.components[index])}\nRead-only interfaces: ${JSON.stringify(raw.interfaces)}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nReturn product unchanged, interfaces as [], and exactly one repaired component.` }, ...images] }],
+    input: [{ role: "user", content: [{ type: "input_text", text: `Product (copy unchanged): ${JSON.stringify(raw.product)}\nRequested component: ${componentKey}\nOriginal fragment: ${JSON.stringify(raw.components[index])}\nRead-only interfaces: ${JSON.stringify(raw.interfaces)}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nCadQuery B-Rep diagnostic: ${JSON.stringify(diagnostic)}\nThe repaired component must compile into exactly one valid closed connected B-Rep solid. Do not hide a disconnected shape in a union, and do not add an arbitrary bridge, cylinder, or sphere. Return product unchanged, interfaces as [], and exactly one repaired component.` }, ...images] }],
   }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
   if (!repaired || !Array.isArray(repaired.components) || repaired.components.length !== 1 || repaired.components[0]?.componentKey !== componentKey) throw new Error(`component_repair_failed: ${componentKey} 재분석 응답이 안정적인 단일 컴포넌트를 반환하지 않았습니다.`);
   await runtime.onGraphRepair?.({ componentKey, state: "complete", message: `${componentKey} 그래프 조각을 교체했습니다.` });
@@ -355,9 +356,9 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   // made-up profile; the LLM topology is retained and the missing evidence is
   // surfaced to review instead.
   const imageEvidence = await measureImageEvidence(imageInputs).catch((error) => ({ version: "net30.image-evidence.v1", images: imageInputs.map((image) => ({ ok: false, imageId: image.id, error: error instanceof Error ? error.message : String(error) })) }));
-  let raw = null; let lastError = null;
-  if (process.env.NET30_MODELING_DRAFT_FIXTURE === "true") raw = fixtureGraphOutput({ ...payload, requestedComponents: requested });
-  else {
+  let raw = runtime.preflightRepairRaw ?? null; let lastError = null;
+  if (!raw && process.env.NET30_MODELING_DRAFT_FIXTURE === "true") raw = fixtureGraphOutput({ ...payload, requestedComponents: requested });
+  else if (!raw) {
     if (!(process.env.OPENAI_API_KEY ?? "").trim()) throw new Error("OpenAI 분석 키가 설정되지 않았습니다. 기본 형상으로 대체하지 않았습니다.");
     const images = imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl, detail: "high" }));
     try {
@@ -365,7 +366,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     } catch (error) { lastError = error; raw = null; }
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
-  let canonical; const repairCounts = new Map();
+  let canonical; const repairCounts = runtime.preflightRepairCounts instanceof Map ? runtime.preflightRepairCounts : new Map();
   // A full multimodal response can have independent defects in separate
   // components. Repair each named fragment at most twice (and at most three
   // repairs in one analysis) so one missing feature leaf does not discard an
@@ -400,6 +401,27 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const placementFit = fitAxialAssemblyEnvelope(envelopeFit.graph, approvedDimensions);
   canonical.graph = validateGraph(placementFit.graph);
   canonical.graphHash = graphHash(canonical.graph);
+  // JSON topology checks catch missing links, but only OCCT can establish that
+  // a boolean, shell, and patterned feature become one closed solid. Refuse to
+  // show an approvable product graph if the exact final compiler reports a
+  // disconnected component. The repair is deliberately local and bounded.
+  if (process.env.NET30_MODELING_DRAFT_FIXTURE !== "true") {
+    const preflight = await preflightBrepGraph(canonical.graph);
+    const failed = preflight.diagnostics.filter((item) => item.code !== "ok");
+    if (failed.length) {
+      const byCanonicalId = new Map(canonical.graph.components.map((component, index) => [component.id, raw.components[index]?.componentKey]));
+      const targetKey = byCanonicalId.get(failed[0].componentId);
+      if (targetKey && (repairCounts.get(targetKey) ?? 0) < 2) {
+        await runtime.onGraphRepair?.({ componentKey: targetKey, state: "running", message: `${targetKey}의 OCCT 연결성 실패를 보정합니다.` });
+        const repairedRaw = await repairGraphComponent({ raw, componentKey: targetKey, model, payload, evidenceManifest, imageInputs, runtime, diagnostic: failed[0] });
+        // Re-enter through the same graph/evidence path once, rather than
+        // accepting a repair whose fitted dimensions and assembly placement
+        // have not yet been recalculated.
+        return analyseDraft(payload, imageInputs, { ...runtime, preflightRepairRaw: repairedRaw, preflightRepairCounts: new Map([...repairCounts, [targetKey, (repairCounts.get(targetKey) ?? 0) + 1]]) });
+      }
+      throw new Error(`analysis_incomplete: ${failed.map((item) => `${item.componentId}: ${item.message}`).join("; ")}`);
+    }
+  }
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
   const modelingGraphV3 = adaptGraphToV3(canonical.graph, evidenceManifest, imageEvidence);

@@ -268,6 +268,8 @@ def main():
     shells = solid.Shells(); closed = bool(shells) and all(item.Closed() for item in shells)
     box = solid.BoundingBox(); payload = {"valid": True, "closed": closed, "solidCount": len(solid.Solids()), "shellCount": len(shells), "volumeMm3": solid.Volume(), "surfaceAreaMm2": solid.Area(), "boundsMm": {"x": box.xlen, "y": box.ylen, "z": box.zlen}, "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
     report.write_text(json.dumps(payload, indent=2) + "\n")
+    if not closed or payload["solidCount"] != 1:
+        raise RuntimeError(f"brep_preflight_failed: closed={closed}, solidCount={payload['solidCount']}")
 
 
 if __name__ == "__main__": main()
