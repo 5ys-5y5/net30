@@ -131,6 +131,17 @@ export function normaliseGraphCompatibility(graph) {
     if (node.parameters.curveSegments === undefined) node.parameters.curveSegments = null;
     if (node.parameters.path === undefined) node.parameters.path = null;
   }
+  // A short-lived v2 analysis path persisted some ordinary B-Rep components
+  // with their own ID as `hostComponentId`. A solid cannot be mounted on its
+  // own exterior, and the value was never consumed by OCCT/XDE. An attached
+  // decal may still point to this component *at node level*; only the invalid
+  // component-to-component self relationship is removed.
+  for (const component of next?.components ?? []) {
+    const nodes = (next.nodes ?? []).filter((node) => node.componentId === component.id);
+    if (component.representation === "brep_solid" && component.hostComponentId === component.id) {
+      component.hostComponentId = null;
+    }
+  }
   return next;
 }
 

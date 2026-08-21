@@ -85,6 +85,21 @@ export const componentSpecSchema = z.object({
   material: z.object({ role: z.enum(["glass", "pp", "liner", "print", "contents"]), color, roughness: z.number().min(0).max(1), transmission: z.number().min(0).max(1) }),
   transform: z.object({ xMm: z.number(), yMm: z.number(), zMm: z.number() }),
 });
+// A ModelingGraph already contains every feature, material and transform that
+// the OCCT/Blender path consumes.  Do not force it through the earlier
+// bottle/cap/ring transport shape: doing so reintroduced name-based fallback
+// geometry for arbitrary components such as a printed scale or a swept handle.
+// This carrier deliberately has no profile or recipe field. Legacy assets keep
+// using `componentSpecSchema` until explicitly converted to a graph.
+export const graphComponentArtifactSchema = z.object({
+  version: z.literal("net30.graph-component-spec.v1"),
+  componentInstanceId: z.string().min(1).max(100),
+  displayName: z.string().min(1).max(120),
+  semanticRole: draftRole,
+  representation: z.enum(["brep_solid", "visual_surface", "volume", "instance_set", "legacy_mesh"]),
+  contractHash: z.string().length(64),
+}).strict();
+const compiledComponentSchema = z.union([componentSpecSchema, graphComponentArtifactSchema]);
 
 const sketchShape = z.enum(["body", "cap", "ring", "liner", "contents", "part"]);
 export const sketchPlanSchema = z.object({
@@ -110,7 +125,7 @@ export function sketchPlanForAnalysis(product, components) {
   }), annotations: [{ label: "사용자 주석으로 형상, 치수, 재질, 조립 문제를 지정하세요.", x: .04, y: .06 }] });
 }
 
-export const modelingSpecSchema = z.object({ version: z.literal("net30.modeling-spec.v3"), summary: z.string().max(480), contract: assemblyContractSchema, components: z.array(componentSpecSchema).min(1).max(30), modelingGraph: modelingGraphSchema.optional() });
+export const modelingSpecSchema = z.object({ version: z.literal("net30.modeling-spec.v3"), summary: z.string().max(480), contract: assemblyContractSchema, components: z.array(compiledComponentSchema).min(1).max(30), modelingGraph: modelingGraphSchema.optional() });
 
 export function contractHash(contract) { return createHash("sha256").update(JSON.stringify(contract)).digest("hex"); }
 export function openAiModels() { const fallback = (process.env.NET30_OPENAI_MODEL ?? "").trim(); const configured = (process.env.NET30_OPENAI_MODELS ?? "").split(",").map((value) => value.trim()).filter(Boolean); return [...new Set(configured.length ? configured : fallback ? [fallback] : [])]; }
@@ -632,7 +647,18 @@ export function compileApprovedDraftToModelingSpec(draft) {
   }
   if (approvedGraph) validateGraph(approvedGraph);
   const graphById = new Map(approvedGraph?.components.map((item) => [item.id, item]) ?? []);
-  const specs = draft.components.map((component) => {
+  const specs = approvedGraph ? draft.components.map((component) => {
+    const graphComponent = graphById.get(component.id);
+    if (!graphComponent) throw new Error(`graph_invalid: ${component.displayName}의 ModelingGraph component가 없습니다.`);
+    return graphComponentArtifactSchema.parse({
+      version: "net30.graph-component-spec.v1",
+      componentInstanceId: graphComponent.id,
+      displayName: graphComponent.requestedName,
+      semanticRole: graphComponent.representation === "visual_surface" ? "accessory" : ["volume", "instance_set"].includes(graphComponent.representation) ? "content" : "other",
+      representation: graphComponent.representation,
+      contractHash: sharedHash,
+    });
+  }) : draft.components.map((component) => {
     const graphComponent = graphById.get(component.id); const rootNode = approvedGraph?.nodes.find((node) => graphComponent?.rootNodeIds.includes(node.id));
     let graphKind = null;
     if (graphComponent?.representation === "visual_surface") graphKind = "decorationFront";

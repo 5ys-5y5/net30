@@ -207,6 +207,29 @@ def import_brep_tessellation(component, source, target):
         # clipped entirely by the web viewer camera.
         obj.scale=(MM,MM,MM); obj.name=component["requestedName"]; link(obj,target); obj.data.materials.append(material); smooth(obj,0)
         obj["net30_geometry_source"]="opencascade-brep"; obj["net30_component_id"]=component["id"]
+def build_graph_visual_features(component, nodes, contract, image_inputs, job_dir, target):
+    """Materialise only graph-owned visual features on a canonical B-Rep.
+
+    Solids always arrive through OCCT's persisted B-Rep tessellation.  A decal
+    or contained volume is not a second solid compiler, so it is emitted in
+    Blender after importing that tessellation.  This avoids the old either/or
+    branch where a child with a valid B-Rep silently lost its approved print.
+    """
+    base_material=graph_material(component["id"]+"Material",component["material"]); d=contract["dimensionsMm"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM
+    for node in nodes:
+        params=node["parameters"]; op=node["operation"]
+        if op in ["surface_decal","surface_artwork"]:
+            image=next((item for item in image_inputs if item.get("id")==params.get("artworkImageId")),None); decal_material=graph_texture_material(component["id"]+"Artwork",component["material"],image,job_dir); obj=graph_decal(component["requestedName"],params,radius,height,target,decal_material)
+            # graph_decal consumes its approved axial anchor while building the
+            # host surface; only lateral/rotational graph adjustments remain.
+            node_transform=params.get("transform") or {}; translation=node_transform.get("translationMm") or {}
+            apply_graph_transform([obj],{**node_transform,"translationMm":{**translation,"z":0}})
+        elif op in ["instance_distribution","volume"]:
+            dimensions=params.get("dimensionsMm") or {"x":8,"y":8,"z":16}; quantity=min(120,int(params.get("quantity") or 1))
+            for index in range(quantity):
+                angle=math.tau*index/max(1,quantity); radial=radius*.45*((index%7)+1)/7; z=height*(.15+.65*((index*37)%101)/100); bpy.ops.mesh.primitive_uv_sphere_add(segments=20,ring_count=12,location=(radial*math.cos(angle),radial*math.sin(angle),z)); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
+
+
 def build_graph_component(component, nodes, contract, image_inputs, job_dir, target):
     before=set(target.objects); base_material=graph_material(component["id"]+"Material",component["material"]); d=contract["dimensionsMm"]; radius=max(d["widthMm"],d["depthMm"])*MM/2; height=d["heightMm"]*MM
     for node in nodes:
@@ -221,20 +244,7 @@ def build_graph_component(component, nodes, contract, image_inputs, job_dir, tar
             elif primitive=="box": bpy.ops.mesh.primitive_cube_add(); obj=bpy.context.object; obj.dimensions=(float(dimensions["x"])*MM,float(dimensions["y"])*MM,float(dimensions["z"])*MM); link(obj,target); obj.data.materials.append(base_material)
             elif primitive=="sphere": bpy.ops.mesh.primitive_uv_sphere_add(segments=48,ring_count=24); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
             else: cylinder(component["requestedName"],float(params.get("radiusMm") or dimensions["x"]/2)*MM,float(params.get("heightMm") or dimensions["z"])*MM,0,target,base_material)
-        elif op in ["surface_decal","surface_artwork"]:
-            image=next((item for item in image_inputs if item.get("id")==params.get("artworkImageId")),None); decal_material=graph_texture_material(component["id"]+"Artwork",component["material"],image,job_dir); obj=graph_decal(component["requestedName"],params,radius,height,target,decal_material)
-            # Artwork anchors are component-local graph transforms.  Unlike
-            # the component transform (owned by the parent assembly), this
-            # node transform is the approved placement on its host surface.
-            # graph_decal consumes its Z anchor while constructing the host
-            # surface.  Applying it again put an approved mid-body decal above
-            # the bottle. Keep only lateral/rotational adjustments here.
-            node_transform=params.get("transform") or {}; translation=node_transform.get("translationMm") or {}
-            apply_graph_transform([obj],{**node_transform,"translationMm":{**translation,"z":0}})
-        elif op in ["instance_distribution","volume"]:
-            dimensions=params.get("dimensionsMm") or {"x":8,"y":8,"z":16}; quantity=min(120,int(params.get("quantity") or 1))
-            for index in range(quantity):
-                angle=math.tau*index/max(1,quantity); radial=radius*.45*((index%7)+1)/7; z=height*(.15+.65*((index*37)%101)/100); bpy.ops.mesh.primitive_uv_sphere_add(segments=20,ring_count=12,location=(radial*math.cos(angle),radial*math.sin(angle),z)); obj=bpy.context.object; obj.scale=(float(dimensions["x"])*MM/2,float(dimensions["y"])*MM/2,float(dimensions["z"])*MM/2); link(obj,target); obj.data.materials.append(base_material)
+    build_graph_visual_features(component, nodes, contract, image_inputs, job_dir, target)
     # This function produces the *local* child asset.  Parent assembly
     # transforms are applied only after its GLB is exported in main().
     # Keeping this convention prevents an assembly preview from moving a cap or
@@ -294,8 +304,16 @@ def main():
     paths=request["paths"]; clear(); assembly=col("ASSEMBLY")
     graph=request["spec"].get("modelingGraph"); graph_components={item["id"]:item for item in (graph or {}).get("components",[])}; graph_nodes=(graph or {}).get("nodes",[]); cad_sources=request.get("cadSources",{})
     for component in request["spec"]["components"]:
-        instance_id=component.get("componentInstanceId",component["component"]); part=col("PART_"+instance_id)
-        if instance_id in cad_sources: import_brep_tessellation(graph_components[instance_id],cad_sources[instance_id],part)
+        # Graph-native component carriers intentionally omit the legacy
+        # `component` recipe field. Evaluate the fallback lazily so a valid
+        # graph component cannot crash while Python constructs dict.get's
+        # default argument.
+        instance_id=component.get("componentInstanceId") or component.get("component")
+        if not instance_id: raise RuntimeError("graph_invalid: compiled component has no stable instance id")
+        part=col("PART_"+instance_id)
+        if instance_id in cad_sources:
+            import_brep_tessellation(graph_components[instance_id],cad_sources[instance_id],part)
+            build_graph_visual_features(graph_components[instance_id],[node for node in graph_nodes if node["componentId"]==instance_id],request["spec"]["contract"],request.get("imageInputs",[]),paths["jobDir"],part)
         elif instance_id in graph_components: build_graph_component(graph_components[instance_id],[node for node in graph_nodes if node["componentId"]==instance_id],request["spec"]["contract"],request.get("imageInputs",[]),paths["jobDir"],part)
         else: build_component(component,request["spec"]["contract"],part)
         export(list(part.all_objects),pathlib.Path(paths["componentDir"])/(instance_id+".glb"))
