@@ -59,18 +59,77 @@ function diagnostic(component, report, execution) {
   };
 }
 
+function rotate(point, degrees = {}) {
+  let { x, y, z } = point;
+  const radians = (value) => Number(value ?? 0) * Math.PI / 180;
+  const rx = radians(degrees.x); const ry = radians(degrees.y); const rz = radians(degrees.z);
+  let nextY = y * Math.cos(rx) - z * Math.sin(rx); let nextZ = y * Math.sin(rx) + z * Math.cos(rx); y = nextY; z = nextZ;
+  let nextX = x * Math.cos(ry) + z * Math.sin(ry); nextZ = -x * Math.sin(ry) + z * Math.cos(ry); x = nextX; z = nextZ;
+  nextX = x * Math.cos(rz) - y * Math.sin(rz); nextY = x * Math.sin(rz) + y * Math.cos(rz); return { x: nextX, y: nextY, z };
+}
+
+function assemblyPoint(point, transform = {}) {
+  const rotated = rotate(point, transform.rotationDeg);
+  const translation = transform.translationMm ?? {};
+  return { x: rotated.x + Number(translation.x ?? 0), y: rotated.y + Number(translation.y ?? 0), z: rotated.z + Number(translation.z ?? 0) };
+}
+
+function binaryStlTriangles(bytes, maxTriangles = 700) {
+  // OCCT writes binary STL. This sampled display mesh is only a review
+  // projection; no manufacturing geometry is reconstructed from it.
+  if (bytes.length < 84) return [];
+  const count = bytes.readUInt32LE(80);
+  if (84 + count * 50 > bytes.length) return [];
+  const stride = Math.max(1, Math.ceil(count / maxTriangles)); const triangles = [];
+  for (let index = 0; index < count; index += stride) {
+    const offset = 84 + index * 50 + 12;
+    triangles.push([0, 12, 24].map((delta) => ({ x: bytes.readFloatLE(offset + delta), y: bytes.readFloatLE(offset + delta + 4), z: bytes.readFloatLE(offset + delta + 8) })));
+  }
+  return triangles;
+}
+
+function projected(point, view, explodedOffset = 0) {
+  if (view === "side") return { x: point.y, y: point.z };
+  if (view === "isometric") return { x: point.x + point.y * .62, y: point.z - (point.x + point.y) * .22 };
+  if (view === "exploded") return { x: point.x + explodedOffset, y: point.z };
+  return { x: point.x, y: point.z };
+}
+
+function normaliseProjectedMeshes(entries, view, width, height) {
+  const source = entries.flatMap((entry) => entry.triangles.flatMap((triangle) => triangle.map((point) => projected(point, view, entry.explodedOffset))));
+  if (!source.length) return entries.map((entry) => ({ ...entry, triangles: [] }));
+  const minX = Math.min(...source.map((point) => point.x)); const maxX = Math.max(...source.map((point) => point.x)); const minY = Math.min(...source.map((point) => point.y)); const maxY = Math.max(...source.map((point) => point.y));
+  const scale = Math.min((width - 120) / Math.max(.001, maxX - minX), (height - 140) / Math.max(.001, maxY - minY));
+  const toCanvas = (point) => ({ x: 60 + (point.x - minX) * scale, y: height - 64 - (point.y - minY) * scale });
+  return entries.map((entry) => ({ ...entry, triangles: entry.triangles.map((triangle) => triangle.map((point) => toCanvas(projected(point, view, entry.explodedOffset)))) }));
+}
+
+function brepSketchPlan(graph, meshSources, { width = 1000, height = 680, title = "OCCT B-Rep 검토" } = {}) {
+  const views = [{ id: "front", label: "정면" }, { id: "side", label: "측면" }, { id: "isometric", label: "등각" }, { id: "exploded", label: "분해" }];
+  const solids = graph.components.filter((component) => component.representation === "brep_solid");
+  const entries = solids.map((component, index) => ({
+    id: component.id, label: component.requestedName, color: component.material.baseColor, note: "동일 OCCT B-Rep의 저해상도 검토 테셀레이션", nodeIds: graph.nodes.filter((node) => node.componentId === component.id).map((node) => node.id),
+    triangles: (meshSources.get(component.id) ?? []).map((triangle) => triangle.map((point) => assemblyPoint(point, component.transform))), explodedOffset: (index - (solids.length - 1) / 2) * 38,
+  }));
+  const perView = Object.fromEntries(views.map((view) => [view.id, normaliseProjectedMeshes(entries, view.id, width, height)]));
+  return { version: "net30.brep-sketch.v1", width, height, title, views, components: entries.map((entry, index) => {
+    const meshViews = Object.fromEntries(views.map((view) => [view.id, perView[view.id][index].triangles])); const points = meshViews.front?.[0] ?? [];
+    return { id: entry.id, label: entry.label, color: entry.color, note: entry.note, nodeIds: entry.nodeIds, points, views: {}, meshViews };
+  }), annotations: [{ label: "OCCT B-Rep 정본의 저해상도 검토 투영입니다. 단면은 승인된 절단 평면이 생길 때까지 표시하지 않습니다.", x: 36, y: 42 }] };
+}
+
 /**
  * Compiles each B-Rep component in a disposable directory before it reaches
  * the approval UI. This is deliberately the same static CadQuery/OCP worker
  * used by the final export, so JSON topology cannot be treated as a proxy for
  * a closed, connected manufacturing solid.
  */
-export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 3 } = {}) {
+export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 3, preview = null } = {}) {
   const components = graph.components.filter((component) => component.representation === "brep_solid");
   if (!components.length) return { ok: true, diagnostics: [] };
   const temporary = await mkdtemp(path.join(os.tmpdir(), "net30-brep-preflight-"));
   try {
-    const diagnostics = new Array(components.length);
+    const diagnostics = new Array(components.length); const meshSources = new Map();
     let nextIndex = 0;
     const inspect = async (index) => {
       const component = components[index];
@@ -87,6 +146,9 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
       let report = null;
       try { report = JSON.parse(await readFile(reportPath, "utf8")); } catch { /* execution diagnostic below */ }
       diagnostics[index] = diagnostic(component, report, execution);
+      if (preview && execution.ok && diagnostics[index].code === "ok") {
+        try { meshSources.set(component.id, binaryStlTriangles(await readFile(`${stem}.stl`), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
+      }
     };
     const workers = Array.from({ length: Math.min(Math.max(1, concurrency), components.length) }, async () => {
       while (nextIndex < components.length) {
@@ -96,7 +158,7 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
       }
     });
     await Promise.all(workers);
-    return { ok: diagnostics.every((item) => item.code === "ok"), diagnostics };
+    return { ok: diagnostics.every((item) => item.code === "ok"), diagnostics, sketchPlan: preview ? brepSketchPlan(graph, meshSources, preview) : null };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

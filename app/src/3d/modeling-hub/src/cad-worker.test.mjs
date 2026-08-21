@@ -76,8 +76,11 @@ try {
   assert.equal(capRun.status, 0, `${capRun.stdout}\n${capRun.stderr}`);
   const capReport = JSON.parse(await fs.readFile(`${capStem}.validation.json`, "utf8"));
   assert.equal(capReport.valid, true); assert.equal(capReport.closed, true); assert.equal(capReport.solidCount, 1, "a patterned ribbed closure must be fused into one B-Rep solid");
-  const preflight = await preflightBrepGraph(capCanonical.graph);
+  const preflight = await preflightBrepGraph(capCanonical.graph, { preview: { title: "ribbed closure B-Rep review", maxTriangles: 80 } });
   assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
+  assert.equal(preflight.sketchPlan?.version, "net30.brep-sketch.v1", "an approvable sketch must be derived from the same OCCT preflight solid");
+  assert.equal(preflight.sketchPlan?.components[0]?.id, capComponent.id);
+  assert.ok((preflight.sketchPlan?.components[0]?.meshViews?.front?.length ?? 0) > 0, "the review sketch must contain sampled B-Rep triangles, not a placeholder rectangle");
   const loftOutput = fixtureGraphOutput({ product: { name: "lofted nozzle proof" }, prompt: "tapered square nozzle", requestedComponents: ["노즐"] , imageIds: [] });
   const loftBase = loftOutput.components[0].features[0];
   loftBase.key = "nozzle-loft"; loftBase.operation = "loft"; loftBase.inputKeys = [];
