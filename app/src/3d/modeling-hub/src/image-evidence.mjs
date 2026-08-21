@@ -215,6 +215,106 @@ function scaleRadialParameters(parameters, scale) {
   return next;
 }
 
+function componentNodes(graph, componentId) {
+  return graph.nodes.filter((node) => node.componentId === componentId);
+}
+
+/** A patterned radial feature is a geometric signal, not a display-name
+ * convention.  It is the smallest safe way to associate the measured cap
+ * colour band with the intended closure in an otherwise arbitrary product
+ * graph. */
+function patternedRadialComponent(graph, nodes = new Map(graph.nodes.map((node) => [node.id, node]))) {
+  const candidates = graph.components
+    .filter((component) => component.representation === "brep_solid")
+    .map((component) => {
+      const hasPattern = componentNodes(graph, component.id).some((node) => node.operation === "pattern" && node.inputNodeIds.length >= 1);
+      const envelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, new Map())).filter(Number.isFinite));
+      return { component, hasPattern, envelope };
+    })
+    .filter((item) => item.hasPattern && Number.isFinite(item.envelope));
+  return candidates.sort((left, right) => right.envelope - left.envelope)[0] ?? null;
+}
+
+function scaleAxialParameters(parameters, scale, originZ) {
+  const next = structuredClone(parameters);
+  const mapZ = (value) => Number((originZ + (Number(value) - originZ) * scale).toFixed(6));
+  if (next.profile) next.profile = next.profile.map((point) => ({ ...point, zMm: mapZ(point.zMm) }));
+  if (next.curveSegments) next.curveSegments = next.curveSegments.map((segment) => ({
+    ...segment,
+    points: segment.points?.map((point) => ({ ...point, zMm: mapZ(point.zMm) })) ?? segment.points,
+    poles: segment.poles?.map((point) => ({ ...point, zMm: mapZ(point.zMm) })) ?? segment.poles,
+  }));
+  for (const key of ["heightMm", "zMm"]) if (Number.isFinite(next[key])) next[key] = key === "zMm" ? mapZ(next[key]) : Number((next[key] * scale).toFixed(6));
+  if (next.dimensionsMm && Number.isFinite(next.dimensionsMm.z)) next.dimensionsMm.z = Number((next.dimensionsMm.z * scale).toFixed(6));
+  if (next.transform?.translationMm && Number.isFinite(next.transform.translationMm.z)) next.transform.translationMm.z = mapZ(next.transform.translationMm.z);
+  return next;
+}
+
+function localAxialRange(graph, component) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const ranges = component.rootNodeIds.map((id) => axialEnvelopeForNode(nodes, id, new Map())).filter(Boolean);
+  if (!ranges.length) return null;
+  return { min: Math.min(...ranges.map((range) => range.min)), max: Math.max(...ranges.map((range) => range.max)) };
+}
+
+/**
+ * Convert a measured, coloured closure band into component-local B-Rep
+ * dimensions and one parent-owned assembly placement.  The decision uses a
+ * pattern feature and evidence metadata only: it deliberately has no Korean
+ * or English component-name branch.  It is visual/dimensional evidence, not
+ * a substitute for an approved thread or sealing tolerance.
+ */
+export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, primaryMeasurement = null, bodyComponentId = null) {
+  const overallHeight = Number(approvedDimensions?.heightMm);
+  const cap = primaryMeasurement?.cap;
+  const capRatio = Number(cap?.heightNorm);
+  if (!Number.isFinite(overallHeight) || overallHeight <= 0 || !Number.isFinite(capRatio) || capRatio <= .04 || capRatio >= .6) {
+    return { graph, applied: false, adjustments: [], reason: "cap_band_evidence_missing" };
+  }
+  const original = structuredClone(graph);
+  const candidate = patternedRadialComponent(original);
+  if (!candidate) return { graph, applied: false, adjustments: [], reason: "patterned_closure_not_found" };
+  const closure = original.components.find((component) => component.id === candidate.component.id);
+  const closureRange = localAxialRange(original, closure);
+  if (!closureRange || closureRange.max - closureRange.min <= 1e-6) return { graph, applied: false, adjustments: [], reason: "closure_height_unmeasurable" };
+  const next = structuredClone(original);
+  const nextClosure = next.components.find((component) => component.id === closure.id);
+  const targetClosureHeight = overallHeight * capRatio;
+  const scale = targetClosureHeight / (closureRange.max - closureRange.min);
+  for (const node of componentNodes(next, closure.id)) node.parameters = scaleAxialParameters(node.parameters, scale, closureRange.min);
+  const scaledClosureRange = localAxialRange(next, nextClosure);
+  const targetClosureZ = overallHeight - scaledClosureRange.max;
+  const closureTransform = nextClosure.transform ?? {};
+  nextClosure.transform = {
+    ...closureTransform,
+    translationMm: { ...(closureTransform.translationMm ?? {}), z: Number(targetClosureZ.toFixed(6)) },
+  };
+
+  const closureBottomZ = overallHeight - targetClosureHeight;
+  const adjustments = [{
+    componentId: closure.id, role: "patterned_closure", source: "primary_cap_band_measurement",
+    sourceHeightMm: closureRange.max - closureRange.min, targetHeightMm: targetClosureHeight,
+    assemblyZMm: targetClosureZ, scale,
+  }];
+  // A centred annular child which is neither the primary body nor the
+  // patterned closure is a candidate insert/ring.  Preserve its local B-Rep
+  // and place it at the measured closure-bottom datum. Small liners and
+  // off-axis parts are intentionally left untouched.
+  const targetRadius = Math.min(Number(approvedDimensions?.widthMm), Number(approvedDimensions?.depthMm)) / 2;
+  const nodes = new Map(next.nodes.map((node) => [node.id, node]));
+  for (const component of next.components) {
+    if (component.id === closure.id || component.id === bodyComponentId || component.representation !== "brep_solid") continue;
+    const current = component.transform?.translationMm ?? {};
+    if (Math.abs(Number(current.x ?? 0)) > 1e-6 || Math.abs(Number(current.y ?? 0)) > 1e-6 || Math.abs(Number(current.z ?? 0)) > 1e-6) continue;
+    const range = localAxialRange(next, component);
+    const radius = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, new Map())).filter(Number.isFinite));
+    if (!range || !Number.isFinite(radius) || !(radius >= targetRadius * .7 && radius <= targetRadius * 1.05) || range.max - range.min > targetClosureHeight) continue;
+    component.transform = { ...(component.transform ?? {}), translationMm: { ...current, z: Number((closureBottomZ - range.min).toFixed(6)) } };
+    adjustments.push({ componentId: component.id, role: "centred_annular_insert", source: "primary_cap_band_datum", assemblyZMm: closureBottomZ - range.min });
+  }
+  return { graph: next, applied: true, closureBottomZMm: closureBottomZ, closureHeightMm: targetClosureHeight, adjustments };
+}
+
 /**
  * Bring a centred axisymmetric child inside the approved assembly envelope.
  *
@@ -325,8 +425,18 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // component-local B-Rep with a reproducible, reviewable mm envelope.
   const targetHeightMm = Number(approvedDimensions?.heightMm);
   const targetWidthMm = Number(approvedDimensions?.widthMm);
-  const zMin = Number.isFinite(targetHeightMm) && targetHeightMm > 0 ? 0 : sourceZMin;
-  const zMax = Number.isFinite(targetHeightMm) && targetHeightMm > 0 ? targetHeightMm : sourceZMax;
+  // The primary body contour starts below the separately measured cap band,
+  // but a closure commonly overlaps the bottle neck. A front image alone
+  // cannot distinguish that overlap from a shorter glass body. Therefore the
+  // approved height remains the body B-Rep datum; the cap-band measurement is
+  // used by fitMeasuredClosureAssembly() only to position and size the
+  // patterned closure. This avoids silently shortening an approved vessel and
+  // creating an invalid inner shell at its neck.
+  const closure = patternedRadialComponent(graph);
+  const capRatio = Number(measured.cap?.heightNorm);
+  const bodyTargetHeight = targetHeightMm;
+  const zMin = Number.isFinite(bodyTargetHeight) && bodyTargetHeight > 0 ? 0 : sourceZMin;
+  const zMax = Number.isFinite(bodyTargetHeight) && bodyTargetHeight > 0 ? bodyTargetHeight : sourceZMax;
   const maxRadius = Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? targetWidthMm / 2 : sourceMaxRadius;
   const rows = measured.bodySilhouette.filter((item) => item.zNorm >= 0 && item.zNorm <= 1).sort((left, right) => left.zNorm - right.zNorm);
   // Keep the measured rows.  OCCT receives a smooth spline through these
@@ -360,6 +470,8 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
       sourceHeightMm: sourceZMax - sourceZMin,
       sourceDiameterMm: sourceMaxRadius * 2,
       targetHeightMm: zMax - zMin,
+      assemblyHeightMm: Number.isFinite(targetHeightMm) && targetHeightMm > 0 ? targetHeightMm : null,
+      capBandReservedMm: closure && Number.isFinite(capRatio) ? targetHeightMm * capRatio : null,
       targetDiameterMm: maxRadius * 2,
       source: Number.isFinite(targetHeightMm) && targetHeightMm > 0 && Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? "approved_dimensions" : "graph_extent",
     },

@@ -138,11 +138,17 @@ export function adaptGraphToV3(graph, evidenceManifest, imageEvidence = null) {
     const profile = graph.nodes.find((node) => node.componentId === component.id && Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 2)?.parameters.profile ?? [];
     const fitted = component.id === largestProfileComponentId && measuredPrimary;
     const provenance = { source: fitted ? "image_measurement" : "derived", imageId: fitted ? measuredPrimary.imageId : evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null, crop: null, measurementMethod: fitted ? measuredPrimary.measurementMethod : "legacy-graph-adapter", confidence: fitted ? .82 : .5, toleranceMm: fitted ? .35 : null, approvalStatus: "proposed" };
+    // The v3 curve records the observed/profile exterior, not the two
+    // axis-closing segments that make a revolved face. Keeping those closing
+    // points exceeded the declared 64-pole review limit for a measured
+    // 64-sample contour even though the actual fitted curve was valid.
+    const exterior = profile.filter((item) => Math.abs(Number(item.xMm)) > 1e-8);
+    const reviewCurve = exterior.length <= 64 ? exterior : Array.from({ length: 64 }, (_, index) => exterior[Math.round(index * (exterior.length - 1) / 63)]);
     return {
       id: component.id, requestedName: component.requestedName, representation: component.representation,
       localCoordinateSystem: "component-local",
       transform: { translationMm: component.transform.translationMm, rotationDeg: component.transform.rotationDeg },
-      curves: profile.length >= 2 ? [{ ...clampedV3Nurbs(profile.map((item) => ({ xMm: item.xMm, zMm: item.zMm }))), provenance }] : [],
+      curves: reviewCurve.length >= 2 ? [{ ...clampedV3Nurbs(reviewCurve.map((item) => ({ xMm: item.xMm, zMm: item.zMm }))), provenance }] : [],
       nodeIds: graph.nodes.filter((node) => node.componentId === component.id).map((node) => node.id),
     };
   });

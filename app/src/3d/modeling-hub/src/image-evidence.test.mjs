@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
-import { fitAxialAssemblyEnvelope, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { fitAxialAssemblyEnvelope, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -46,6 +46,13 @@ ribbedOutput.components[0].features = [ribBase, rib, pattern];
 const ribbedGraph = canonicalizeGraph(ribbedOutput, ["뚜껑"]).graph;
 const capFit = fitRadialAssemblyEnvelope(ribbedGraph, { widthMm: 56, depthMm: 56 }, { cap: { outerDiameterRatio: .9 } });
 assert.equal(capFit.adjustments[0]?.source, "primary_cap_measurement", "a ribbed radial component may expand to the measured cap envelope without a name rule");
+const capAssemblyFit = fitMeasuredClosureAssembly(ribbedGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25 } });
+assert.equal(capAssemblyFit.applied, true, "a cap colour-band measurement must fit a patterned component without matching its display name");
+assert.equal(capAssemblyFit.closureHeightMm, 25);
+const fittedClosure = capAssemblyFit.graph.components[0];
+assert.ok(fittedClosure.transform.translationMm.z > 0, "measured cap band must place the patterned closure above the component-local body datum");
+const closureProfiles = capAssemblyFit.graph.nodes.filter((node) => node.componentId === fittedClosure.id && Array.isArray(node.parameters?.profile)).flatMap((node) => node.parameters.profile);
+assert.ok(Math.max(...closureProfiles.map((point) => point.zMm)) + fittedClosure.transform.translationMm.z <= 100.01, "closure local B-Rep and assembly transform must remain inside the approved overall-height datum");
 
 const localGraph = structuredClone(radialGraph);
 localGraph.nodes[0].parameters.profile.forEach((point) => { point.zMm += 83; });
