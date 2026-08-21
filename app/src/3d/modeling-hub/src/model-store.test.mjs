@@ -52,9 +52,17 @@ assert.equal(latest.children[0].modelId, childId);
 assert.notEqual(latest.children[0].revisionId, childRevisionBefore);
 assert.equal(refined.model.status, "unpublished");
 
+// Component visibility belongs to a new assembly revision; prior revisions remain intact.
+const visibilityBase = await store.getRoot(first.id);
+const hidden = await store.updateChildRef({ parentModelId: first.id, childRefId: latest.children[0].id, expectedRevision: visibilityBase.revision, baseRevisionId: visibilityBase.currentRevision.id, visible: false, assemblyPath: null });
+const hiddenTree = await store.getTree(first.id);
+assert.equal(hiddenTree.children[0].visible, false);
+assert.equal((await store.assemblyInputs(first.id, hiddenTree.selectedRevision.id)).length, 0);
+assert.equal((await store.assemblyInputs(first.id, latest.selectedRevision.id)).length, 1);
+
 // A linked parent cannot be deleted; it can be unbound, archived, and restored.
-await assert.rejects(() => store.archiveRoot(first.id, refined.model.revision), (error) => error instanceof ModelStoreError && error.code === "model_bound");
-const unbound = await store.bindSku(first.id, null, refined.model.revision);
+await assert.rejects(() => store.archiveRoot(first.id, hidden.model.revision), (error) => error instanceof ModelStoreError && error.code === "model_bound");
+const unbound = await store.bindSku(first.id, null, hidden.model.revision);
 const archived = await store.archiveRoot(first.id, unbound.revision);
 assert.equal(archived.status, "archived");
 assert.equal((await store.listRoots()).some((item) => item.id === first.id), false);

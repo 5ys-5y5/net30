@@ -123,9 +123,8 @@ type SketchStroke = { id: string; color: string; points: readonly { x: number; y
 type SketchIteration = { id: string; ordinal: number; status: "proposed" | "approved" | "superseded"; prompt: string; markup?: readonly SketchStroke[]; markupRevision?: number; plan: SketchPlan };
 type ModelingDraft = { id: string; revision: number; state: string; message: string; parentModelId?: string; input: { operation?: string; parentModelId?: string; requestedComponents?: readonly string[]; componentInput?: string; revisionBaseRefs?: Record<string, { versionId: string }>; assemblyAssetRefs?: readonly { versionId: string }[] }; product: { name: string; intendedUse?: string } | null; components: readonly { id: string; requestedName?: string; displayName: string; semanticRole: string; quantity: number; recipe: string; summary?: string }[]; questions: readonly ModelingDraftQuestion[]; iterations?: readonly SketchIteration[]; activeIterationId?: string | null; progress?: readonly ModelingProgress[]; approval?: { ready: boolean; blockers: readonly string[]; approvalHash: string; compiler?: { ready: boolean }; sketchReady?: boolean } };
 type ProductModel = { id: string; name: string; kind: "assembly" | "component"; parentId?: string | null; revision: number; linkedSkuId: string | null; currentRevision: { id: string; ordinal: number; state: string; childCount: number; assetPath?: string | null } | null; publishedRevision: { id: string; ordinal: number } | null; directChildren: number; descendantCount: number; status: "empty" | "ready" | "unpublished" | "published" | "failed" | "archived" | string; archivedAt?: string | null; updatedAt: string };
-type ProductModelTree = ProductModel & { selectedRevision: { id: string; ordinal: number; assetPath?: string | null; childCount: number }; children: readonly { id: string; path: string; modelId: string; revisionId: string; order: number; transform: unknown; model: ProductModelTree }[] };
+type ProductModelTree = ProductModel & { selectedRevision: { id: string; ordinal: number; assetPath?: string | null; childCount: number }; children: readonly { id: string; path: string; modelId: string; revisionId: string; order: number; transform: unknown; visible: boolean; model: ProductModelTree }[] };
 type AssetEditTarget = { mode: "refine-assembly" | "refine-node" | "add-child"; rootModelId: string; baseRootRevisionId: string; targetModelId?: string; baseTargetRevisionId?: string; targetChildRefIds?: readonly string[]; label: string };
-type FocusedAsset = { kind: "parent"; parentId: string; revisionId: string; assetPath: string | null } | { kind: "child"; parentId: string; path: string; childRefId: string; revisionId: string; assetPath: string | null } | null;
 type FlatAssetNode = { child: ProductModelTree["children"][number]; path: string; depth: number; breadcrumb: readonly string[] };
 type ChildDeleteTarget = { tree: ProductModelTree; childRefId: string; childName: string };
 
@@ -571,13 +570,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const [resultArtifacts, setResultArtifacts] = useState<{ assemblyGlb?: string; report?: string; components?: Record<string, string | null> }>({});
   const [versions, setVersions] = useState<Record<string, readonly ModelingLibraryVersion[]>>({});
   const [parentVersionId, setParentVersionId] = useState<Record<string, string>>({});
-  const [includedNodePaths, setIncludedNodePaths] = useState<readonly string[]>([]);
-  const [focusedAsset, setFocusedAsset] = useState<FocusedAsset>(null);
-  const [libraryPreviewModel, setLibraryPreviewModel] = useState("");
-  const [libraryPreviewRevision, setLibraryPreviewRevision] = useState("initial");
-  const [libraryPreviewPending, setLibraryPreviewPending] = useState(false);
   const [libraryError, setLibraryError] = useState("");
-  const libraryPreviewRequest = useRef(0);
   const parentTreeRequest = useRef(0);
   const modelEndpoint = studio.endpoint.replace(/\/jobs$/, "/models");
   const skuOptions = useMemo(() => catalog.skus.map((sku) => ({ id: sku.id, label: ({ "all-in-one-pilot": "30일분 · 일반가", "all-in-one-growth": "30일분 · 회원가", "all-in-one-scale": "30일분 · 정기구독가" }[sku.id] ?? sku.id) + ` (${sku.id})` })), [catalog.skus]);
@@ -585,7 +578,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const previewJoin = studio.previewSrc.includes("?") ? "&" : "?";
   const modelPreviewSrc = (assetPath: string, revision: string) => `${studio.previewSrc}${previewJoin}refresh=${revision}&model=${encodeURIComponent(assetPath)}`;
   const previewSrc = previewModel ? modelPreviewSrc(previewModel, previewRevision) : "";
-  const libraryPreviewSrc = libraryPreviewModel ? modelPreviewSrc(libraryPreviewModel, libraryPreviewRevision) : "";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -622,12 +614,11 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     if (!response.ok || !body.ok || !body.model) throw new Error(body.error ?? "조립 파일의 구성요소를 불러오지 못했습니다.");
     if (requestId !== parentTreeRequest.current) return null;
     setActiveParentTree(body.model);
-    setIncludedNodePaths(body.model.children.map((child) => child.path || child.id));
     return body.model;
   }, [modelEndpoint]);
 
   useEffect(() => {
-    if (!activeParentModelId) { setActiveParentTree(null); setIncludedNodePaths([]); return; }
+    if (!activeParentModelId) { setActiveParentTree(null); return; }
     void refreshParentTree(activeParentModelId).catch((requestError) => setLibraryError(requestError instanceof Error ? requestError.message : String(requestError)));
   }, [activeParentModelId, refreshParentTree]);
 
@@ -664,13 +655,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       setLibraryError(requestError instanceof Error ? requestError.message : String(requestError));
     });
   }, [studio.endpoint]);
-
-  useEffect(() => {
-    if (!activeParentTree || !includedNodePaths.length) { libraryPreviewRequest.current += 1; setLibraryPreviewModel(""); setLibraryPreviewPending(false); return; }
-    const timer = window.setTimeout(() => { void requestTreePreview(); }, 300);
-    return () => { window.clearTimeout(timer); libraryPreviewRequest.current += 1; };
-  }, [activeParentTree, includedNodePaths]);
-
 
   const bindSku = async (productModel: ProductModel, skuId: string | null): Promise<ProductModel | null> => {
     setBindingPendingId(productModel.id); setModelListError("");
@@ -744,7 +728,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const startParentRefine = async (productModel: ProductModel) => {
     setLibraryError("");
     try {
-      setFocusedAsset({ kind: "parent", parentId: productModel.id, revisionId: productModel.currentRevision?.id ?? "", assetPath: productModel.currentRevision?.assetPath ?? null });
       setActiveParentModelId(productModel.id);
       const tree = activeParentTree?.id === productModel.id ? activeParentTree : await refreshParentTree(productModel.id);
       if (tree) beginAssetRefine(tree);
@@ -759,7 +742,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       const response = await fetch(`${modelEndpoint}/${tree.id}/children/${childRefId}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: tree.revision, baseRevisionId: tree.selectedRevision.id }) });
       const body = await response.json() as { ok?: boolean; error?: string };
       if (!response.ok || !body.ok) throw new Error(body.error ?? "구성요소를 현재 조립에서 제거하지 못했습니다.");
-      setIncludedNodePaths((current) => current.filter((path) => path !== childRefId && !path.startsWith(`${childRefId}/`))); await refreshProductModels(); await refreshParentTree(tree.id);
+      await refreshProductModels(); await refreshParentTree(tree.id);
       return true;
     } catch (requestError) { setLibraryError(requestError instanceof Error ? requestError.message : String(requestError)); return false; }
     finally { setAssetActionPending(null); }
@@ -770,35 +753,29 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     if (await removeChildAsset(childDeleteTarget.tree, childDeleteTarget.childRefId)) setChildDeleteTarget(null);
   };
 
-  const requestTreePreview = async () => {
-    if (!activeParentTree) return;
-    const requestId = ++libraryPreviewRequest.current;
-    const selectedNodePaths = [...includedNodePaths];
-    if (!selectedNodePaths.length) { setLibraryPreviewModel(""); setLibraryError("조립 미리보기에 포함할 구성요소를 선택하세요."); return; }
-    setLibraryPreviewPending(true); setLibraryError("");
+  const setChildVisibility = async (tree: ProductModelTree, node: FlatAssetNode, visible: boolean) => {
+    setAssetActionPending(node.child.id); setLibraryError("");
     try {
-      const response = await fetch(`${modelEndpoint}/${activeParentTree.id}/assemblies/preview`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ baseRevisionId: activeParentTree.selectedRevision.id, selectedNodePaths }) });
-      const body = await response.json() as { ok?: boolean; error?: string; assembly?: { assetPath?: string } };
-      if (!response.ok || !body.ok || !body.assembly?.assetPath) throw new Error(body.error ?? "선택한 구성요소를 조립하지 못했습니다.");
-      if (requestId !== libraryPreviewRequest.current) return;
-      setLibraryPreviewModel(body.assembly.assetPath); setLibraryPreviewRevision(Date.now().toString());
-    } catch (requestError) { if (requestId === libraryPreviewRequest.current) setLibraryError(requestError instanceof Error ? requestError.message : String(requestError)); }
-    finally { if (requestId === libraryPreviewRequest.current) setLibraryPreviewPending(false); }
+      const response = await fetch(`${modelEndpoint}/${tree.id}/children/${node.child.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: tree.revision, baseRevisionId: tree.selectedRevision.id, visible }) });
+      const body = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !body.ok) throw new Error(body.error ?? "구성요소 표시 상태를 저장하지 못했습니다.");
+      await refreshProductModels(); await refreshParentTree(tree.id);
+    } catch (requestError) { setLibraryError(requestError instanceof Error ? requestError.message : String(requestError)); }
+    finally { setAssetActionPending(null); }
   };
 
-  const publishSelectedChildren = async () => {
-    if (!activeParentTree) return; const parent = productModels.find((item) => item.id === activeParentTree.id); const selectedNodePaths = [...includedNodePaths];
-    if (!parent?.linkedSkuId) { setLibraryError("홈에 표시하려면 선택한 조립 파일에 SKU를 먼저 연결하세요."); return; }
-    if (!selectedNodePaths.length) { setLibraryError("홈에 게시할 구성요소를 선택하세요."); return; }
-    setLibraryPreviewPending(true); setLibraryError("");
+  const publishAssembly = async (tree: ProductModelTree) => {
+    const parent = productModels.find((item) => item.id === tree.id);
+    if (!parent?.linkedSkuId) { setLibraryError("홈에 표시하려면 이 조립 파일에 SKU를 먼저 연결하세요."); return; }
+    if (!tree.selectedRevision.assetPath) { setLibraryError("표시 중인 구성요소가 없어 빈 조립 파일은 홈에 게시할 수 없습니다."); return; }
+    setAssetActionPending(tree.id); setLibraryError("");
     try {
-      const saved = await fetch(`${modelEndpoint}/${parent.id}/revisions/library`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: parent.revision, baseRevisionId: activeParentTree.selectedRevision.id, selectedNodePaths }) }); const savedBody = await saved.json() as { ok?: boolean; error?: string; model?: ProductModel; revision?: { id: string } };
-      if (!saved.ok || !savedBody.ok || !savedBody.model || !savedBody.revision) throw new Error(savedBody.error ?? "선택한 조립 리비전을 저장하지 못했습니다.");
-      const published = await fetch(`${modelEndpoint}/${parent.id}/revisions/${savedBody.revision.id}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: savedBody.model.revision }) }); const publishedBody = await published.json() as { ok?: boolean; error?: string; publication?: { assetPath?: string } };
-      if (!published.ok || !publishedBody.ok || !publishedBody.publication?.assetPath) throw new Error(publishedBody.error ?? "선택한 조립을 홈에 게시하지 못했습니다.");
-      setLibraryPreviewModel(publishedBody.publication.assetPath); setLibraryPreviewRevision(Date.now().toString()); await refreshProductModels(); await refreshParentTree(parent.id);
+      const response = await fetch(`${modelEndpoint}/${tree.id}/revisions/${tree.selectedRevision.id}/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: tree.revision }) });
+      const body = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !body.ok) throw new Error(body.error ?? "조립 파일을 홈에 표시하지 못했습니다.");
+      await refreshProductModels(); await refreshParentTree(tree.id);
     } catch (requestError) { setLibraryError(requestError instanceof Error ? requestError.message : String(requestError)); }
-    finally { setLibraryPreviewPending(false); }
+    finally { setAssetActionPending(null); }
   };
 
   const uploadImages = async () => {
@@ -948,28 +925,14 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const analysisInProgress = pending && !buildInProgress && (!draft || draft.state.startsWith("analyzing"));
   const activeWorkflowIndex = draft ? workflowIndex(draft.state, Boolean(previewModel)) : 0;
   const flatAssetNodes = useMemo(() => activeParentTree ? flattenAssetTree(activeParentTree) : [], [activeParentTree]);
-  const toggleIncludedNodePath = (path: string) => setIncludedNodePaths((current) => current.includes(path)
-    ? current.filter((item) => item !== path && !item.startsWith(`${path}/`))
-    : [...current.filter((item) => !path.startsWith(`${item}/`)), path]);
   const clearActiveParentSelection = useCallback(() => {
-    parentTreeRequest.current += 1; libraryPreviewRequest.current += 1;
-    setActiveParentModelId(null); setActiveParentTree(null); setIncludedNodePaths([]); setFocusedAsset(null);
-    setLibraryPreviewModel(""); setLibraryPreviewPending(false); setLibraryError(""); setEditingName(null); setDeleteTarget(null); setChildDeleteTarget(null);
+    parentTreeRequest.current += 1;
+    setActiveParentModelId(null); setActiveParentTree(null);
+    setLibraryError(""); setEditingName(null); setDeleteTarget(null); setChildDeleteTarget(null);
   }, []);
   const focusParent = (productModel: ProductModel) => {
     if (activeParentModelId === productModel.id) { clearActiveParentSelection(); return; }
-    setFocusedAsset({ kind: "parent", parentId: productModel.id, revisionId: productModel.currentRevision?.id ?? "", assetPath: productModel.currentRevision?.assetPath ?? null });
-    setLibraryPreviewModel(""); setPreviewModel(""); setActiveParentModelId(productModel.id);
-  };
-  const focusChild = (node: FlatAssetNode) => {
-    if (!activeParentTree) return;
-    setFocusedAsset({ kind: "child", parentId: activeParentTree.id, path: node.path, childRefId: node.child.id, revisionId: node.child.revisionId, assetPath: node.child.model.selectedRevision.assetPath ?? null });
-    setLibraryPreviewModel(""); setPreviewModel("");
-  };
-  const toggleChildSelection = (node: FlatAssetNode, selected: boolean) => {
-    toggleIncludedNodePath(node.path);
-    if (selected) setFocusedAsset((current) => current?.kind === "child" && current.path === node.path ? null : current);
-    else focusChild(node);
+    setPreviewModel(""); setActiveParentModelId(productModel.id);
   };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -984,9 +947,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const stagePreview = draft ? <Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending || buildInProgress} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt) => void applySketchFeedback(iteration, feedbackPrompt)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom>
     : analysisInProgress ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>스케치를 준비 중입니다.</Copy></header></ProcessProgressPanel></Atom>
       : previewModel ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={studio.previewTitle} src={previewSrc} />
-        : libraryPreviewModel ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
-          : focusedAsset?.assetPath ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={focusedAsset.kind === "child" ? "선택한 자녀 3D 미리보기" : "선택한 부모 3D 미리보기"} src={modelPreviewSrc(focusedAsset.assetPath, focusedAsset.revisionId)} />
-            : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{libraryPreviewPending ? studio.assetLibrary.previewPendingMessage : "조립 파일 또는 구성요소를 선택하면 3D 미리보기와 승인 스케치가 이곳에 표시됩니다."}</Copy></Atom>;
+        : activeParentTree?.selectedRevision.assetPath ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title="선택한 조립 파일 3D 미리보기" src={modelPreviewSrc(activeParentTree.selectedRevision.assetPath, activeParentTree.selectedRevision.id)} />
+          : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{activeParentTree ? "표시할 구성요소를 선택하면 조립 파일 미리보기가 이곳에 표시됩니다." : "조립 파일을 선택하면 3D 미리보기와 승인 스케치가 이곳에 표시됩니다."}</Copy></Atom>;
   return <>
     <ModelingPreviewStage aria-label="모델링 공용 미리보기">{stagePreview}</ModelingPreviewStage>
     <ModelingCatalogLayout id={system.catalogId}>
@@ -1052,30 +1014,19 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </AssetLibraryGrid>
       {editingName ? <InlineAssetEditor onSubmit={(event) => { event.preventDefault(); void saveModelName(); }}><FormField label={editingName.kind === "parent" ? "조립 파일 이름" : "구성요소 이름"}><input className={CLASS.modelingControl} value={editingName.value} onChange={(event) => setEditingName((current) => current ? { ...current, value: event.target.value } : current)} /></FormField><ActionButton className={CLASS.modelingAction} type="submit" disabled={assetActionPending === editingName.id}>저장</ActionButton></InlineAssetEditor> : null}
       {activeParentTree ? <ModelingLibraryTree aria-label={`${activeParentTree.name} 조립 파일과 구성요소`}>
-        <Atom className={CLASS.modelingParentToolbar}><AssetIdentity><strong>{activeParentTree.name}</strong><small>최신 r{activeParentTree.currentRevision?.ordinal ?? 0} · 게시 {activeParentTree.publishedRevision ? `r${activeParentTree.publishedRevision.ordinal}` : "없음"} · {activeParentTree.status}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} onClick={() => beginAssetRefine(activeParentTree)}>조립 파일 보완</ActionButton><ActionButton className={CLASS.modelingAction} onClick={() => beginAddChild(activeParentTree)}>구성요소 추가</ActionButton></AssetNodeActions></Atom>
+        <Atom className={CLASS.modelingParentToolbar}><AssetIdentity><strong>{activeParentTree.name}</strong><small>최신 r{activeParentTree.currentRevision?.ordinal ?? 0} · 게시 {activeParentTree.publishedRevision ? `r${activeParentTree.publishedRevision.ordinal}` : "없음"} · {activeParentTree.status}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={!activeParentTree.linkedSkuId || !activeParentTree.selectedRevision.assetPath || assetActionPending === activeParentTree.id} onClick={() => void publishAssembly(activeParentTree)}>홈에 표시</ActionButton><ActionButton className={CLASS.modelingAction} onClick={() => beginAssetRefine(activeParentTree)}>조립 파일 보완</ActionButton><ActionButton className={CLASS.modelingAction} onClick={() => beginAddChild(activeParentTree)}>구성요소 추가</ActionButton></AssetNodeActions></Atom>
         {flatAssetNodes.length ? <AssetLibraryGrid aria-label={`${activeParentTree.name} 구성요소 카드 목록`}>{flatAssetNodes.map((node) => {
-          const item = node.child.model; const included = includedNodePaths.includes(node.path);
+          const item = node.child.model; const visible = node.child.visible !== false;
           const canMutate = node.depth === 0 && activeParentTree.selectedRevision.id === activeParentTree.currentRevision?.id;
-          return <AssetLibraryCard key={node.path} selected={included}>
-            <SelectionCardControl aria-pressed={included} onClick={() => toggleChildSelection(node, included)}>
-              <AssetIdentity>{item.selectedRevision.assetPath ? <ModelPreviewFrame compact title={`${item.name} 3D 미리보기`} src={modelPreviewSrc(item.selectedRevision.assetPath, item.selectedRevision.id)} /> : <AssetEmptyState><Copy>자체 GLB가 없어 포함된 구성요소 조립으로 표시됩니다.</Copy></AssetEmptyState>}<AssetIdentityHeader><strong>{item.name}</strong><ReviewStatus>{item.status}</ReviewStatus></AssetIdentityHeader><small>{node.breadcrumb.join(" › ")} · r{item.selectedRevision.ordinal} · 조립 순서 {node.child.order + 1}</small></AssetIdentity>
+          return <AssetLibraryCard key={node.path} selected={visible}>
+            <SelectionCardControl aria-label={`${item.name} ${visible ? "조립 파일에서 숨기기" : "조립 파일에 표시하기"}`} aria-pressed={visible} disabled={!canMutate || assetActionPending === node.child.id} onClick={() => void setChildVisibility(activeParentTree, node, !visible)}>
+              <AssetIdentity>{item.selectedRevision.assetPath ? <ModelPreviewFrame compact title={`${item.name} 3D 미리보기`} src={modelPreviewSrc(item.selectedRevision.assetPath, item.selectedRevision.id)} /> : <AssetEmptyState><Copy>자체 GLB가 없어 포함된 구성요소 조립으로 표시됩니다.</Copy></AssetEmptyState>}<AssetIdentityHeader><strong>{item.name}</strong><ReviewStatus>{item.status} · {visible ? "표시" : "숨김"}</ReviewStatus></AssetIdentityHeader><small>{node.breadcrumb.join(" › ")} · r{item.selectedRevision.ordinal} · 조립 순서 {node.child.order + 1}</small></AssetIdentity>
             </SelectionCardControl>
             <AssetNodeActions aria-label={`${item.name} 작업`}><ActionButton className={CLASS.modelingAction} onClick={() => setEditingName({ id: item.id, value: item.name, revision: item.revision, kind: "child" })}>이름 수정</ActionButton>{canMutate ? <><ActionButton className={CLASS.modelingAction} onClick={() => beginAssetRefine(activeParentTree, node.child)}>OpenAI × Blender로 구성요소 보완</ActionButton><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === node.child.id} onClick={() => setChildDeleteTarget({ tree: activeParentTree, childRefId: node.child.id, childName: item.name })}>삭제</ActionButton></> : null}</AssetNodeActions>
             {childDeleteTarget?.childRefId === node.child.id ? <DestructiveActionGate><Label>구성요소 삭제</Label><Copy>{childDeleteTarget.childName}을(를) 현재 조립 파일에서 제외하고 보관합니다. 과거 리비전과 게시 artifact는 보존됩니다.</Copy><AssetNodeActions><ActionButton className={CLASS.modelingAction} onClick={() => setChildDeleteTarget(null)}>취소</ActionButton><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === node.child.id} onClick={() => void confirmChildDelete()}>삭제 확인</ActionButton></AssetNodeActions></DestructiveActionGate> : null}
           </AssetLibraryCard>;
         })}</AssetLibraryGrid> : <AssetEmptyState><Label>구성요소 없음</Label><Copy>OpenAI × Blender 보완에서 첫 구성요소를 추가할 수 있습니다.</Copy></AssetEmptyState>}
-      <Atom className={CLASS.modelingLibrarySelection}>
-        <Atom className={CLASS.modelingLibrarySelectionMeta}>
-          <Label>{activeParentTree.name} · {studio.assetLibrary.selectionTitle}</Label>
-          <Copy>{includedNodePaths.length ? `${includedNodePaths.length}개 구성요소 선택` : "구성요소 카드를 선택해 이 조립 파일의 부분 조립을 만드세요."}</Copy>
-        </Atom>
-        <Atom className={CLASS.modelingLibraryActions} role="group" aria-label="선택한 자산 작업">
-          <ActionButton className={CLASS.modelingAction} disabled={!activeParentTree || includedNodePaths.length === 0 || libraryPreviewPending} onClick={() => void requestTreePreview()}>{studio.assetLibrary.previewLabel}</ActionButton>
-          <ActionButton className={CLASS.modelingAction} disabled={!activeParentTree || includedNodePaths.length === 0 || !productModels.find((item) => item.id === activeParentModelId)?.linkedSkuId || libraryPreviewPending} onClick={() => void publishSelectedChildren()}>{studio.assetLibrary.homeLabel}</ActionButton>
-        </Atom>
-        {libraryPreviewPending && libraryPreviewModel ? <Copy className={CLASS.modelingHint}>{studio.assetLibrary.previewPendingMessage}</Copy> : null}
         {libraryError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{libraryError}</Atom> : null}
-      </Atom>
       </ModelingLibraryTree> : null}
       {activeParentTree && archivedParents.length ? <DecisionHistoryDisclosure label={`삭제된 조립 파일 ${archivedParents.length}개`}><AssetHierarchy>{archivedParents.map((item) => <AssetHierarchyItem key={item.id}><AssetIdentity><strong>{item.name}</strong><small>보관됨 · 마지막 리비전 r{item.currentRevision?.ordinal ?? 0}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === item.id} onClick={() => void restoreParent(item)}>복원</ActionButton></AssetNodeActions></AssetHierarchyItem>)}</AssetHierarchy></DecisionHistoryDisclosure> : null}
       {modelListError ? <Atom as="p" className={joinClasses(CLASS.modelingHint, CLASS.modelingError)} role="alert">{modelListError}</Atom> : null}

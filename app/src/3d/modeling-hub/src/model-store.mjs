@@ -12,7 +12,7 @@ export class ModelStoreError extends Error {
 }
 
 function emptyManifest() {
-  return { version: 3, artifacts: {}, models: {}, publications: {}, bindings: {}, migrations: { schemaV2: true, schemaV3: true, legacyJobs: {}, legacyShowcase: false } };
+  return { version: 4, artifacts: {}, models: {}, publications: {}, bindings: {}, migrations: { schemaV2: true, schemaV3: true, schemaV4: true, legacyJobs: {}, legacyShowcase: false } };
 }
 
 /** Immutable product hierarchy. Parent revisions pin ChildRef.revisionId. */
@@ -25,7 +25,7 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
     if (!existsSync(indexPath)) return emptyManifest();
     const parsed = JSON.parse(await fs.readFile(indexPath, "utf8"));
     const parsedVersion = Number(parsed.version ?? 1);
-    return { ...emptyManifest(), ...parsed, artifacts: parsed.artifacts ?? {}, models: parsed.models ?? {}, publications: parsed.publications ?? {}, bindings: parsed.bindings ?? {}, migrations: { ...emptyManifest().migrations, ...(parsed.migrations ?? {}), schemaV2: parsed.migrations?.schemaV2 ?? parsedVersion >= 2, schemaV3: parsed.migrations?.schemaV3 ?? parsedVersion >= 3 } };
+    return { ...emptyManifest(), ...parsed, artifacts: parsed.artifacts ?? {}, models: parsed.models ?? {}, publications: parsed.publications ?? {}, bindings: parsed.bindings ?? {}, migrations: { ...emptyManifest().migrations, ...(parsed.migrations ?? {}), schemaV2: parsed.migrations?.schemaV2 ?? parsedVersion >= 2, schemaV3: parsed.migrations?.schemaV3 ?? parsedVersion >= 3, schemaV4: parsed.migrations?.schemaV4 ?? parsedVersion >= 4 } };
   }
   async function write(manifest) {
     await fs.mkdir(root, { recursive: true });
@@ -37,7 +37,7 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
     const run = queue.then(async () => { const manifest = await load(); const value = await fn(manifest); await write(manifest); return value; });
     queue = run.catch(() => undefined); return run;
   }
-  function childRef(value, order) { return { id: value.id ?? `childref-${randomUUID().slice(0, 12)}`, modelId: value.modelId, revisionId: value.revisionId, transform: value.transform ?? null, order: Number.isInteger(value.order) ? value.order : order }; }
+  function childRef(value, order) { return { id: value.id ?? `childref-${randomUUID().slice(0, 12)}`, modelId: value.modelId, revisionId: value.revisionId, transform: value.transform ?? null, visible: value.visible !== false, order: Number.isInteger(value.order) ? value.order : order }; }
   function kindOf(value) { return value.kind ?? (value.parentId ? "component" : "assembly"); }
   function upgrade(manifest) {
     let changed = false;
@@ -52,7 +52,11 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
       for (const value of Object.values(manifest.models ?? {})) value.kind ??= value.parentId ? "component" : "assembly";
       manifest.migrations = { ...(manifest.migrations ?? {}), schemaV3: true }; changed = true;
     }
-    manifest.version = 3; return changed;
+    if (Number(manifest.version ?? 1) < 4 || !manifest.migrations?.schemaV4) {
+      for (const value of Object.values(manifest.models ?? {})) for (const revision of value.revisions ?? []) revision.children = (revision.children ?? []).map(childRef);
+      manifest.migrations = { ...(manifest.migrations ?? {}), schemaV4: true }; changed = true;
+    }
+    manifest.version = 4; return changed;
   }
   function repairEmptyAssemblyArtifacts(manifest) {
     let changed = false;
@@ -69,7 +73,7 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
     await fs.mkdir(root, { recursive: true });
     if (!existsSync(indexPath)) return;
     const raw = JSON.parse(await fs.readFile(indexPath, "utf8"));
-    if (Number(raw.version ?? 1) < 3 || !raw.migrations?.schemaV3) await fs.writeFile(`${indexPath}.schema-backup-${Date.now()}.json`, `${JSON.stringify(raw, null, 2)}\n`);
+    if (Number(raw.version ?? 1) < 4 || !raw.migrations?.schemaV4) await fs.writeFile(`${indexPath}.schema-backup-${Date.now()}.json`, `${JSON.stringify(raw, null, 2)}\n`);
     await mutate(async (manifest) => { upgrade(manifest); repairEmptyAssemblyArtifacts(manifest); return null; });
   }
   async function storeArtifact(manifest, sourcePath) {
@@ -161,10 +165,10 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
   async function renameModel(id, name, expectedRevision) { return mutate(async (manifest) => { const value = model(manifest, id, { includeArchived: true }); if (expectedRevision !== value.revision) throw new ModelStoreError("revision_conflict", "모델 목록이 최신이 아닙니다.", { model: summary(manifest, value) }); const next = String(name ?? "").trim(); if (!next) throw new ModelStoreError("invalid_name", "모델 이름을 입력하세요."); value.name = next.slice(0, 160); value.revision += 1; value.updatedAt = now(); return summary(manifest, value); }); }
   async function archiveRoot(id, expectedRevision) { return mutate(async (manifest) => { const parent = rootModel(manifest, id); if (expectedRevision !== parent.revision) throw new ModelStoreError("revision_conflict", "조립 파일 목록이 최신이 아닙니다.", { model: summary(manifest, parent) }); if (parent.skuId) throw new ModelStoreError("model_bound", "SKU 연결을 먼저 해제한 뒤 조립 파일을 삭제하세요.", { model: summary(manifest, parent) }); parent.archivedAt = now(); parent.revision += 1; parent.updatedAt = now(); return summary(manifest, parent); }); }
   async function restoreRoot(id, expectedRevision) { return mutate(async (manifest) => { const parent = rootModel(manifest, id, { includeArchived: true }); if (expectedRevision !== parent.revision) throw new ModelStoreError("revision_conflict", "모델 목록이 최신이 아닙니다.", { model: summary(manifest, parent) }); parent.archivedAt = null; parent.revision += 1; parent.updatedAt = now(); return summary(manifest, parent); }); }
-  async function updateChildRef({ parentModelId, childRefId, expectedRevision, baseRevisionId, transform, order, revisionId, assemblyPath, summary: note = "구성요소 조립 정보를 수정했습니다." }) {
+  async function updateChildRef({ parentModelId, childRefId, expectedRevision, baseRevisionId, transform, visible, order, revisionId, assemblyPath, summary: note = "구성요소 조립 정보를 수정했습니다." }) {
     return mutate(async (manifest) => {
       const parent = rootModel(manifest, parentModelId); ensureBase(parent, expectedRevision, baseRevisionId); const children = parentChildren(parent); const index = children.findIndex((item) => item.id === childRefId); if (index < 0) throw new ModelStoreError("child_not_found", "구성요소 연결을 찾을 수 없습니다.");
-      const current = children[index]; if (revisionId) revisionOf(model(manifest, current.modelId, { includeArchived: true }), revisionId); children[index] = { ...current, transform: transform === undefined ? current.transform : transform, order: Number.isInteger(order) ? order : current.order, revisionId: revisionId ?? current.revisionId };
+      const current = children[index]; if (revisionId) revisionOf(model(manifest, current.modelId, { includeArchived: true }), revisionId); children[index] = { ...current, transform: transform === undefined ? current.transform : transform, visible: visible === undefined ? current.visible !== false : Boolean(visible), order: Number.isInteger(order) ? order : current.order, revisionId: revisionId ?? current.revisionId };
       const artifactId = assemblyPath === undefined ? revisionOf(parent).artifactId : assemblyPath ? await storeArtifact(manifest, assemblyPath) : null; const revision = createRevision(parent, { artifactId, children, state: artifactId ? "ready" : "empty", source: "library", summary: note }); return { model: summary(manifest, parent), revision: publicRevision(revision) };
     });
   }
@@ -208,7 +212,7 @@ export function createModelStore(assetRoot, { skuIds = new Set() } = {}) {
       const key = `${value.id}:${current.id}`; if (seen.has(key)) throw new ModelStoreError("cycle_detected", "모델 트리에 순환 참조가 있습니다."); seen.add(key);
       for (const ref of current.children) {
         const refPath = prefix ? `${prefix}/${ref.id}` : ref.id;
-        const directlySelected = forceInclude || selection === null || selection.includes(refPath);
+        const directlySelected = forceInclude || (selection === null ? ref.visible !== false : selection.includes(refPath));
         const hasSelectedDescendant = selection?.some((item) => item.startsWith(`${refPath}/`)) ?? false;
         if (!directlySelected && !hasSelectedDescendant) continue;
         const child = model(manifest, ref.modelId, { includeArchived: true }); const childRevision = revisionOf(child, ref.revisionId); const transform = combineTransform(inheritedTransform, ref.transform);
