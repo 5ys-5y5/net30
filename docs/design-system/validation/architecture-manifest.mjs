@@ -27,6 +27,7 @@ export const ARCHITECTURE = Object.freeze({
     "assetLibraryGrid",
     "assetLibraryCard",
     "assetIdentity",
+    "assetIdentityHeader",
     "assetHierarchy",
     "assetHierarchyItem",
     "assetNodeActions",

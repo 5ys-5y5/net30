@@ -201,6 +201,11 @@ export function AssetIdentity({ children, className = "", ...props }: HTMLAttrib
   return <div className={joinClasses(CLASS.assetIdentity, className)} {...props}>{children}</div>;
 }
 
+/** Keeps an asset name and its lifecycle status in one compact, aligned row. */
+export function AssetIdentityHeader({ children, className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={joinClasses(CLASS.assetIdentityHeader, className)} {...props}>{children}</div>;
+}
+
 /** Recursive product assets remain a semantic list rather than a fake ARIA tree. */
 export function AssetHierarchy({ className = "", ...props }: HTMLAttributes<HTMLUListElement>) {
   return <ul className={joinClasses(CLASS.assetHierarchy, className)} {...props} />;
