@@ -1003,7 +1003,6 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     <input className={CLASS.modelingControl} type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
   </FormField>;
   const analysisInProgress = pending && !buildInProgress && (!draft || draft.state.startsWith("analyzing"));
-  const hasDecisionWorkspace = Boolean(draft || previewModel || buildInProgress || analysisInProgress);
   const activeWorkflowIndex = draft ? workflowIndex(draft.state, Boolean(previewModel)) : 0;
   const renderAssetNode = (root: ProductModelTree, child: ProductModelTree["children"][number], depth = 0): ReactNode => {
     const item = child.model; const selected = Boolean(selectedVersions[child.id]); const canMutate = depth === 0 && root.selectedRevision.id === root.currentRevision?.id;
@@ -1021,7 +1020,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
     : libraryPreviewModel ? <ModelPreviewFrame className={CLASS.modelingLibraryPreview} title={studio.assetLibrary.previewTitle} src={libraryPreviewSrc} aria-busy={libraryPreviewPending} />
       : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{libraryPreviewPending ? studio.assetLibrary.previewPendingMessage : activeParentModelId ? studio.assetLibrary.previewIdleMessage : "부모 모델을 선택하면 조립 3D 미리보기가 여기에 표시됩니다."}</Copy></Atom>;
   return <ModelingCatalogLayout id={system.catalogId}>
-    <ModelingStudio data-workspace={hasDecisionWorkspace}>
+    <ModelingStudio>
       <Surface className={CLASS.modelingForm}>
         <form onSubmit={submit}>
           <ModelingWorkspaceIntro><Label>OPENAI × BLENDER</Label><Atom as="h2">{editTarget ? editTarget.label : "새 부모 모델 생성"}</Atom><Copy>{editTarget ? "저장된 기준 모델과 선택하지 않은 형제 자산은 그대로 유지합니다. 이 작업은 보완 전용입니다." : "새 부모 모델과 최초 자녀 모델을 생성합니다. 첫 Blender 결과가 검증되기 전에는 제품 자산 라이브러리에 저장되지 않습니다."}</Copy></ModelingWorkspaceIntro>
@@ -1045,11 +1044,12 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
           <Copy className={CLASS.modelingHint}>{progress || studio.unavailableMessage}</Copy>
         </form>
       </Surface>
-      {buildInProgress ? <BuildProgressPanel><ProcessProgressPanel>
-        <header><Label>Blender 생성·검증</Label><ReviewStatus>진행 중</ReviewStatus><Copy>{progress || studio.pendingLabel}</Copy></header>
+    </ModelingStudio>
+    {buildInProgress ? <BuildProgressPanel><ProcessProgressPanel>
+        <header><Label>OPENAI × BLENDER · Blender 생성·검증</Label><ReviewStatus>진행 중</ReviewStatus><Copy>{progress || studio.pendingLabel}</Copy></header>
         <ProgressStageList>{(draft?.progress?.filter((item) => item.operation === "build") ?? [{ eventId: 0, operation: "build", stage: "Blender 생성", state: "running", message: progress }]).map((item) => <ProgressStage state={item.state} key={`${item.eventId}-${item.stage}`}><span>{item.stage}{item.total ? ` · ${item.completed ?? 0}/${item.total} ${item.unit ?? ""}` : ""}</span><span>{item.message}</span></ProgressStage>)}{Object.entries(componentProgress).map(([component, item]) => <ProgressStage state={item.state === "complete" ? "complete" : item.state === "failed" ? "failed" : "running"} key={component}><span>{component}</span><span>{item.message}</span></ProgressStage>)}</ProgressStageList>
       </ProcessProgressPanel></BuildProgressPanel> : analysisInProgress ? <ProcessProgressPanel>
-        <header><Label>제품·부품 분석</Label><ReviewStatus>분석 중</ReviewStatus><Copy>{progress || "제품과 구성 부품을 분석하고 있습니다."}</Copy></header>
+        <header><Label>OPENAI × BLENDER · 제품·부품 분석</Label><ReviewStatus>분석 중</ReviewStatus><Copy>{progress || "제품과 구성 부품을 분석하고 있습니다."}</Copy></header>
         <ProgressStageList>{(draft?.progress?.filter((item) => item.operation === "analysis") ?? [{ eventId: 0, operation: "analysis", stage: "OpenAI 분석", state: "running", message: progress || "입력 분석을 시작했습니다." }]).map((item) => <ProgressStage state={item.state} key={`${item.eventId}-${item.stage}`}><span>{item.stage}{item.total ? ` · ${item.completed ?? 0}/${item.total} ${item.unit ?? ""}` : ""}</span><span>{item.message}</span></ProgressStage>)}</ProgressStageList>
       </ProcessProgressPanel> : previewModel ? <ModelResultPanel>
         <Atom className={CLASS.modelingToolbar}><Atom><Label>{studio.workspace.assemblyLabel}</Label><Copy className={CLASS.modelingHint}>{studio.workspace.assemblyDescription}</Copy></Atom><Link href="/">{studio.backLabel}</Link></Atom>
@@ -1057,7 +1057,8 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}><Label>{studio.resultTitle}</Label><Atom as={ELEMENT.span}>{error || result}</Atom>{downloadReady && <Link href={previewModel} download>{studio.downloadLabel}</Link>}</Atom>
         {draft ? <DecisionHistoryDisclosure label="승인 결정 내역 보기"><ReviewProgress>생성 당시 승인값 {draft.questions.length}개</ReviewProgress><DraftQuestionGroups draft={draft} readOnly /></DecisionHistoryDisclosure> : null}
       </ModelResultPanel> : draft ? <ReviewWorkspace>
-        <ReviewWorkspaceHeader><Label>승인 워크플로</Label><ReviewStatus>{draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
+        <ReviewWorkspaceHeader><Label>OPENAI × BLENDER · 승인 워크플로</Label><ReviewStatus>{draft.state}</ReviewStatus><Copy>{error || draft.message}</Copy></ReviewWorkspaceHeader>
+        {sectionPreview}
         <WorkflowStepper>{MODELING_WORKFLOW_STEPS.map((step, index) => <WorkflowStep status={index < activeWorkflowIndex ? "completed" : index === activeWorkflowIndex ? "current" : "upcoming"} key={step}>{index + 1}. {step}</WorkflowStep>)}</WorkflowStepper>
         <ReviewProgress>{draft.approval?.ready ? "모든 값 승인됨" : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</ReviewProgress>
         <ReviewScopeNavigator onKeyDown={(event) => { if (!reviewScopes.length || !["ArrowLeft", "ArrowRight"].includes(event.key)) return; event.preventDefault(); const index = reviewScopes.findIndex((scope) => scope.id === activeReviewScope); setActiveReviewScope(reviewScopes[(index + (event.key === "ArrowRight" ? 1 : reviewScopes.length - 1)) % reviewScopes.length].id); }}>
@@ -1069,9 +1070,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
         {!["assembly", "graphics"].includes(activeReviewScope) ? <ScopedApprovalBar><Copy>이 컴포넌트의 아직 수정하지 않은 권장값 {activeScopeQuestions.filter((question) => question.status === "proposed").length}개만 한 번에 승인합니다.</Copy><ActionButton className={CLASS.modelingAction} disabled={draftDecisionPending || activeScopeQuestions.every((question) => question.status !== "proposed")} onClick={() => void approveCurrentScope()}>현재 컴포넌트 권장값 일괄 승인</ActionButton></ScopedApprovalBar> : null}
         <DraftQuestionGroups draft={draft} questions={activeScopeQuestions} decisionPending={draftDecisionPending} onDecision={(question, action, value) => void decideDraftQuestion(question, action, value)} />
         <BuildGate><Copy>{draft.approval?.ready ? "모든 기준값이 승인되었습니다." : `승인 대기 ${draft.approval?.blockers.length ?? draft.questions.length}개`}</Copy><ActionButton className={CLASS.modelingButton} disabled={!draft.approval?.ready || pending} onClick={() => void buildDraft()}>{pending ? studio.pendingLabel : "승인된 Blender 생성 실행"}</ActionButton></BuildGate>
-      </ReviewWorkspace> : null}
-    </ModelingStudio>
-    <ModelingLibraryWorkspace>
+      </ReviewWorkspace> : <ModelingLibraryWorkspace>
       <ModelingWorkspaceIntro><Label>PRODUCT ASSET LIBRARY</Label><Atom as="h2">{studio.assetLibrary.title}</Atom><Copy>{studio.assetLibrary.copy}</Copy></ModelingWorkspaceIntro>
       {sectionPreview}
       <AssetLibraryGrid aria-label="제품 모델과 SKU 연결 카드 목록">
@@ -1109,7 +1108,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </Atom>
       {!activeParentTree ? <AssetEmptyState><Label>부모 모델을 선택하세요</Label><Copy>이전 전역 컴포넌트 버전은 부모 자산 트리와 섞지 않습니다.</Copy></AssetEmptyState> : null}
       {archivedParents.length ? <DecisionHistoryDisclosure label={`삭제된 부모 모델 ${archivedParents.length}개`}><AssetHierarchy>{archivedParents.map((item) => <AssetHierarchyItem key={item.id}><AssetIdentity><strong>{item.name}</strong><small>보관됨 · 마지막 리비전 r{item.currentRevision?.ordinal ?? 0}</small></AssetIdentity><AssetNodeActions><ActionButton className={CLASS.modelingAction} disabled={assetActionPending === item.id} onClick={() => void restoreParent(item)}>복원</ActionButton></AssetNodeActions></AssetHierarchyItem>)}</AssetHierarchy></DecisionHistoryDisclosure> : null}
-    </ModelingLibraryWorkspace>
+    </ModelingLibraryWorkspace>}
     <ModelingOutputSections>
       <Surface className={CLASS.modelingOutputSection}>
         <Label>{studio.workspace.manufacturingLabel}</Label>

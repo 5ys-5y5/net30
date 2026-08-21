@@ -58,6 +58,9 @@ export async function validateDesignSystem(root = repositoryRoot) {
   if (!/previewModel\s*\?\s*<ModelResultPanel\b/.test(storefront) || !/draft\s*\?\s*<ReviewWorkspace\b/.test(storefront)) {
     failures.push("Storefront.tsx must switch one workspace from review decisions to the generated model");
   }
+  if (!/<\/ModelingStudio>\s*\{buildInProgress\s*\?\s*<BuildProgressPanel[\s\S]*?:\s*<ModelingLibraryWorkspace>/.test(storefront)) {
+    failures.push("Storefront.tsx must replace the product asset library slot with the active OpenAI × Blender flow");
+  }
   if (!/<AssetLibraryGrid\b/.test(storefront) || !/<AssetLibraryCard\b/.test(storefront)) {
     failures.push("Storefront.tsx must compose parent models with the centralized AssetLibraryGrid and AssetLibraryCard atoms");
   }
