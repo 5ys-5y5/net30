@@ -148,7 +148,7 @@ export function fixtureGraphOutput(payload) {
       const representation = print ? "visual_surface" : content ? "instance_set" : "brep_solid";
       const op = print ? "surface_decal" : content ? "instance_distribution" : ring ? "extrude" : "revolve";
       const materialValue = print ? { name: "이미지에서 추출한 인쇄 잉크", baseColor: "#f4f4f0", roughness: .35, metallic: 0, transmission: 0, ior: 1.45, opacity: 1 } : closure || ring ? { name: "Polypropylene", baseColor: "#083da9", roughness: .34, metallic: 0, transmission: 0, ior: 1.49, opacity: 1 } : { name: "Borosilicate glass", baseColor: "#d7e8f6", roughness: .08, metallic: 0, transmission: .82, ior: 1.52, opacity: .32 };
-      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: defaultTransform() };
+      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : print ? { x: 40, y: 28, z: .08 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: print ? { ...defaultTransform(), translationMm: { x: 0, y: 0, z: 50 } } : defaultTransform() };
       return { componentKey: key, representation, summary: `${name}의 이미지 기반 형상 그래프`, hostComponentKey: print ? bodyKey : null, material: materialValue, transform: defaultTransform(), features: [{ key: `${key}-root`, operation: op, inputKeys: [], parameters, rationale: `${name}의 시각적 실루엣과 재질을 표현합니다.`, confidence: .72 }] };
     }),
     interfaces: componentKeys.length > 1 ? [{ key: "closure-main", componentKeys: componentKeys.slice(0, Math.min(3, componentKeys.length)), kind: "mate", clearanceMm: .25, rationale: "공통 조립 축과 결합 간극" }] : [],
@@ -258,7 +258,13 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       if (["revolve", "extrude", "primitive", "boolean", "rib", "pattern", "shell", "transform", "mate"].includes(repaired.operation)) precedingSolidKey = repaired.key;
       return repaired;
     });
-    if (!features.length) throw new Error(`unsupported_operation: ${component.componentKey}.profile에는 revolve·extrude 같은 생성 연산이 필요합니다.`);
+    if (!features.length) throw new Error(`graph_repair_required: ${component.componentKey}.generatingFeature`);
+    // A modifier alone is not a component shape.  Return a component-scoped
+    // repair diagnostic so an omitted base under a rib does not discard every
+    // other requested component after an expensive Vision response.
+    if (component.representation === "brep_solid" && !features.some((feature) => ["revolve", "extrude", "primitive", "loft", "sweep"].includes(feature.operation))) {
+      throw new Error(`graph_repair_required: ${component.componentKey}.generatingFeature`);
+    }
     /* A cavity cut that starts above the datum but reaches the full height of
      * its host primitive has neither a declared opening nor an approved roof
      * thickness. OCCT may reject its coplanar boolean, but more importantly it
@@ -404,6 +410,13 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
         // vessel's outer/inner profiles, which compiles without a syntax error
         // but removes the intended solid and leaves disconnected remnants.
         if (escapingCutter) throw new Error(`graph_repair_required: ${component.componentKey}.boolean.cutContainment`);
+      }
+      if (["surface_decal", "surface_artwork"].includes(feature.operation)) {
+        const params = feature.parameters;
+        const artworkSize = params.dimensionsMm;
+        const translation = params.transform?.translationMm;
+        const missingPlacement = !params.hostComponentKey || !params.artworkImageId || !params.artworkCrop || !params.projection || !artworkSize || !(Number(artworkSize.x) > 0) || !(Number(artworkSize.y) > 0) || !translation || !Number.isFinite(Number(translation.z));
+        if (missingPlacement) throw new Error(`graph_repair_required: ${component.componentKey}.surfaceArtworkPlacement`);
       }
     }
     /* A manufacturing component has exactly one terminal B-Rep root.  Several

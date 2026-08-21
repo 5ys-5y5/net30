@@ -119,6 +119,9 @@ const printNode = printCanonical.graph.nodes.find((item) => item.componentId ===
 assert.equal(printComponent.representation, "visual_surface");
 assert.equal(printNode.operation, "surface_decal");
 assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).components[0].points.length >= 4);
+const incompleteArtworkOutput = fixtureGraphOutput({ product: { name: "부착값 없는 인쇄" }, prompt: "print", requestedComponents: ["body", "front print"], imageIds: ["image-1"] });
+incompleteArtworkOutput.components[1].features[0].parameters.dimensionsMm = null;
+assert.throws(() => canonicalizeGraph(incompleteArtworkOutput, ["body", "front print"], ["image-1"]), /graph_repair_required: component-2\.surfaceArtworkPlacement/, "a print missing its mm placement must be repaired locally instead of becoming an arbitrary flat band");
 const preCurveFieldResponse = fixtureGraphOutput({ product: { name: "기존 응답" }, prompt: "compatibility", requestedComponents: ["유리병"], imageIds: [] });
 delete preCurveFieldResponse.components[0].features[0].parameters.curveSegments;
 assert.doesNotThrow(() => canonicalizeGraph(preCurveFieldResponse, ["유리병"], []), "stored responses from before curveSegments must remain refinable");
@@ -148,6 +151,9 @@ incompleteRibOutput.components[0].features = [
   { ...structuredClone(ribBase), key: "missing-rib-values", operation: "rib", inputKeys: [ribBase.key], parameters: { ...ribBase.parameters, profile: null, count: null, spacingMm: null, depthMm: null, thicknessMm: null, heightMm: null } },
 ];
 assert.throws(() => canonicalizeGraph(incompleteRibOutput, ["뚜껑"], []), /graph_repair_required: component-1\.rib\.spacingMm\+depthMm\+heightMm/);
+const modifierOnlyOutput = fixtureGraphOutput({ product: { name: "리브만 있는 임의 부품" }, prompt: "rib", requestedComponents: ["bottle_gl45_100"], imageIds: [] });
+modifierOnlyOutput.components[0].features = [{ ...structuredClone(modifierOnlyOutput.components[0].features[0]), key: "orphan-rib", operation: "rib", inputKeys: ["missing-base"], parameters: { ...modifierOnlyOutput.components[0].features[0].parameters, profile: null, heightMm: 12, spacingMm: 2, depthMm: 1 } }];
+assert.throws(() => canonicalizeGraph(modifierOnlyOutput, ["bottle_gl45_100"], []), /graph_repair_required: component-1\.generatingFeature/, "a modifier-only component must trigger a local graph repair instead of an opaque unsupported-operation failure");
 const incompleteBooleanOutput = fixtureGraphOutput({ product: { name: "불완전 절단" }, prompt: "cut", requestedComponents: ["유리병"], imageIds: [] });
 const booleanBase = incompleteBooleanOutput.components[0].features[0];
 incompleteBooleanOutput.components[0].features.push({ ...structuredClone(booleanBase), key: "incomplete-cut", operation: "boolean", inputKeys: [booleanBase.key], parameters: { ...booleanBase.parameters, profile: null, operation: "cut" } });

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -30,6 +30,19 @@ assert.equal(analysis.fit.contour.imageId, "fixture-image-1", "no-cap and PYREX 
 assert.ok(analysis.fit.contour.rmsMm <= .35, "measured profile must meet the contour fitting gate");
 assert.equal(analysis.modelingGraphV3.components[0].curves[0].provenance.source, "image_measurement");
 assert.ok(analysis.fit.primaryBodyCalibration.visibleBodyHeightMm <= analysis.fit.primaryBodyCalibration.targetHeightMm, "a primary image fit must never extend a measured contour beyond the approved local B-Rep datum");
+assert.equal(analysis.fit.artworkPlacement.length, 1, "an artwork with approved mm dimensions must align its primary-image crop before review");
+
+const artworkOutput = fixtureGraphOutput({ product: { name: "physical artwork crop" }, prompt: "print", requestedComponents: ["vessel", "front print"], imageIds: ["artwork-primary"] });
+const artworkGraph = canonicalizeGraph(artworkOutput, ["vessel", "front print"], ["artwork-primary"]);
+const artworkNode = artworkGraph.graph.nodes.find((node) => node.operation === "surface_decal");
+artworkNode.parameters.dimensionsMm = { x: 40, y: 20, z: .1 };
+artworkNode.parameters.transform = { translationMm: { x: 0, y: 0, z: 40 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+artworkNode.parameters.artworkCrop = { x: .1, y: .1, width: .6, height: .6 };
+const artworkAligned = alignArtworkCropToPhysicalPlacement(artworkGraph.graph, { images: [{ ok: true, measurement: { imageId: "artwork-primary", heightPx: 1000, bounds: { topY: 100, bottomY: 900 } } }] }, { heightMm: 100 }, "artwork-primary");
+assert.equal(artworkAligned.applied, true, "artwork crop alignment must require only a primary-image datum and approved physical placement");
+const alignedCrop = artworkAligned.graph.nodes.find((node) => node.id === artworkNode.id).parameters.artworkCrop;
+assert.equal(alignedCrop.y, .5, "the image crop top must be projected from the artwork's upper physical Z edge");
+assert.equal(alignedCrop.height, .16, "the image crop height must be projected from the approved artwork mm height");
 
 const radialOutput = fixtureGraphOutput({ product: { name: "radial envelope" }, prompt: "closure", requestedComponents: ["closure"] });
 radialOutput.components[0].features[0].parameters.profile.forEach((point) => { point.xMm *= 1.12; });

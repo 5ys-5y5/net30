@@ -52,6 +52,65 @@ export async function measureImageEvidence(imageInputs = []) {
   }
 }
 
+/** Align an image-backed surface artwork crop with the artwork's approved
+ * physical Z placement.  Vision is useful for choosing the artwork and its
+ * horizontal crop, but a photograph crop must not independently choose a
+ * different vertical region from the one that the graph places on the part.
+ *
+ * This is deliberately geometry/evidence based: it uses the selected image's
+ * measured product bounds and the graph's own mm datum.  It does not inspect a
+ * component name, product name, or a hard-coded product layout.  If either
+ * datum is missing, the original reviewed crop is left unchanged.
+ */
+export function alignArtworkCropToPhysicalPlacement(graph, evidence, product, primaryImageId = null) {
+  const next = structuredClone(graph);
+  const productHeightMm = Number(product?.heightMm ?? product?.dimensionsMm?.heightMm);
+  if (!(productHeightMm > 0) || !primaryImageId) return { graph: next, applied: false, adjustments: [], reason: "physical_or_primary_image_missing" };
+  const measurement = evidence?.images?.find((item) => item.ok && item.measurement?.imageId === primaryImageId)?.measurement;
+  const bounds = measurement?.bounds;
+  const imageHeightPx = Number(measurement?.heightPx);
+  const imageSpanPx = Number(bounds?.bottomY) - Number(bounds?.topY);
+  if (!(imageHeightPx > 0) || !(imageSpanPx > 0)) return { graph: next, applied: false, adjustments: [], reason: "image_bounds_missing" };
+
+  const adjustments = [];
+  for (const node of next.nodes) {
+    if (!['surface_decal', 'surface_artwork'].includes(node.operation)) continue;
+    const params = node.parameters ?? {};
+    // Only the primary product image has an agreed product datum.  A secondary
+    // image can still supply an approved artwork crop, but it must not inherit
+    // a different product silhouette's coordinate system.
+    if (params.artworkImageId !== primaryImageId || !params.artworkCrop || !params.dimensionsMm) continue;
+    const artworkHeightMm = Number(params.dimensionsMm.y);
+    const localZ = Number(params.transform?.translationMm?.z ?? 0);
+    const componentZ = Number(next.components.find((item) => item.id === node.componentId)?.transform?.translationMm?.z ?? 0);
+    if (!(artworkHeightMm > 0) || !Number.isFinite(localZ) || !Number.isFinite(componentZ)) continue;
+    const centreZ = componentZ + localZ;
+    const topZ = Math.min(productHeightMm, Math.max(0, centreZ + artworkHeightMm / 2));
+    const bottomZ = Math.min(productHeightMm, Math.max(0, centreZ - artworkHeightMm / 2));
+    if (topZ - bottomZ <= 1e-6) continue;
+    const topPx = Number(bounds.topY) + (1 - topZ / productHeightMm) * imageSpanPx;
+    const bottomPx = Number(bounds.topY) + (1 - bottomZ / productHeightMm) * imageSpanPx;
+    const y = Math.max(0, Math.min(1, topPx / imageHeightPx));
+    const height = Math.max(0, Math.min(1 - y, (bottomPx - topPx) / imageHeightPx));
+    if (!(height > 1e-6)) continue;
+    const previous = params.artworkCrop;
+    if (Math.abs(previous.y - y) <= 1e-6 && Math.abs(previous.height - height) <= 1e-6) continue;
+    node.parameters = {
+      ...params,
+      artworkCrop: { ...previous, y: Number(y.toFixed(7)), height: Number(height.toFixed(7)) },
+    };
+    adjustments.push({
+      nodeId: node.id,
+      imageId: primaryImageId,
+      previousCrop: previous,
+      crop: node.parameters.artworkCrop,
+      physicalPlacementMm: { centreZ: Number(centreZ.toFixed(6)), height: Number(artworkHeightMm.toFixed(6)) },
+      source: "approved_artwork_placement+measured_image_bounds",
+    });
+  }
+  return { graph: next, applied: adjustments.length > 0, adjustments, reason: adjustments.length ? null : "no_primary_artwork_to_align" };
+}
+
 function interpolate(samples, zNorm) {
   const ordered = [...samples].sort((left, right) => left.zNorm - right.zNorm);
   if (!ordered.length) return 0;
