@@ -13,6 +13,7 @@ export const FEATURE_OPERATIONS = Object.freeze([
   "uv_projection", "surface_decal", "volume", "instance_distribution",
 ]);
 export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "primitive", "surface_decal", "volume", "instance_distribution"]);
+const NORMALIZED_MODIFIER_OPERATIONS = new Set(["shell", "rib", "pattern"]);
 
 const featureParameters = z.object({
   primitive: z.enum(["box", "cylinder", "cone", "sphere", "torus"]).nullable(),
@@ -126,11 +127,24 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
    * embedded-profile representation instead of rejecting the component name. */
   const normalizedComponents = parsed.components.map((component) => {
     const byKey = new Map(component.features.map((feature) => [feature.key, feature]));
-    const features = component.features.filter((feature) => feature.operation !== "profile").map((feature) => {
+    let features = component.features.filter((feature) => feature.operation !== "profile").map((feature) => {
       if (feature.parameters.profile?.length) return feature;
       const source = feature.inputKeys.map((key) => byKey.get(key)).find((candidate) => candidate?.operation === "profile" && candidate.parameters.profile?.length);
       return source ? { ...feature, inputKeys: feature.inputKeys.filter((key) => key !== source.key), parameters: { ...feature.parameters, profile: source.parameters.profile } } : feature;
     });
+    const normalizedByKey = new Map(features.map((feature) => [feature.key, structuredClone(feature)]));
+    const findCompiledSource = (feature, seen = new Set()) => {
+      if (!feature || seen.has(feature.key)) return null; seen.add(feature.key);
+      if (COMPILED_OPERATIONS.includes(feature.operation)) return feature;
+      for (const key of feature.inputKeys) { const source = findCompiledSource(normalizedByKey.get(key), seen); if (source) return source; }
+      return null;
+    };
+    for (const modifier of features.filter((feature) => NORMALIZED_MODIFIER_OPERATIONS.has(feature.operation))) {
+      const source = findCompiledSource(modifier);
+      if (!source) throw new Error(`unsupported_operation: ${component.componentKey}.${modifier.operation}에 적용할 생성 연산이 없습니다.`);
+      for (const key of ["thicknessMm", "count", "spacingMm", "depthMm", "offsetMm"]) if (modifier.parameters[key] !== null) source.parameters[key] = modifier.parameters[key];
+    }
+    features = [...normalizedByKey.values()].filter((feature) => !NORMALIZED_MODIFIER_OPERATIONS.has(feature.operation)).map((feature) => ({ ...feature, inputKeys: feature.inputKeys.filter((key) => normalizedByKey.has(key) && !NORMALIZED_MODIFIER_OPERATIONS.has(normalizedByKey.get(key).operation)) }));
     if (!features.length) throw new Error(`unsupported_operation: ${component.componentKey}.profile에는 revolve·extrude 같은 생성 연산이 필요합니다.`);
     const featureHostKeys = [...new Set(features.map((feature) => feature.parameters.hostComponentKey).filter(Boolean))];
     if (featureHostKeys.length > 1 || (component.hostComponentKey && featureHostKeys.length && component.hostComponentKey !== featureHostKeys[0])) throw new Error(`graph_invalid: ${component.componentKey}의 부착 대상 참조가 충돌합니다.`);
