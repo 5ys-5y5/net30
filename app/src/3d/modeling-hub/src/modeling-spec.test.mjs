@@ -101,14 +101,6 @@ const nodeHostedPrint = fixtureGraphOutput({ product: { name: "노드 host 인�
 nodeHostedPrint.components[1].hostComponentKey = null;
 const nodeHostedCanonical = canonicalizeGraph(nodeHostedPrint, ["유리병", "전면 인쇄"], ["image-1"]);
 assert.equal(nodeHostedCanonical.graph.components[1].hostComponentId, nodeHostedCanonical.graph.components[0].id);
-const splitProfileOutput = fixtureGraphOutput({ product: { name: "분리 프로필" }, prompt: "test", requestedComponents: ["유리병"], imageIds: [] });
-const revolveFeature = splitProfileOutput.components[0].features[0];
-const profileFeature = { ...structuredClone(revolveFeature), key: "bottle-profile", operation: "profile", inputKeys: [] };
-revolveFeature.key = "bottle-revolve"; revolveFeature.inputKeys = [profileFeature.key]; revolveFeature.parameters.profile = null;
-splitProfileOutput.components[0].features = [profileFeature, revolveFeature];
-const normalizedProfile = canonicalizeGraph(splitProfileOutput, ["유리병"], []);
-assert.deepEqual(normalizedProfile.graph.nodes.map((node) => node.operation), ["revolve"]);
-assert.ok(normalizedProfile.graph.nodes[0].parameters.profile.length >= 4);
 const modifierOutput = fixtureGraphOutput({ product: { name: "수정자 병" }, prompt: "test", requestedComponents: ["유리병"], imageIds: [] });
 const modifierBase = modifierOutput.components[0].features[0]; modifierBase.key = "body-revolve"; modifierBase.parameters.thicknessMm = null;
 const shellFeature = { ...structuredClone(modifierBase), key: "body-shell", operation: "shell", inputKeys: [modifierBase.key], parameters: { ...modifierBase.parameters, profile: null, thicknessMm: 2.6 } };
@@ -133,9 +125,10 @@ incompleteBooleanOutput.components[0].features.push({ ...structuredClone(boolean
 assert.throws(() => canonicalizeGraph(incompleteBooleanOutput, ["유리병"], []), /Too small: expected array to have >=2 items/, "strict output schema rejects a Boolean without both operands");
 const coplanarCavityOutput = fixtureGraphOutput({ product: { name: "모호한 cavity" }, prompt: "cap cavity", requestedComponents: ["뚜껑"], imageIds: [] });
 const outerCap = { ...structuredClone(coplanarCavityOutput.components[0].features[0]), key: "cap-outer", operation: "primitive", inputKeys: [], parameters: { ...coplanarCavityOutput.components[0].features[0].parameters, profile: null, primitive: "cylinder", radiusMm: 27, heightMm: 24 } };
-const ambiguousCut = { ...structuredClone(outerCap), key: "cap-cavity", operation: "revolve", inputKeys: [outerCap.key], parameters: { ...outerCap.parameters, primitive: null, radiusMm: null, heightMm: null, profile: [{ xMm: 0, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 24 }, { xMm: 0, yMm: 0, zMm: 24 }], operation: "cut" } };
-coplanarCavityOutput.components[0].features = [outerCap, ambiguousCut];
-assert.throws(() => canonicalizeGraph(coplanarCavityOutput, ["뚜껑"], []), /graph_repair_required: component-1\.boolean\.cavityBoundary/);
+const ambiguousCut = { ...structuredClone(outerCap), key: "cap-cavity", operation: "revolve", inputKeys: [], parameters: { ...outerCap.parameters, primitive: null, radiusMm: null, heightMm: null, profile: [{ xMm: 0, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 24 }, { xMm: 0, yMm: 0, zMm: 24 }], operation: null } };
+const ambiguousBoolean = { ...structuredClone(outerCap), key: "cap-cavity-cut", operation: "boolean", inputKeys: [outerCap.key, ambiguousCut.key], parameters: { ...outerCap.parameters, primitive: null, profile: null, operation: "cut" } };
+coplanarCavityOutput.components[0].features = [outerCap, ambiguousCut, ambiguousBoolean];
+assert.throws(() => canonicalizeGraph(coplanarCavityOutput, ["뚜껑"], []), /graph_repair_required: component-1\.boolean\.cutContainment/);
 const crossingCavityOutput = fixtureGraphOutput({ product: { name: "관통 cavity" }, prompt: "bottle cavity", requestedComponents: ["유리병"], imageIds: [] });
 const outerBottle = { ...structuredClone(crossingCavityOutput.components[0].features[0]), key: "outer-bottle" };
 const crossingInner = { ...structuredClone(outerBottle), key: "crossing-inner", parameters: { ...outerBottle.parameters, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 100 }, { xMm: 0, yMm: 0, zMm: 100 }] } };

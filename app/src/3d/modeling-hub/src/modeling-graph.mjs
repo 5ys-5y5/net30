@@ -59,8 +59,7 @@ const featureKey = z.array(z.string().min(1).max(100));
 // Zod's ordinary union emits the former while retaining the same exhaustive
 // operation/input-cardinality validation when the response is parsed.
 const featureOutput = z.union([
-  ...["profile", "primitive", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
-  ...["revolve", "extrude"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(1) }).strict()),
+  ...["profile", "primitive", "revolve", "extrude", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
   ...["shell", "rib", "transform", "mate"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.min(1).max(1) }).strict()),
   z.object({ ...featureOutputBase, operation: z.literal("pattern"), inputKeys: featureKey.min(2).max(2) }).strict(),
   z.object({ ...featureOutputBase, operation: z.literal("boolean"), inputKeys: featureKey.min(2).max(32) }).strict(),
@@ -281,8 +280,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     };
     for (const feature of features) {
       if (feature.inputKeys.some((key) => !currentFeatures.has(key))) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
-      if (["profile", "primitive"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
-      if (["revolve", "extrude"].includes(feature.operation) && feature.inputKeys.length && currentFeatures.get(feature.inputKeys[0])?.operation !== "profile") throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
+      if (["profile", "primitive", "revolve", "extrude"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
       if (feature.operation === "rib") {
         if (feature.inputKeys.length !== 1) throw new Error(`graph_repair_required: ${component.componentKey}.rib.inputKeys`);
         const followingPattern = features.find((candidate) => candidate.operation === "pattern" && candidate.inputKeys.at(-1) === feature.key);
