@@ -55,7 +55,10 @@ const featureKey = z.array(z.string().min(1).max(100));
 // without its host solid, or a Boolean that has only one operand. Continuous
 // profile values remain evidence/fitter inputs, while graph wiring is decided
 // here as a discrete, compiler-supported CAD contract.
-const featureOutput = z.discriminatedUnion("operation", [
+// OpenAI Structured Outputs permits `anyOf` but rejects JSON Schema `oneOf`.
+// Zod's ordinary union emits the former while retaining the same exhaustive
+// operation/input-cardinality validation when the response is parsed.
+const featureOutput = z.union([
   ...["profile", "primitive", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
   ...["revolve", "extrude"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(1) }).strict()),
   ...["shell", "rib", "transform", "mate"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.min(1).max(1) }).strict()),

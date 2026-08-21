@@ -30,7 +30,7 @@ auditStrictSchema(modelingGraphJsonSchema());
 auditStrictSchema(modelingComponentRepairJsonSchema());
 auditStrictSchema(modelingPatchJsonSchema());
 assert.equal(ANALYSIS_OPERATIONS.includes("fillet"), false);
-const strictFeatureOperations = modelingGraphJsonSchema().properties.components.items.properties.features.items.oneOf.map((variant) => variant.properties.operation.const);
+const strictFeatureOperations = modelingGraphJsonSchema().properties.components.items.properties.features.items.anyOf.map((variant) => variant.properties.operation.const);
 assert.equal(strictFeatureOperations.includes("fillet"), false);
 assert.equal(strictFeatureOperations.includes("boolean"), true);
 
