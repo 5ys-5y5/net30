@@ -63,6 +63,13 @@ railway variable set \
   NET30_3D_ASSET_ROOT=/data \
   "NET30_MODELING_ALLOWED_ORIGINS=$PUBLIC_URL" \
   --service "$HUB_SERVICE" --environment "$ENVIRONMENT_ID" --skip-deploys >/dev/null
+railway environment edit \
+  --project "$PROJECT_ID" \
+  --environment "$ENVIRONMENT_ID" \
+  --service-config "$HUB_SERVICE" deploy.startCommand "node src/server.mjs" \
+  --service-config "$HUB_SERVICE" deploy.drainingSeconds 30 \
+  --message "Configure direct Node startup and graceful draining for the modeling hub" \
+  --json >/dev/null
 
 printf '%s' "$NET30_MODELING_HUB_TOKEN" | railway variable set NET30_MODELING_HUB_TOKEN --stdin \
   --service "$WEB_SERVICE" --environment "$ENVIRONMENT_ID" --skip-deploys >/dev/null

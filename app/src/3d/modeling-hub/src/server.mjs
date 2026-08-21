@@ -136,7 +136,7 @@ async function queueJob(payload, { draft = null } = {}) {
   }).catch(async(error)=>{job.error=error.message; event(job,"failed",error.message,Object.fromEntries(payload.components.map((component)=>[component,{state:"failed",message:error.message}]))); if(draft) { draft.jobId=id; await saveDraft(draft,"failed",error.message); await progressDraft(draft,{operation:"build",stage:"실패",state:"failed",message:error.message}); }}).finally(()=>{for(const client of job.clients) client.end(); job.clients.clear();}); return job;
 }
 
-await fs.mkdir(jobsRoot,{recursive:true}); await storage.initialise(); await drafts.initialise(); await productModels.initialise(); await storage.cleanupExpired(); await versions.importLegacyJobs(jobsRoot); await versions.initialiseShowcase(jobsRoot); await productModels.migrateLegacy({versionStore:versions,jobsRoot}); setInterval(()=>void storage.cleanupExpired(),3600000).unref();
+await fs.mkdir(jobsRoot,{recursive:true}); await storage.initialise(); await drafts.initialise(); await productModels.initialise(); await storage.cleanupExpired(); await versions.importLegacyJobs(jobsRoot); await versions.initialiseShowcase(jobsRoot); await productModels.migrateLegacy({versionStore:versions,jobsRoot}); const storageCleanupTimer=setInterval(()=>void storage.cleanupExpired(),3600000); storageCleanupTimer.unref();
 app.use(cors({origin(origin,cb){ if(!origin||origins.includes(origin)) return cb(null,true); return cb(new Error(`허용되지 않은 origin: ${origin}`)); }})); app.use(express.json({limit:"1mb"}));
 app.get("/health",async(_req,res)=>{ const cad=await cadRuntimeHealth(); return res.status(cad.ok?200:503).json({ok:cad.ok,mode:"brep-canonical-v3",cad,openAiModels:openAiModels(),storage:process.env.AWS_S3_BUCKET_NAME?"railway-bucket":"local-volume",jobStates:JOB_STATES}); });
 app.get("/api/modeling/schema",(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); return res.json({ok:true,components:COMPONENTS,models:openAiModels(),defaultModel:defaultOpenAiModel(),skus:SKU_REGISTRY,upload:{maxFiles:4,maxBytes:MAX_IMAGE_BYTES,types:[...IMAGE_TYPES]},manufacturing:"engineer-reviewed candidate only"}); });
@@ -237,4 +237,36 @@ app.get("/api/modeling/components/:component/versions/:versionId/artifact",async
 app.patch("/api/modeling/components/:component/versions/:versionId",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const previous=await versions.find(req.params.component,req.params.versionId); if(!previous) return res.status(404).json({ok:false,error:"버전을 찾을 수 없습니다."}); return res.status(409).json({ok:false,error:"approval_required: 저장된 자산 수정은 선택한 부모·자녀의 새 승인 초안에서 시작해야 합니다.",version:previous}); });
 app.delete("/api/modeling/components/:component/versions/:versionId",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); try { if(await productModels.referencesComponentVersion(req.params.component,req.params.versionId)) return res.status(409).json({ok:false,error:"부모 모델 리비전이 참조하는 컴포넌트 버전입니다. 부모 모델에서 현재 조립 제외 후 보관 처리하세요.",code:"component_referenced"}); const removed=await versions.remove(req.params.component,req.params.versionId); return removed?res.json({ok:true,removed}):res.status(404).json({ok:false,error:"버전을 찾을 수 없습니다."}); } catch(error) { return res.status(400).json({ok:false,error:error.message}); }});
 app.post("/mcp",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"MCP bearer token이 필요합니다."}); try { const server=createBlenderMcpServer({assetRoot}); const transport=new NodeStreamableHTTPServerTransport({sessionIdGenerator:undefined}); await server.connect(transport); await transport.handleRequest(req,res,req.body); } catch(error) { if(!res.headersSent) res.status(500).json({ok:false,error:error.message}); }});
-const port=Number(process.env.NET30_MODELING_HUB_PORT??process.env.PORT??8788); app.listen(port,process.env.HOST??"127.0.0.1",()=>console.log(`NET30 modeling hub listening on ${port}`));
+const port=Number(process.env.NET30_MODELING_HUB_PORT??process.env.PORT??8788);
+const httpServer=app.listen(port,process.env.HOST??"127.0.0.1",()=>console.log(`NET30 modeling hub listening on ${port}`));
+let shuttingDown=false;
+function endLiveStreams() {
+  for (const clients of draftClients.values()) for (const client of clients) client.end();
+  draftClients.clear();
+  for (const job of jobs.values()) { for (const client of job.clients) client.end(); job.clients.clear(); }
+}
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown=true;
+  clearInterval(storageCleanupTimer);
+  console.log(`NET30 modeling hub received ${signal}; stopping new requests and draining connections`);
+  endLiveStreams();
+  const deadline=setTimeout(()=>{
+    console.warn("NET30 modeling hub drain deadline reached; closing remaining connections");
+    httpServer.closeAllConnections?.();
+    process.exit(0);
+  },25000);
+  deadline.unref();
+  httpServer.close((error)=>{
+    if(error){
+      console.error("NET30 modeling hub graceful shutdown failed",error);
+      process.exitCode=1;
+      return;
+    }
+    clearTimeout(deadline);
+    console.log("NET30 modeling hub shutdown complete");
+    process.exitCode=0;
+  });
+}
+process.once("SIGTERM",()=>shutdown("SIGTERM"));
+process.once("SIGINT",()=>shutdown("SIGINT"));

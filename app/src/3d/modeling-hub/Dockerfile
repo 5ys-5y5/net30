@@ -20,4 +20,4 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0
 
 EXPOSE 8788
-CMD ["npm", "start"]
+CMD ["node", "src/server.mjs"]
