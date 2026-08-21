@@ -54,5 +54,5 @@
 }
 
 /* Keep the navigation and footer separated with transparent outer space. */
-.ds-container.nav{margin:12px var(--ds-page-gutter) 24px}
+.ds-container.nav{margin:12px var(--ds-page-gutter) 24px;position:sticky;top:12px;z-index:100}
 .ds-container.footer{margin:24px var(--ds-page-gutter) 20px;background:transparent}
