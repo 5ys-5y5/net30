@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { fitAxialAssemblyEnvelope, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -89,6 +89,23 @@ const fittedSeedPlacement = seededFit.graph.nodes.find((node) => node.operation 
 assert.ok(fittedSeed.parameters.dimensionsMm.z < 40, "measured taper must clip an overlong patterned primitive instead of allowing it to flatten the closure apex");
 assert.ok(fittedSeedPlacement.parameters.transform.translationMm.x < 27, "measured outer rib envelope must reposition the transformed seed without a product-name rule");
 assert.ok(seededFit.adjustments[0].patternSeedAnchors.length === 1, "the fitting dossier must retain the measured pattern anchor for review");
+
+const compiledGraph = canonicalizeGraph(fixtureGraphOutput({ product: { name: "compiled contour" }, prompt: "generic revolved part", requestedComponents: ["임의 회전 부품"] }), ["임의 회전 부품"]).graph;
+const compiledComponent = compiledGraph.components[0];
+const compiledProfile = compiledGraph.nodes.find((node) => node.componentId === compiledComponent.id && node.operation === "revolve").parameters.profile;
+const compiledPreflight = {
+  diagnostics: [{
+    componentId: compiledComponent.id, code: "ok", boundsMm: { x: 50, y: 50, z: 105 },
+    transform: compiledComponent.transform, material: compiledComponent.material,
+    silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: .8 })),
+  }],
+};
+const compiledEvidence = { images: [{ ok: true, measurement: { imageId: "compiled-primary", silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: .92 })) } }] };
+const compiledFit = fitCompiledAssemblyContour(compiledGraph, compiledPreflight, compiledEvidence, "compiled-primary");
+assert.equal(compiledFit.applied, true, "the compiled OCCT contour must be able to make a bounded graph correction without an LLM or a component-name rule");
+const correctedProfile = compiledFit.graph.nodes.find((node) => node.componentId === compiledComponent.id && node.operation === "revolve").parameters.profile;
+assert.ok(Math.max(...correctedProfile.map((point) => point.xMm)) > Math.max(...compiledProfile.map((point) => point.xMm)), "compiled residual fitting must update the same revolve profile that OCCT consumes");
+assert.ok(compiledFit.adjustments[0].changedControlPoints > 0, "compiled residual fitting must record changed graph control points for the dossier");
 
 const localGraph = structuredClone(radialGraph);
 localGraph.nodes[0].parameters.profile.forEach((point) => { point.zMm += 83; });

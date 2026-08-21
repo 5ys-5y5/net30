@@ -759,3 +759,63 @@ export function compareBrepAssemblyContour(preflight, evidence, primaryImageId =
   }).sort((left, right) => Math.abs(right.residualMm) - Math.abs(left.residualMm)).slice(0, 12);
   return { iou: union > 0 ? intersection / union : 0, rmsMm, hausdorff95Mm, sampleCount: diffs.length, imageId: measured.imageId, source: "occt_brep_assembly_tessellation", componentIds: placed.map((item) => item.componentId), worstSamples };
 }
+
+/**
+ * Feed the compiled OCCT exterior back into an axisymmetric graph without
+ * inventing topology.  This is deliberately a small, bounded correction:
+ * only an existing outer revolve may move, only where that component is the
+ * front-most material at a measured section, and each control ordinate moves
+ * by at most six percent per iteration.  The caller must recompile OCCT and
+ * may reject the result; this function never treats its graph edit as proof.
+ */
+export function fitCompiledAssemblyContour(graph, preflight, evidence, primaryImageId = null, { gain = .5, maxScaleStep = .06, minimumResidualMm = .12 } = {}) {
+  const measured = evidence?.images?.find((item) => item.ok && item.measurement?.imageId === primaryImageId && item.measurement?.silhouette?.length >= 12)?.measurement;
+  const diagnostics = (preflight?.diagnostics ?? []).filter((item) => item.code === "ok" && Array.isArray(item.silhouette) && item.silhouette.length >= 12 && Number(item.boundsMm?.z ?? 0) > 0 && Number(item.boundsMm?.x ?? 0) > 0);
+  if (!measured || !diagnostics.length) return { graph, applied: false, adjustments: [], reason: "compiled_contour_unavailable" };
+  const placed = diagnostics.map((diagnostic) => {
+    const z = Number(diagnostic.transform?.translationMm?.z ?? 0); const height = Number(diagnostic.boundsMm.z); const radius = Number(diagnostic.boundsMm.x) / 2;
+    return { ...diagnostic, zMin: z, zMax: z + height, radius };
+  });
+  const zMin = Math.min(...placed.map((item) => item.zMin)); const zMax = Math.max(...placed.map((item) => item.zMax)); const maxRadius = Math.max(...placed.map((item) => item.radius));
+  if (!(zMax > zMin) || !(maxRadius > 0)) return { graph, applied: false, adjustments: [], reason: "compiled_contour_degenerate" };
+  const targetRadiusAt = (globalZ) => interpolate(measured.silhouette, (globalZ - zMin) / Math.max(1e-9, zMax - zMin)) * maxRadius;
+  const visibleAt = (globalZ) => {
+    const active = placed.filter((item) => globalZ >= item.zMin - 1e-6 && globalZ <= item.zMax + 1e-6);
+    const opaque = active.filter((item) => Number(item.material?.transmission ?? 0) < .5 && Number(item.material?.opacity ?? 1) > .05);
+    return (opaque.length ? opaque : active).sort((left, right) => {
+      const leftRadius = interpolate(left.silhouette, (globalZ - left.zMin) / Math.max(1e-9, left.zMax - left.zMin)) * left.radius;
+      const rightRadius = interpolate(right.silhouette, (globalZ - right.zMin) / Math.max(1e-9, right.zMax - right.zMin)) * right.radius;
+      return rightRadius - leftRadius;
+    })[0] ?? null;
+  };
+  const next = structuredClone(graph); const diagnosticsById = new Map(placed.map((item) => [item.componentId, item])); const adjustments = [];
+  for (const component of next.components.filter((item) => item.representation === "brep_solid")) {
+    const diagnostic = diagnosticsById.get(component.id); const node = outerRevolveNode(next, component.id);
+    if (!diagnostic || !node) continue;
+    const profile = node.parameters?.profile ?? []; const localHeight = Number(diagnostic.boundsMm.z);
+    const placementZ = Number(component.transform?.translationMm?.z ?? 0);
+    const nextProfile = profile.map((point) => {
+      const radius = Math.abs(Number(point.xMm)); if (!(radius > 1e-7)) return point;
+      const globalZ = placementZ + Number(point.zMm);
+      if (visibleAt(globalZ)?.componentId !== component.id) return point;
+      const localNorm = (Number(point.zMm) - Math.min(...profile.map((item) => Number(item.zMm)))) / Math.max(1e-9, localHeight);
+      const compiledRadius = interpolate(diagnostic.silhouette, Math.max(0, Math.min(1, localNorm))) * diagnostic.radius;
+      const targetRadius = targetRadiusAt(globalZ); const residual = targetRadius - compiledRadius;
+      if (!Number.isFinite(targetRadius) || !(compiledRadius > 1e-6) || Math.abs(residual) < minimumResidualMm) return point;
+      const scale = Math.max(1 - maxScaleStep, Math.min(1 + maxScaleStep, 1 + gain * residual / compiledRadius));
+      return { ...point, xMm: Number((Number(point.xMm) * scale).toFixed(6)) };
+    });
+    if (!nextProfile.some((point, index) => Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8)) continue;
+    node.parameters.profile = nextProfile;
+    // A Boolean helper profile can have two radial points on the same axial
+    // datum. It remains a valid closed revolve wire, but cannot be presented
+    // as a monotonic exterior Bézier chain. Keep that approved profile and
+    // only regenerate curve metadata when a strictly ordered exterior exists.
+    const exterior = nextProfile.filter((point) => Math.abs(Number(point.xMm)) > 1e-7).map(({ xMm, zMm }) => ({ xMm, zMm }))
+      .sort((left, right) => Number(left.zMm) - Number(right.zMm)).filter((point, index, all) => index === 0 || Number(point.zMm) > Number(all[index - 1].zMm) + 1e-8);
+    if (exterior.length >= 2) node.parameters.curveSegments = monotoneBezierSegments(exterior);
+    const changed = nextProfile.reduce((count, point, index) => count + (Math.abs(Number(point.xMm) - Number(profile[index].xMm)) > 1e-8 ? 1 : 0), 0);
+    adjustments.push({ componentId: component.id, nodeId: node.id, source: "compiled_occt_assembly_contour", changedControlPoints: changed, gain, maxScaleStep, minimumResidualMm });
+  }
+  return { graph: next, applied: adjustments.length > 0, adjustments, source: "occt_brep_assembly_tessellation" };
+}

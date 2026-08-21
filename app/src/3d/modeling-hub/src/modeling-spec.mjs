@@ -15,7 +15,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
-import { compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
+import { compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates } from "./image-evidence.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
@@ -501,7 +501,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   // a boolean, shell, and patterned feature become one closed solid. Refuse to
   // show an approvable product graph if the exact final compiler reports a
   // disconnected component. The repair is deliberately local and bounded.
-  let brepPreflight = null; let compiledClosureDatum = { adjustments: [] };
+  let brepPreflight = null; let compiledClosureDatum = { adjustments: [] }; const compiledContourFits = [];
   if (process.env.NET30_MODELING_DRAFT_FIXTURE !== "true") {
     const preflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 } });
     const failed = preflight.diagnostics.filter((item) => item.code !== "ok");
@@ -527,6 +527,34 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
       const compiledDatumFailures = brepPreflight.diagnostics.filter((item) => item.code !== "ok");
       if (compiledDatumFailures.length) throw new Error(`analysis_incomplete: ${compiledDatumFailures.map((item) => `${item.componentId}: ${item.message}`).join("; ")}`);
     }
+    // The first curve fit uses image samples, while the actual OCCT shell,
+    // Boolean and pattern operations can move the final exterior slightly.
+    // Feed that *compiled* contour back into the same graph at most twice.
+    // A candidate is committed only after a fresh OCCT preflight succeeds;
+    // therefore an optimisation attempt cannot leave a draft with a graph
+    // that no longer produces a closed B-Rep.
+    for (let iteration = 0; iteration < 2; iteration += 1) {
+      const compiledContour = compareBrepAssemblyContour(brepPreflight, imageEvidence, primaryImageId);
+      if (!compiledContour || (compiledContour.iou >= .97 && compiledContour.rmsMm <= .35 && compiledContour.hausdorff95Mm <= .75)) break;
+      const candidate = fitCompiledAssemblyContour(canonical.graph, brepPreflight, imageEvidence, primaryImageId);
+      if (!candidate.applied) { compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: candidate.reason ?? "no_observable_axisymmetric_adjustment" }); break; }
+      const candidateGraph = validateGraph(candidate.graph); const candidatePreflight = await preflightBrepGraph(candidateGraph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 } });
+      const candidateFailures = candidatePreflight.diagnostics.filter((item) => item.code !== "ok");
+      if (candidateFailures.length) {
+        compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: "candidate_brep_invalid", adjustments: candidate.adjustments, diagnostics: candidateFailures });
+        break;
+      }
+      const candidateContour = compareBrepAssemblyContour(candidatePreflight, imageEvidence, primaryImageId);
+      // Do not accept a numerically valid change which fails to improve the
+      // measured exterior. This is a fitting guard, not a hidden similarity
+      // score: the three stored gate values remain independently reviewable.
+      if (!candidateContour || candidateContour.rmsMm >= compiledContour.rmsMm - 1e-6) {
+        compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: "candidate_not_improved", adjustments: candidate.adjustments, before: compiledContour, after: candidateContour ?? null });
+        break;
+      }
+      canonical.graph = candidateGraph; canonical.graphHash = graphHash(canonical.graph); brepPreflight = candidatePreflight;
+      compiledContourFits.push({ iteration: iteration + 1, applied: true, adjustments: candidate.adjustments, before: compiledContour, after: candidateContour });
+    }
   }
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
@@ -539,7 +567,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     solidCount: Math.max(...brepPreflight.diagnostics.map((item) => item.solidCount ?? Infinity)),
   } : null;
   const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, compiledClosureDatum: compiledClosureDatum.adjustments, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, compiledClosureDatum: compiledClosureDatum.adjustments, compiledContourFits, assemblyEnvelope: envelopeFit.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {
