@@ -9,8 +9,7 @@ try:
     import cadquery as cq
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
     from OCP.Geom import Geom_BSplineCurve, Geom_BezierCurve
-    from OCP.GeomAPI import GeomAPI_Interpolate
-    from OCP.TColgp import TColgp_Array1OfPnt, TColgp_HArray1OfPnt
+    from OCP.TColgp import TColgp_Array1OfPnt
     from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
     from OCP.gp import gp_Pnt, gp_Vec
 except ImportError as error:
@@ -129,62 +128,6 @@ def rational_profile_face(segment, axis_start, axis_end):
         raise RuntimeError("graph_invalid: NURBS radial profile must exclude the rotation axis")
     first, last = poles[0], poles[-1]
     return profile_face_from_curve(rational_bspline_curve(segment), (first["xMm"], first["zMm"]), (last["xMm"], last["zMm"]), axis_start, axis_end)
-
-
-def interpolated_offset_curve(points):
-    """Fit the manufactured inner-wall offset through measured offset samples.
-
-    The planar offset of a rational B-spline is generally not itself the same
-    rational B-spline.  OCCT therefore creates the derived inner wall by
-    interpolation through the normal-offset samples.  Its tolerance is owned
-    by the graph shell validation, rather than pretending the source control
-    net can be translated unchanged.
-    """
-    if len(points) < 4:
-        raise RuntimeError("graph_invalid: NURBS shell offset needs at least four valid samples")
-    values = TColgp_HArray1OfPnt(1, len(points))
-    for index, (x_mm, z_mm) in enumerate(points, 1): values.SetValue(index, gp_Pnt(x_mm, 0, z_mm))
-    fitter = GeomAPI_Interpolate(values, False, 1e-5)
-    fitter.Perform()
-    if not fitter.IsDone(): raise RuntimeError("graph_invalid: OCCT could not interpolate NURBS shell offset")
-    return fitter.Curve()
-
-
-def inner_revolve_from_nurbs(segment, thickness):
-    """Derive an open cavity from the same rational outer curve.
-
-    Sampling is bounded and happens inside OCCT's geometric domain.  It is
-    used only when all normal offsets stay strictly inside the outer envelope;
-    otherwise the declared shell is rejected for review rather than falling
-    back to a cylinder or a mismatched polyline cutter.
-    """
-    curve = rational_bspline_curve(segment)
-    first_parameter, last_parameter = curve.FirstParameter(), curve.LastParameter()
-    sample_count = 48
-    samples = []
-    outer_min_z = float("inf")
-    for index in range(sample_count + 1):
-        parameter = first_parameter + (last_parameter - first_parameter) * index / sample_count
-        point, tangent = gp_Pnt(), gp_Vec(); curve.D1(parameter, point, tangent)
-        length = math.hypot(tangent.X(), tangent.Z())
-        if length <= 1e-9: continue
-        # For a bottom→mouth radial contour, (dz, -dx) points outward. Reverse
-        # it when an input curve is supplied in the opposite direction.
-        normal_x, normal_z = tangent.Z() / length, -tangent.X() / length
-        if normal_x < 0: normal_x, normal_z = -normal_x, -normal_z
-        outer_min_z = min(outer_min_z, point.Z())
-        samples.append((point.X() - thickness * normal_x, point.Z() - thickness * normal_z))
-    if len(samples) < 4 or not math.isfinite(outer_min_z):
-        raise RuntimeError("graph_invalid: NURBS shell offset has insufficient tangent samples")
-    # Preserve a verified bottom thickness.  A normal on the flat heel often
-    # has zero Z component, so beginning exactly at the first offset point
-    # would open the cavity through the base.
-    inner = [(x, z) for x, z in samples if z >= outer_min_z + thickness - 1e-6]
-    if len(inner) < 4 or min(x for x, _ in inner) <= 1e-5:
-        raise RuntimeError("graph_invalid: NURBS shell offset exceeds the approved outer profile")
-    return cq.Workplane("XZ").newObject([
-        profile_face_from_curve(interpolated_offset_curve(inner), inner[0], inner[-1], (0.0, inner[0][1]), (0.0, inner[-1][1]))
-    ]).toPending().revolve(360, (0, 0, 0), (0, 1, 0))
 
 
 def revolve(params):
@@ -343,9 +286,6 @@ def inner_revolve_from_profile(params, thickness):
     cylinder for the cavity.
     """
     segments = params.get("curveSegments") or []
-    declared_nurbs = next((segment for segment in segments if segment.get("kind") == "nurbs"), None)
-    if declared_nurbs:
-        return inner_revolve_from_nurbs(declared_nurbs, thickness)
     raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or [])]
     visible = [(x, z) for x, z in raw if x > 1e-6]
     if len(visible) < 2:
@@ -494,10 +434,21 @@ def compile_graph(graph_component, graph_nodes):
             if thickness <= 0: raise RuntimeError(f"graph_invalid: shell node {node['id']} requires positive thicknessMm")
             source = nodes_by_id.get(node.get("inputNodeIds", [None])[0])
             if source and source.get("operation") == "revolve":
-                # Exact inner/outer B-Rep curves are more stable than a
-                # generic face-shell for vessel mouths and retain the source
-                # profile as the dimensional authority.
-                shape = inputs[0].cut(inner_revolve_from_profile(source.get("parameters") or {}, thickness))
+                source_params = source.get("parameters") or {}
+                profile = [(float(point["xMm"]), float(point["zMm"])) for point in (source_params.get("profile") or [])]
+                visible = [(x, z) for x, z in profile if x > 1e-6]
+                visible_top = max((z for _, z in visible), default=-float("inf"))
+                outer_top = max((z for _, z in profile), default=-float("inf"))
+                roofed = outer_top > visible_top + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top) <= 1e-6 for x, z in profile)
+                declared_curve = any(segment.get("kind") in ("nurbs", "bezier") for segment in (source_params.get("curveSegments") or []))
+                if declared_curve and not roofed:
+                    # OCCT's face shell is its native offset operation. It
+                    # preserves the declared exterior NURBS/Bézier face and
+                    # avoids an independently interpolated inner curve that
+                    # can overshoot through the bottle mouth.
+                    shape = cq.Workplane(obj=inputs[0].val()).faces(">Z").shell(-thickness)
+                else:
+                    shape = inputs[0].cut(inner_revolve_from_profile(source_params, thickness))
             else:
                 shape = cq.Workplane(obj=inputs[0].val()).faces("<Z").shell(-thickness)
         elif op == "pattern":

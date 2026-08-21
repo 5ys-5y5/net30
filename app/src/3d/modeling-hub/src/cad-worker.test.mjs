@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
+import { monotoneBezierSegments } from "./image-evidence.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../../../../../");
@@ -52,6 +53,16 @@ try {
   assert.equal(shellRun.status, 0, `${shellRun.stdout}\n${shellRun.stderr}`);
   const shellReport = JSON.parse(await fs.readFile(`${shellStem}.validation.json`, "utf8"));
   assert.equal(shellReport.valid, true); assert.equal(shellReport.closed, true); assert.equal(shellReport.solidCount, 1, "the NURBS outer wall and derived inner offset must remain one closed B-Rep solid");
+  const bezierShellGraph = structuredClone(shellCanonical.graph);
+  const bezierShellRevolve = bezierShellGraph.nodes.find((node) => node.componentId === shellComponent.id && node.operation === "revolve");
+  bezierShellRevolve.parameters.curveSegments = monotoneBezierSegments(bezierShellRevolve.parameters.profile.filter((point) => point.xMm > 0).map(({ xMm, zMm }) => ({ xMm, zMm })));
+  const bezierShellStem = path.join(temporary, `${shellComponent.id}-bezier-shell`); const bezierShellRequest = path.join(temporary, "bezier-shell.request.json");
+  await fs.writeFile(bezierShellRequest, JSON.stringify({ graphComponent: shellComponent, graphNodes: bezierShellGraph.nodes, paths: { step: `${bezierShellStem}.step`, brep: `${bezierShellStem}.brep`, stl: `${bezierShellStem}.stl`, report: `${bezierShellStem}.validation.json` }, tessellation: { chordMm: .2, angularDeg: 15 } }));
+  const bezierShellRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), bezierShellRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(bezierShellRun.status, 0, `${bezierShellRun.stdout}\n${bezierShellRun.stderr}`);
+  const bezierShellReport = JSON.parse(await fs.readFile(`${bezierShellStem}.validation.json`, "utf8"));
+  assert.equal(bezierShellReport.valid, true); assert.equal(bezierShellReport.closed, true); assert.equal(bezierShellReport.solidCount, 1, "a measured Bézier exterior must keep a valid native OCCT shell");
+  assert.ok(Math.abs(bezierShellReport.boundsMm.z - shellReport.boundsMm.z) <= .01, "the Bézier shell must retain the approved mouth height");
   const capOutput = fixtureGraphOutput({ product: { name: "ribbed closure proof" }, prompt: "ribbed closure", requestedComponents: ["뚜껑"], imageIds: [] });
   const base = capOutput.components[0].features[0];
   base.key = "cap-base"; base.operation = "primitive"; base.inputKeys = [];

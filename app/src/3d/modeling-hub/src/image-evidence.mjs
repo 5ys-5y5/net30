@@ -345,14 +345,12 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // straight edges to this curve, so no polygon mesh or LLM-invented control
   // point becomes the manufacturing source.
   const poles = fitted.filter((point) => point.xMm > 1e-8).map(({ xMm, zMm }) => ({ xMm, zMm }));
-  // A hollow revolution needs both outer and inner walls to share a validated
-  // offset construction. OCCT rejects a Bézier outer wall combined with a
-  // legacy polyline cavity as a null Boolean. Until the fitter emits a
-  // dimension-checked paired inner Bézier offset, retain the measured closed
-  // wire for a shell. This is a B-Rep surface of revolution, not a mesh or a
-  // cylinder fallback; the dossier records the gated curve distinction.
-  const shellBacked = next.nodes.some((candidate) => candidate.componentId === node.componentId && candidate.operation === "shell");
-  node.parameters.curveSegments = shellBacked ? null : monotoneBezierSegments(poles);
+  // OCCT's native shell operation offsets the declared exterior curve inside
+  // the same B-Rep. This avoids the earlier independent-cavity Boolean while
+  // preserving the fitted C1 Bézier exterior and the approved base/mouth
+  // datum. The compiler rejects an invalid shell at preflight; no primitive
+  // fallback is allowed.
+  node.parameters.curveSegments = monotoneBezierSegments(poles);
   return {
     graph: next,
     applied: true,
@@ -365,7 +363,7 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
       targetDiameterMm: maxRadius * 2,
       source: Number.isFinite(targetHeightMm) && targetHeightMm > 0 && Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? "approved_dimensions" : "graph_extent",
     },
-    curveCompilation: shellBacked ? "measured_wire_pending_paired_inner_offset" : "monotone_bezier_interpolation_from_measured_silhouette",
+    curveCompilation: "monotone_bezier_with_occt_native_shell_offset",
   };
 }
 
