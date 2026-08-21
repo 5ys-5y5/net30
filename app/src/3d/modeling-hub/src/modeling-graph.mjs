@@ -62,6 +62,11 @@ const componentOutput = z.object({
   features: z.array(featureOutput).min(1).max(96),
 }).strict();
 
+// A topology repair must not regenerate product-wide identities or unrelated
+// components. Keeping this strict response to one component prevents a local
+// Boolean/rib repair from changing an approved sibling's graph.
+export const modelingComponentRepairOutputSchema = z.object({ component: componentOutput }).strict();
+
 export const modelingGraphOutputSchema = z.object({
   product: z.object({ name: z.string().min(1).max(160), intendedUse: z.string().max(800), widthMm: z.number().min(1).max(2000), heightMm: z.number().min(1).max(4000), depthMm: z.number().min(1).max(2000), capacityMl: z.number().min(0).max(100000).nullable() }).strict(),
   components: z.array(componentOutput).min(1).max(30),
@@ -91,6 +96,7 @@ export const modelingPatchSchema = z.object({
 export function valueHash(value) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 export function graphHash(graph) { return valueHash(modelingGraphSchema.parse(graph)); }
 export function modelingGraphJsonSchema() { return z.toJSONSchema(modelingGraphOutputSchema, { target: "draft-7" }); }
+export function modelingComponentRepairJsonSchema() { return z.toJSONSchema(modelingComponentRepairOutputSchema, { target: "draft-7" }); }
 export function modelingPatchJsonSchema() { return z.toJSONSchema(modelingPatchSchema, { target: "draft-7" }); }
 
 function defaultTransform() { return { translationMm: { x: 0, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }; }
@@ -292,7 +298,22 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
           if (crossing) throw new Error(`graph_repair_required: ${component.componentKey}.boolean.cavityWithinOuter`);
         }
         const baseEnvelope = radialAxialEnvelope(feature.inputKeys[0]);
-        const escapingCutter = feature.inputKeys.slice(1).map((key) => radialAxialEnvelope(key)).find((item) => item && (!baseEnvelope || item.radius > baseEnvelope.radius + .01 || item.zMax < baseEnvelope.zMin + .01 || item.zMin > baseEnvelope.zMax - .01));
+        const escapingCutter = feature.inputKeys.slice(1).map((key) => radialAxialEnvelope(key)).find((item) => {
+          if (!item || !baseEnvelope || item.radius > baseEnvelope.radius + .01) return item;
+          const exitsLower = item.zMin < baseEnvelope.zMin - .01;
+          const exitsUpper = item.zMax > baseEnvelope.zMax + .01;
+          // A vessel mouth is intentionally made by a contained cutter that
+          // leaves exactly one datum boundary.  Rejecting it as an "escaping"
+          // cutter forced the LLM to retry a physically valid opening as if it
+          // were a reversed Boolean.  It is still safe only when it enters the
+          // body from the opposite, interior side at a smaller radius; a cutter
+          // crossing both ends or beginning outside the host remains invalid.
+          if ((exitsLower ? 1 : 0) + (exitsUpper ? 1 : 0) !== 1) return item;
+          if (!outer?.parameters.profile?.length) return item;
+          const entryZ = exitsUpper ? Math.max(baseEnvelope.zMin, item.zMin) : Math.min(baseEnvelope.zMax, item.zMax);
+          const hostRadius = interpolateRadius(outer.parameters.profile, entryZ);
+          return hostRadius === null || item.radius >= hostRadius - .01 ? item : null;
+        });
         // Boolean cut semantics are ordered.  A planner sometimes reverses a
         // vessel's outer/inner profiles, which compiles without a syntax error
         // but removes the intended solid and leaves disconnected remnants.

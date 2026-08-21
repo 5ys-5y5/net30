@@ -116,6 +116,16 @@ def fuse_roots(roots):
     return cq.Workplane(obj=result)
 
 
+def copy_workplane(shape):
+    """Return an OCCT copy for a DAG edge.
+
+    CadQuery Boolean and transform methods may mutate a workplane's wrapped
+    shape. ModelingGraph nodes are immutable values: a later pattern must not
+    alter the B-Rep cached for an earlier shell or revolve node.
+    """
+    return cq.Workplane(obj=shape.val().copy())
+
+
 def inner_revolve_from_profile(params, thickness):
     """Create an explicit inner cavity for an axisymmetric solid.
 
@@ -132,8 +142,15 @@ def inner_revolve_from_profile(params, thickness):
         raise RuntimeError("graph_invalid: shell source revolve needs a visible outer profile")
     visible.sort(key=lambda item: item[1])
     z_min, z_max = visible[0][1], visible[-1][1]
+    outer_top_z = max(z for _, z in raw)
+    # A profile which returns to the rotation axis above its last visible
+    # radius is a roofed closure, not an open vessel. Its cavity must break
+    # through the lower datum while stopping below the roof; treating it like
+    # a bottle cavity cuts through the roof and can split the cap B-Rep.
+    roofed = outer_top_z > z_max + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top_z) <= 1e-6 for x, z in raw)
     start_z = z_min + thickness
-    if start_z >= z_max - 1e-6:
+    inner_top_z = z_max
+    if start_z >= inner_top_z - 1e-6:
         raise RuntimeError("graph_invalid: shell thickness leaves no interior height")
     def radius_at(z):
         if z <= visible[0][1]: return visible[0][0]
@@ -143,7 +160,18 @@ def inner_revolve_from_profile(params, thickness):
                 ratio = 0 if abs(z1 - z0) < 1e-9 else (z - z0) / (z1 - z0)
                 return x0 + (x1 - x0) * ratio
         return visible[-1][0]
-    sample_z = [start_z] + [z for _, z in visible if start_z < z < z_max] + [z_max]
+    # A roofed closure has a datum-facing opening and an exterior roof. OCCT
+    # face-shell selection is orientation-sensitive for this profile, so form
+    # its exact axisymmetric cavity from the measured outer radius at the
+    # approved roof-thickness plane. It is a derived analytical B-Rep feature,
+    # not a name-based or arbitrary primitive fallback.
+    if roofed:
+        inner_top_z = z_max - thickness
+        inner_radius = radius_at(inner_top_z) - thickness
+        if inner_top_z <= z_min + 1e-6 or inner_radius <= 1e-5:
+            raise RuntimeError("graph_invalid: shell thickness leaves no roofed-closure cavity")
+        return cq.Workplane("XY").circle(inner_radius).extrude(inner_top_z - z_min)
+    sample_z = [start_z] + [z for _, z in visible if start_z < z < inner_top_z] + [inner_top_z]
     inner = [(0.0, start_z)]
     for z in sample_z:
         radius = radius_at(z) - thickness
@@ -156,6 +184,71 @@ def inner_revolve_from_profile(params, thickness):
     return revolve({**params, "profile": [{"xMm": x, "zMm": z} for x, z in inner], "curveSegments": []})
 
 
+def radial_extent_at_z(node_id, z_mm, nodes_by_id, seen=None):
+    """Resolve the actual radial envelope at a feature's local Z ordinate.
+
+    Ribs are attached to a *surface at their own height*, not to the widest
+    point of a cap elsewhere in the profile. Bounding-box placement detached
+    a ribbed taper from its host body even though the graph correctly named a
+    base solid. This evaluator follows the declared feature graph and only
+    returns a radius for operations whose radial extent is unambiguous.
+    """
+    seen = set() if seen is None else seen
+    if node_id in seen:
+        return None
+    seen.add(node_id)
+    node = nodes_by_id.get(node_id)
+    if not node:
+        return None
+    params = node.get("parameters") or {}
+    op = node.get("operation")
+    transform = params.get("transform") or {}
+    translation = transform.get("translationMm") or {}
+    local_z = z_mm - float(translation.get("z") or 0)
+    if op == "revolve":
+        raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or []) if float(point["xMm"]) > 1e-8]
+        if len(raw) < 2:
+            return None
+        raw.sort(key=lambda item: item[1])
+        if local_z < raw[0][1] - 1e-6 or local_z > raw[-1][1] + 1e-6:
+            return None
+        if local_z <= raw[0][1]:
+            return raw[0][0]
+        for left, right in zip(raw, raw[1:]):
+            if left[1] <= local_z <= right[1]:
+                ratio = 0 if abs(right[1] - left[1]) < 1e-9 else (local_z - left[1]) / (right[1] - left[1])
+                return left[0] + (right[0] - left[0]) * ratio
+        return raw[-1][0]
+    if op in ("primitive", "extrude"):
+        dimensions = params.get("dimensionsMm") or {}
+        height = float(params.get("heightMm") or dimensions.get("z") or 0)
+        if local_z < -1e-6 or local_z > height + 1e-6:
+            return None
+        if params.get("radiusMm") is not None:
+            return float(params["radiusMm"])
+        return max(float(dimensions.get("x") or 0), float(dimensions.get("y") or 0)) / 2
+    inputs = node.get("inputNodeIds") or []
+    radii = [radial_extent_at_z(item, local_z, nodes_by_id, seen.copy()) for item in inputs]
+    radii = [item for item in radii if item is not None]
+    if not radii:
+        return None
+    if op == "boolean" and params.get("operation") == "cut":
+        return radii[0]
+    return max(radii)
+
+
+def feature_depends_on(node_id, ancestor_id, nodes_by_id, seen=None):
+    """Whether a graph result already contains a declared ancestor feature."""
+    if node_id == ancestor_id:
+        return True
+    seen = set() if seen is None else seen
+    if node_id in seen:
+        return False
+    seen.add(node_id)
+    node = nodes_by_id.get(node_id) or {}
+    return any(feature_depends_on(input_id, ancestor_id, nodes_by_id, seen.copy()) for input_id in node.get("inputNodeIds", []))
+
+
 def compile_graph(graph_component, graph_nodes):
     results = {}
     nodes_by_id = {node["id"]: node for node in graph_nodes}
@@ -165,13 +258,22 @@ def compile_graph(graph_component, graph_nodes):
             for source in node.get("inputNodeIds", []):
                 pattern_count_by_seed[source] = node.get("parameters", {}).get("count")
     for node in graph_nodes:
-        op, params = node["operation"], node.get("parameters") or {}; inputs = [results[item] for item in node.get("inputNodeIds", []) if item in results]
+        op, params = node["operation"], node.get("parameters") or {}; inputs = [copy_workplane(results[item]) for item in node.get("inputNodeIds", []) if item in results]
         if op == "revolve": shape = revolve(params)
         elif op in ("primitive", "extrude"): shape = primitive(params)
         elif op == "boolean":
             if len(inputs) < 2: raise RuntimeError(f"graph_invalid: boolean node {node['id']} requires two inputs")
-            shape = inputs[0]; mode = params.get("operation")
-            for operand in inputs[1:]: shape = shape.cut(operand) if mode == "cut" else shape.intersect(operand) if mode == "intersect" else shape.union(operand)
+            mode = params.get("operation")
+            # Pattern(base, rib) is already the complete base-plus-pattern
+            # result. Re-unioning its explicit base duplicates a compound and
+            # can split valid OCCT solids. Preserve the graph DAG meaning
+            # rather than treating each reference as a separate solid.
+            input_ids = node.get("inputNodeIds", [])
+            if mode == "union" and len(input_ids) == 2 and nodes_by_id.get(input_ids[1], {}).get("operation") == "pattern" and feature_depends_on(input_ids[1], input_ids[0], nodes_by_id):
+                shape = inputs[1]
+            else:
+                shape = inputs[0]
+                for operand in inputs[1:]: shape = shape.cut(operand) if mode == "cut" else shape.intersect(operand) if mode == "intersect" else shape.union(operand)
         elif op == "shell":
             if len(inputs) != 1: raise RuntimeError(f"graph_invalid: shell node {node['id']} requires one input")
             thickness = float(params.get("thicknessMm") or 0)
@@ -211,11 +313,14 @@ def compile_graph(graph_component, graph_nodes):
             missing = [key for key, value in required.items() if value is None]
             if missing: raise RuntimeError(f"graph_invalid: rib node {node['id']} missing {','.join(missing)}")
             width = max(.05, float(width_value)); depth = max(.05, float(depth_value)); height = max(.05, float(params["heightMm"]))
-            base_box = inputs[0].val().BoundingBox()
             local_transform = params.get("transform") or {}
             translation = local_transform.get("translationMm") or {}
-            radius = float(params["radiusMm"]) if params.get("radiusMm") is not None else float(translation.get("x", max(abs(base_box.xmin), abs(base_box.xmax), abs(base_box.ymin), abs(base_box.ymax))))
+            base_box = inputs[0].val().BoundingBox()
             z_center = float(params.get("zMm", float(translation.get("z", base_box.zmin)) + height / 2))
+            base_node_id = node.get("inputNodeIds", [None])[0]
+            surface_radius = radial_extent_at_z(base_node_id, z_center, nodes_by_id)
+            radial_datum = float(translation.get("x") or 0)
+            radius = float(params["radiusMm"]) if params.get("radiusMm") is not None else radial_datum if abs(radial_datum) > 1e-8 else surface_radius if surface_radius is not None else max(abs(base_box.xmin), abs(base_box.xmax), abs(base_box.ymin), abs(base_box.ymax))
             # The rib deliberately penetrates the approved exterior by 35% of
             # its radial depth.  A merely tangent box becomes a separate B-Rep
             # compound; this overlap makes the Boolean fuse deterministic while
