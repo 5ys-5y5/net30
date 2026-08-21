@@ -145,6 +145,14 @@ const measuredCavity = normaliseAxisymmetricCavityFeatures(measuredCavityOutput)
 assert.equal(measuredCavity.converted, 1);
 assert.deepEqual(measuredCavity.raw.components[0].features.map((feature) => feature.operation), ["revolve", "shell"]);
 assert.doesNotThrow(() => canonicalizeGraph(measuredCavity.raw, ["유리병"], []));
+const shallowAnnulusOutput = fixtureGraphOutput({ product: { name: "얕은 환형 링" }, prompt: "annular ring", requestedComponents: ["링"], imageIds: [] });
+const annulusOuter = { ...structuredClone(shallowAnnulusOutput.components[0].features[0]), key: "annulus-outer", inputKeys: [], parameters: { ...shallowAnnulusOutput.components[0].features[0].parameters, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 8 }, { xMm: 0, yMm: 0, zMm: 8 }] } };
+const annulusInner = { ...structuredClone(annulusOuter), key: "annulus-inner", parameters: { ...annulusOuter.parameters, profile: [{ xMm: 0, yMm: 0, zMm: 1 }, { xMm: 15, yMm: 0, zMm: 1 }, { xMm: 15, yMm: 0, zMm: 7 }, { xMm: 0, yMm: 0, zMm: 7 }] } };
+const annulusCut = { ...structuredClone(annulusOuter), key: "annulus-cut", operation: "boolean", inputKeys: [annulusOuter.key, annulusInner.key], parameters: { ...annulusOuter.parameters, profile: null, operation: "cut" } };
+shallowAnnulusOutput.components[0].features = [annulusOuter, annulusInner, annulusCut];
+const shallowAnnulus = normaliseAxisymmetricCavityFeatures(shallowAnnulusOutput);
+assert.equal(shallowAnnulus.converted, 0, "a shallow annular Boolean remains an explicit through-hole instead of an invalid vessel shell");
+assert.equal(shallowAnnulus.raw.components[0].features.at(-1).operation, "boolean");
 const reversedCutOutput = fixtureGraphOutput({ product: { name: "역전 cut" }, prompt: "cut", requestedComponents: ["마개"], imageIds: [] });
 const smallBase = { ...structuredClone(reversedCutOutput.components[0].features[0]), key: "small-base", operation: "primitive", inputKeys: [], parameters: { ...reversedCutOutput.components[0].features[0].parameters, profile: null, primitive: "cylinder", radiusMm: 18, heightMm: 20, dimensionsMm: null } };
 const largerCutter = { ...structuredClone(smallBase), key: "larger-cutter", parameters: { ...smallBase.parameters, radiusMm: 22 } };
@@ -192,6 +200,11 @@ const placedAssembly = canonicalizeGraph(assemblyPlacement, ["몸체", "마개",
 assert.equal(placedAssembly.graph.nodes.find((node) => node.parameters.profile)?.parameters.profile.at(-1).zMm, 105, "the varying y ordinate must become canonical XZ");
 assert.equal(placedAssembly.graph.components[1].transform.translationMm.z, 96, "threaded cap local datum must align its top with assembly height");
 assert.equal(placedAssembly.graph.components[2].transform.translationMm.z, 93, "seal must sit directly below the threaded closure envelope");
+const inferredAssembly = structuredClone(assemblyPlacement);
+inferredAssembly.interfaces = [];
+const inferredPlacement = canonicalizeGraph(inferredAssembly, ["몸체", "마개", "밀봉 링"], []).graph;
+assert.equal(inferredPlacement.components[1].transform.translationMm.z, 81, "unmated concentric children receive one provisional datum below the tallest child rather than exporting at z=0");
+assert.equal(inferredPlacement.components[2].transform.translationMm.z, 81.5, "the provisional datum preserves each child’s component-local geometry");
 assert.throws(() => validateGraph({ ...printCanonical.graph, nodes: [{ ...printCanonical.graph.nodes[0], operation: "eval" }] }), /지원하지 않는|Invalid/);
 const patched = applyModelingPatch(printCanonical.graph, { version: "net30.modeling-patch.v1", baseGraphHash: printCanonical.graphHash, scope: { stage: "material_surface", componentIds: [printComponent.id] }, changes: [{ op: "set_parameter", nodeId: printNode.id, field: "wrapDegrees", expectedValueHash: valueHash(printNode.parameters.wrapDegrees), value: 120, rationale: "사진의 감김 범위" }] });
 assert.equal(patched.graph.nodes.find((item) => item.id === printNode.id).parameters.wrapDegrees, 120);

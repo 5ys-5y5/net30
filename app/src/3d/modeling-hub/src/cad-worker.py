@@ -178,9 +178,13 @@ def inner_revolve_from_profile(params, thickness):
         if radius <= 1e-5:
             raise RuntimeError("graph_invalid: shell thickness exceeds the approved outer profile")
         inner.append((radius, z))
-    # Extending only the cavity's axial closing edge past the mouth opens the
-    # container without altering the approved outer silhouette.
-    inner.append((0.0, z_max + thickness))
+    # Close the cutter exactly on the approved mouth plane.  Extending the
+    # axial edge beyond that plane looks harmless in a profile diagram, but
+    # for a shoulder/neck transition it can split the outer revolution into
+    # two solids during the Boolean.  The outer B-Rep already defines the
+    # datum face; an exact closing edge produces the same open-mouth cut
+    # without inventing geometry above the measured silhouette.
+    inner.append((0.0, z_max))
     return revolve({**params, "profile": [{"xMm": x, "zMm": z} for x, z in inner], "curveSegments": []})
 
 

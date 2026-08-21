@@ -112,7 +112,7 @@ def graph_texture_material(name, spec, image_input, job_dir):
     elif hasattr(material, "blend_method"): material.blend_method='BLEND'
     return material
 def graph_decal(name, params, radius, height, target, material):
-    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or (360*float(crop.get("width",.33))))); approved_height=float(params.get("heightMm") or 0)*MM; h=max(.001,approved_height if approved_height>0 else float(crop.get("height",.3))*height); z=max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM
+    crop=params.get("artworkCrop") or {"x":0,"y":0,"width":1,"height":1}; sweep=math.radians(float(params.get("wrapDegrees") or (360*float(crop.get("width",.33))))); dimensions=params.get("dimensionsMm") or {}; approved_height=float(params.get("heightMm") or dimensions.get("y") or 0)*MM; h=max(.001,approved_height if approved_height>0 else float(crop.get("height",.3))*height); anchor=float((params.get("transform") or {}).get("translationMm",{}).get("z") or 0)*MM; z=max(0,anchor-h/2) if anchor>0 else max(0,(1-float(crop.get("y",.4))-float(crop.get("height",.3)))*height); r=radius+float(params.get("offsetMm") or .15)*MM
     segments=64; vs=[]; fs=[]
     for j in range(2):
         for i in range(segments+1):
@@ -163,7 +163,11 @@ def build_graph_component(component, nodes, contract, image_inputs, job_dir, tar
             # Artwork anchors are component-local graph transforms.  Unlike
             # the component transform (owned by the parent assembly), this
             # node transform is the approved placement on its host surface.
-            apply_graph_transform([obj],params.get("transform") or {})
+            # graph_decal consumes its Z anchor while constructing the host
+            # surface.  Applying it again put an approved mid-body decal above
+            # the bottle. Keep only lateral/rotational adjustments here.
+            node_transform=params.get("transform") or {}; translation=node_transform.get("translationMm") or {}
+            apply_graph_transform([obj],{**node_transform,"translationMm":{**translation,"z":0}})
         elif op in ["instance_distribution","volume"]:
             dimensions=params.get("dimensionsMm") or {"x":8,"y":8,"z":16}; quantity=min(120,int(params.get("quantity") or 1))
             for index in range(quantity):

@@ -313,7 +313,12 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
       }
       if (feature.operation === "pattern") {
         const [baseKey, seedKey] = feature.inputKeys;
-        if (feature.inputKeys.length !== 2 || currentFeatures.get(seedKey)?.operation !== "rib" || !baseKey) throw new Error(`graph_repair_required: ${component.componentKey}.pattern.baseAndRib`);
+        const seed = currentFeatures.get(seedKey)?.operation;
+        // A repeated feature may be a dedicated rib or a transformed plate,
+        // hole boss, latch or other generated industrial feature. The graph
+        // still requires explicit base + seed ordering; OCCT later proves the
+        // patterned result fuses into one intended component solid.
+        if (feature.inputKeys.length !== 2 || !["rib", "primitive", "extrude", "revolve", "transform"].includes(seed) || !baseKey) throw new Error(`graph_repair_required: ${component.componentKey}.pattern.baseAndSeed`);
       }
       if (feature.operation === "boolean" && feature.parameters.operation === "cut" && feature.inputKeys.length >= 2) {
         const outer = outerRevolveFor(feature.inputKeys[0]); const cutter = currentFeatures.get(feature.inputKeys[1]);
@@ -339,7 +344,17 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
           // were a reversed Boolean.  It is still safe only when it enters the
           // body from the opposite, interior side at a smaller radius; a cutter
           // crossing both ends or beginning outside the host remains invalid.
-          if ((exitsLower ? 1 : 0) + (exitsUpper ? 1 : 0) !== 1) return item;
+          const exitCount = (exitsLower ? 1 : 0) + (exitsUpper ? 1 : 0);
+          if (exitCount === 0) {
+            // A fully contained concentric bore is still a valid B-Rep
+            // feature (for example a pouring ring or a sealed internal
+            // passage). It is not an open vessel mouth, so manufacturing
+            // evidence must later establish how it is made, but geometry
+            // validation must not replace it with a fabricated shell or
+            // reject it before OCCT can verify the actual Boolean.
+            return outer?.operation === "revolve" && cutter?.operation === "revolve" ? null : item;
+          }
+          if (exitCount !== 1) return item;
           if (!outer?.parameters.profile?.length) return item;
           const entryZ = exitsUpper ? Math.max(baseEnvelope.zMin, item.zMin) : Math.min(baseEnvelope.zMax, item.zMax);
           const hostRadius = interpolateRadius(outer.parameters.profile, entryZ);
@@ -403,10 +418,29 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     return { min, max, span: max - min };
   };
   const baseComponent = [...normalizedComponents].filter((item) => item.representation === "brep_solid").sort((a, b) => (extent(b)?.span ?? 0) - (extent(a)?.span ?? 0))[0];
+  const baseRange = extent(baseComponent);
+  const unplacedAccessoryRanges = normalizedComponents
+    .filter((item) => item !== baseComponent && item.representation === "brep_solid" && Math.abs(Number(item.transform?.translationMm?.z ?? 0)) < 1e-6)
+    .map((item) => extent(item))
+    .filter(Boolean);
+  // A Vision plan may correctly identify independent child B-Reps but omit
+  // its mate rows.  Keep local geometry untouched and give every unplaced,
+  // concentric child the same provisional datum below the tallest child.
+  // This is a reviewable assembly inference from component envelopes—not a
+  // label-based cap/ring rule—and prevents all children from being exported
+  // at z=0 while the explicit interface contract remains unresolved.
+  const inferredAssemblyDatum = baseRange && unplacedAccessoryRanges.length
+    ? Math.max(baseRange.min, baseRange.max - Math.max(...unplacedAccessoryRanges.map((range) => range.span)))
+    : null;
   const threadHeight = Math.max(0, ...parsed.interfaces.filter((item) => item.kind === "thread" && item.componentKeys.includes(baseComponent?.componentKey)).flatMap((item) => item.componentKeys.filter((key) => key !== baseComponent.componentKey).map((key) => extent(normalizedComponents.find((component) => component.componentKey === key))?.span ?? 0)));
   const placedComponents = normalizedComponents.map((component) => {
     const range = extent(component); const translation = component.transform?.translationMm; const relation = parsed.interfaces.find((item) => item.componentKeys.includes(component.componentKey) && item.componentKeys.includes(baseComponent?.componentKey)); const linkedToBase = Boolean(relation);
-    if (!range || component === baseComponent || !linkedToBase || Math.abs(translation?.z ?? 0) > 1e-6 || range.min > 5 || range.span > (extent(baseComponent)?.span ?? Infinity) * .5) return component;
+    if (!range || component === baseComponent || Math.abs(translation?.z ?? 0) > 1e-6 || range.min > 5 || range.span > (baseRange?.span ?? Infinity) * .5) return component;
+    if (!linkedToBase && inferredAssemblyDatum !== null) {
+      const z = Math.max(0, inferredAssemblyDatum - range.min);
+      return { ...component, transform: { ...component.transform, translationMm: { ...component.transform.translationMm, z } }, summary: `${component.summary} (명시 mate가 없어 최대 자녀 높이의 공통 조립 datum z=${z.toFixed(3)} mm를 제안함; 제조 조립 승인 필요)` };
+    }
+    if (!linkedToBase) return component;
     const targetTop = relation.kind === "thread" ? parsed.product.heightMm : Math.max(0, parsed.product.heightMm - threadHeight);
     const z = Math.max(0, targetTop - range.max);
     return { ...component, transform: { ...component.transform, translationMm: { ...component.transform.translationMm, z } }, summary: `${component.summary} (${relation.kind} 인터페이스 기준으로 z=${z.toFixed(3)} mm 배치)` };

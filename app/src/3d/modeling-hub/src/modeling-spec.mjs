@@ -362,12 +362,21 @@ export function normaliseAxisymmetricCavityFeatures(raw) {
         .map((point) => { const radius = radialProfileAt(outer.parameters.profile, point.zMm); return radius === null ? null : radius - point.xMm; })
         .filter((gap) => Number.isFinite(gap) && gap > .15)
         .sort((left, right) => left - right);
-      // At least three independently observed radii are required. The lower
-      // quartile is conservative: it preserves the thinnest observed wall
-      // without turning a local neck/bead into a global wall thickness.
-      if (gaps.length < 3) continue;
+      // Two independent radii suffice for a straight-walled cap or sleeve;
+      // curved bottles normally contribute many more. The lower quartile is
+      // conservative: it preserves the thinnest observed wall without turning
+      // a local neck/bead into a global wall thickness.
+      if (gaps.length < 2) continue;
       const wallMm = gaps[Math.floor((gaps.length - 1) * .25)];
-      if (!Number.isFinite(wallMm) || wallMm < .2 || wallMm > 20 || (referenceCount.get(innerKey) ?? 0) > 1) continue;
+      const outerAxial = outer.parameters.profile.map((point) => point.zMm).filter(Number.isFinite);
+      const axialSpanMm = outerAxial.length ? Math.max(...outerAxial) - Math.min(...outerAxial) : 0;
+      // A shell is a vessel-like cavity.  A shallow annular ring can contain
+      // the same outer-minus-inner Boolean topology, but turning it into a
+      // constant-thickness shell erases the intended through-hole and can
+      // make the cavity taller than the part.  The decision is geometric,
+      // never inferred from a component label: the measured axial envelope
+      // must contain two opposing walls plus a usable interior span.
+      if (!Number.isFinite(wallMm) || wallMm < .2 || wallMm > 20 || axialSpanMm <= (wallMm * 2) + .2 || (referenceCount.get(innerKey) ?? 0) > 1) continue;
       replacement.set(feature.key, {
         ...feature,
         operation: "shell",
