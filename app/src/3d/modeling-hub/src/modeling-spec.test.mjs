@@ -30,7 +30,9 @@ auditStrictSchema(modelingGraphJsonSchema());
 auditStrictSchema(modelingComponentRepairJsonSchema());
 auditStrictSchema(modelingPatchJsonSchema());
 assert.equal(ANALYSIS_OPERATIONS.includes("fillet"), false);
-assert.equal(modelingGraphJsonSchema().properties.components.items.properties.features.items.properties.operation.enum.includes("fillet"), false);
+const strictFeatureOperations = modelingGraphJsonSchema().properties.components.items.properties.features.items.oneOf.map((variant) => variant.properties.operation.const);
+assert.equal(strictFeatureOperations.includes("fillet"), false);
+assert.equal(strictFeatureOperations.includes("boolean"), true);
 
 const originalApiKey = process.env.OPENAI_API_KEY;
 process.env.OPENAI_API_KEY = "test-key";
@@ -117,7 +119,7 @@ assert.equal(normalizedModifier.graph.nodes[1].parameters.thicknessMm, 2.6);
 assert.equal(normalizedModifier.graph.nodes[1].inputNodeIds[0], normalizedModifier.graph.nodes[0].id);
 const orphanRibOutput = fixtureGraphOutput({ product: { name: "리브 캡" }, prompt: "리브", requestedComponents: ["뚜껑"], imageIds: [] });
 orphanRibOutput.components[0].features = [{ ...orphanRibOutput.components[0].features[0], key: "cap-rib", operation: "rib", inputKeys: [], parameters: { ...orphanRibOutput.components[0].features[0].parameters, profile: null } }];
-assert.throws(() => canonicalizeGraph(orphanRibOutput, ["뚜껑"], []), /graph_repair_required: component-1\.rib\.inputKeys/);
+assert.throws(() => canonicalizeGraph(orphanRibOutput, ["뚜껑"], []), /Too small: expected array to have >=1 items/, "strict output schema rejects a rib without its base before graph compilation");
 const incompleteRibOutput = fixtureGraphOutput({ product: { name: "불완전 리브 캡" }, prompt: "rib", requestedComponents: ["뚜껑"], imageIds: [] });
 const ribBase = incompleteRibOutput.components[0].features[0];
 incompleteRibOutput.components[0].features = [
@@ -128,7 +130,7 @@ assert.throws(() => canonicalizeGraph(incompleteRibOutput, ["뚜껑"], []), /gra
 const incompleteBooleanOutput = fixtureGraphOutput({ product: { name: "불완전 절단" }, prompt: "cut", requestedComponents: ["유리병"], imageIds: [] });
 const booleanBase = incompleteBooleanOutput.components[0].features[0];
 incompleteBooleanOutput.components[0].features.push({ ...structuredClone(booleanBase), key: "incomplete-cut", operation: "boolean", inputKeys: [booleanBase.key], parameters: { ...booleanBase.parameters, profile: null, operation: "cut" } });
-assert.throws(() => canonicalizeGraph(incompleteBooleanOutput, ["유리병"], []), /graph_repair_required: component-1\.boolean\.inputKeys/);
+assert.throws(() => canonicalizeGraph(incompleteBooleanOutput, ["유리병"], []), /Too small: expected array to have >=2 items/, "strict output schema rejects a Boolean without both operands");
 const coplanarCavityOutput = fixtureGraphOutput({ product: { name: "모호한 cavity" }, prompt: "cap cavity", requestedComponents: ["뚜껑"], imageIds: [] });
 const outerCap = { ...structuredClone(coplanarCavityOutput.components[0].features[0]), key: "cap-outer", operation: "primitive", inputKeys: [], parameters: { ...coplanarCavityOutput.components[0].features[0].parameters, profile: null, primitive: "cylinder", radiusMm: 27, heightMm: 24 } };
 const ambiguousCut = { ...structuredClone(outerCap), key: "cap-cavity", operation: "revolve", inputKeys: [outerCap.key], parameters: { ...outerCap.parameters, primitive: null, radiusMm: null, heightMm: null, profile: [{ xMm: 0, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 1 }, { xMm: 22, yMm: 0, zMm: 24 }, { xMm: 0, yMm: 0, zMm: 24 }], operation: "cut" } };
@@ -175,7 +177,7 @@ invalidPatternOutput.components[0].features = [
   patternBase,
   { ...structuredClone(patternBase), key: "invalid-whole-cap-pattern", operation: "pattern", inputKeys: [patternBase.key], parameters: { ...patternBase.parameters, profile: null, count: 36 } },
 ];
-assert.throws(() => canonicalizeGraph(invalidPatternOutput, ["뚜껑"], []), /graph_repair_required: component-1\.pattern\.baseAndRib/);
+assert.throws(() => canonicalizeGraph(invalidPatternOutput, ["뚜껑"], []), /Too small: expected array to have >=2 items/, "strict output schema rejects a pattern without base and seed");
 const assemblyPlacement = fixtureGraphOutput({ product: { name: "조립 배치", widthMm: 56, heightMm: 120, depthMm: 56 }, prompt: "test", requestedComponents: ["몸체", "마개", "밀봉 링"], imageIds: [] });
 assemblyPlacement.product.heightMm = 120;
 assemblyPlacement.components[0].features[0].parameters.profile = [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 0, zMm: 0 }, { xMm: 28, yMm: 105, zMm: 0 }, { xMm: 0, yMm: 105, zMm: 0 }];

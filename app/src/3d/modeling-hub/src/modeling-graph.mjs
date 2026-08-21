@@ -43,14 +43,25 @@ const featureParameters = z.object({
   transform: transform.nullable(),
 }).strict();
 
-const featureOutput = z.object({
+const featureOutputBase = {
   key: z.string().min(1).max(100),
-  operation: z.enum(ANALYSIS_OPERATIONS),
-  inputKeys: z.array(z.string().min(1).max(100)).max(32),
   parameters: featureParameters,
   rationale: z.string().max(600),
   confidence: z.number().min(0).max(1),
-}).strict();
+};
+const featureKey = z.array(z.string().min(1).max(100));
+// This schema is intentionally topological, not merely syntactic.  Constrained
+// decoding must not be able to emit an extrude that consumes a shell, a pattern
+// without its host solid, or a Boolean that has only one operand. Continuous
+// profile values remain evidence/fitter inputs, while graph wiring is decided
+// here as a discrete, compiler-supported CAD contract.
+const featureOutput = z.discriminatedUnion("operation", [
+  ...["profile", "primitive", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
+  ...["revolve", "extrude"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(1) }).strict()),
+  ...["shell", "rib", "transform", "mate"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.min(1).max(1) }).strict()),
+  z.object({ ...featureOutputBase, operation: z.literal("pattern"), inputKeys: featureKey.min(2).max(2) }).strict(),
+  z.object({ ...featureOutputBase, operation: z.literal("boolean"), inputKeys: featureKey.min(2).max(32) }).strict(),
+]);
 
 const componentOutput = z.object({
   componentKey: z.string().min(1).max(100),
@@ -267,7 +278,8 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     };
     for (const feature of features) {
       if (feature.inputKeys.some((key) => !currentFeatures.has(key))) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
-      if (["revolve", "extrude", "primitive"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
+      if (["profile", "primitive"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
+      if (["revolve", "extrude"].includes(feature.operation) && feature.inputKeys.length && currentFeatures.get(feature.inputKeys[0])?.operation !== "profile") throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
       if (feature.operation === "rib") {
         if (feature.inputKeys.length !== 1) throw new Error(`graph_repair_required: ${component.componentKey}.rib.inputKeys`);
         const followingPattern = features.find((candidate) => candidate.operation === "pattern" && candidate.inputKeys.at(-1) === feature.key);
