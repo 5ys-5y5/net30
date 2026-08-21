@@ -36,6 +36,13 @@ export const qualityGateReportSchema = z.object({ version: z.literal("net30.qual
 
 export function stableHash(value) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 
+function clampedV3Nurbs(points) {
+  const degree = Math.max(1, Math.min(3, points.length - 1));
+  const uniqueKnotCount = points.length - degree + 1;
+  const knots = Array.from({ length: uniqueKnotCount }, (_, index) => uniqueKnotCount === 1 ? 0 : index / (uniqueKnotCount - 1));
+  return { kind: "nurbs", poles: points, degree, weights: points.map(() => 1), knots, multiplicities: knots.map((_, index) => index === 0 || index === knots.length - 1 ? degree + 1 : 1), periodic: false };
+}
+
 /** Explicit evidence routing prevents a visually similar but different product
  * image from leaking its full silhouette or printed content into this product. */
 export function buildEvidenceManifest(imageInputs = []) {
@@ -90,7 +97,9 @@ export function fitAxisymmetricProfile(samples, { smoothPasses = 2, toleranceMm 
   let fitted = ordered.filter((point, index) => index === 0 || Math.hypot(point.xMm - ordered[index - 1].xMm, point.zMm - ordered[index - 1].zMm) > 1e-6);
   for (let pass = 0; pass < Math.max(0, Math.min(20, smoothPasses)); pass += 1) fitted = fitted.map((point, index, all) => index === 0 || index === all.length - 1 ? point : ({ xMm: (all[index - 1].xMm + 2 * point.xMm + all[index + 1].xMm) / 4, zMm: point.zMm }));
   const provenance = { source: "image_measurement", imageId: null, crop: null, measurementMethod: "calibrated-silhouette-constrained-smoothing", confidence: .8, toleranceMm, approvalStatus: "proposed" };
-  return { segments: [{ kind: "nurbs", poles: fitted, degree: Math.min(3, fitted.length - 1), weights: fitted.map(() => 1), knots: Array.from({ length: fitted.length }, (_, index) => index), multiplicities: Array.from({ length: fitted.length }, () => 1), periodic: false, provenance }], fitted };
+  const degree = Math.max(1, Math.min(3, fitted.length - 1)); const uniqueKnotCount = fitted.length - degree + 1;
+  const knots = Array.from({ length: uniqueKnotCount }, (_, index) => uniqueKnotCount === 1 ? 0 : index / (uniqueKnotCount - 1));
+  return { segments: [{ kind: "nurbs", poles: fitted, degree, weights: fitted.map(() => 1), knots, multiplicities: knots.map((_, index) => index === 0 || index === knots.length - 1 ? degree + 1 : 1), periodic: false, provenance }], fitted };
 }
 
 export function qualityGates({ graphHash, contour = null, landmarks = null, dimensions = null, brep = null, step = null, evidenceComplete = false }) {
@@ -130,7 +139,7 @@ export function adaptGraphToV3(graph, evidenceManifest, imageEvidence = null) {
       id: component.id, requestedName: component.requestedName, representation: component.representation,
       localCoordinateSystem: "component-local",
       transform: { translationMm: component.transform.translationMm, rotationDeg: component.transform.rotationDeg },
-      curves: profile.length >= 2 ? [{ kind: "nurbs", poles: profile.map((item) => ({ xMm: item.xMm, zMm: item.zMm })), degree: Math.min(3, profile.length - 1), weights: profile.map(() => 1), knots: profile.map((_, index) => index), multiplicities: profile.map(() => 1), periodic: false, provenance }] : [],
+      curves: profile.length >= 2 ? [{ ...clampedV3Nurbs(profile.map((item) => ({ xMm: item.xMm, zMm: item.zMm }))), provenance }] : [],
       nodeIds: graph.nodes.filter((node) => node.componentId === component.id).map((node) => node.id),
     };
   });

@@ -65,6 +65,59 @@ function interpolate(samples, zNorm) {
   return 0;
 }
 
+/** A clamped rational B-spline declaration whose multiplicities are valid in
+ * OCCT.  This is intentionally shared by evidence fitting and v3 adaptation:
+ * a graph must never claim a NURBS while emitting a knot vector that cannot
+ * define one. */
+export function clampedNurbs(points, degree = 3) {
+  const poles = points.map(({ xMm, zMm }) => ({ xMm: Number(xMm), zMm: Number(zMm) }));
+  const resolvedDegree = Math.max(1, Math.min(Math.floor(degree), poles.length - 1));
+  const uniqueKnotCount = poles.length - resolvedDegree + 1;
+  const knots = Array.from({ length: uniqueKnotCount }, (_, index) => uniqueKnotCount === 1 ? 0 : index / (uniqueKnotCount - 1));
+  const multiplicities = knots.map((_, index) => index === 0 || index === knots.length - 1 ? resolvedDegree + 1 : 1);
+  return { kind: "nurbs", poles, degree: resolvedDegree, weights: poles.map(() => 1), knots, multiplicities, periodic: false };
+}
+
+/** Build C1 monotone Bézier pieces through a measured radial contour.
+ *
+ * Directly treating measured contour samples as B-spline *control* poles does
+ * not interpolate them and can overshoot the approved width/height.  This
+ * Fritsch–Carlson-style derivative limiter retains the samples as curve end
+ * points, prevents a new radial extremum between them, and produces ordinary
+ * OCCT Bézier edges rather than a display polyline or mesh approximation.
+ */
+export function monotoneBezierSegments(points) {
+  if (points.length < 2) return [];
+  const slopes = points.slice(1).map((point, index) => {
+    const previous = points[index]; const dz = Number(point.zMm) - Number(previous.zMm);
+    if (!(dz > 1e-8)) throw new Error("graph_invalid: measured contour must be strictly ordered by z");
+    return (Number(point.xMm) - Number(previous.xMm)) / dz;
+  });
+  const derivatives = points.map((point, index) => {
+    if (index === 0) return slopes[0];
+    if (index === points.length - 1) return slopes.at(-1);
+    const left = slopes[index - 1], right = slopes[index];
+    if (left * right <= 0) return 0;
+    const hLeft = Number(points[index].zMm) - Number(points[index - 1].zMm);
+    const hRight = Number(points[index + 1].zMm) - Number(points[index].zMm);
+    return ((2 * hRight + hLeft) + (hRight + 2 * hLeft)) /
+      (((2 * hRight + hLeft) / left) + ((hRight + 2 * hLeft) / right));
+  });
+  return points.slice(1).map((end, index) => {
+    const start = points[index]; const dz = Number(end.zMm) - Number(start.zMm);
+    return {
+      kind: "bezier",
+      points: [
+        { xMm: Number(start.xMm), zMm: Number(start.zMm) },
+        { xMm: Number((Number(start.xMm) + derivatives[index] * dz / 3).toFixed(6)), zMm: Number((Number(start.zMm) + dz / 3).toFixed(6)) },
+        { xMm: Number((Number(end.xMm) - derivatives[index + 1] * dz / 3).toFixed(6)), zMm: Number((Number(end.zMm) - dz / 3).toFixed(6)) },
+        { xMm: Number(end.xMm), zMm: Number(end.zMm) },
+      ],
+      periodic: false,
+    };
+  });
+}
+
 const BREP_GENERATORS = new Set(["revolve", "extrude", "primitive"]);
 
 function radialTranslation(parameters = {}) {
@@ -273,7 +326,11 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // Keep the measured rows.  OCCT receives a smooth spline through these
   // samples; reducing them to a handful of points was the source of visible
   // shoulder/heel flattening and exceeded the 0.35 mm contour gate.
-  const compact = rows.length <= 62 ? rows : Array.from({ length: 62 }, (_, index) => rows[Math.round(index * (rows.length - 1) / 61)]);
+  // The graph accepts up to 64 curve segments, so retain every measured row
+  // from the worker's 64-sample contour. Earlier downsampling to 40 discarded
+  // precisely the bottle heel/neck landmarks that carry the strongest visual
+  // evidence, inflating the calibrated RMS despite having the measurements.
+  const compact = rows.length <= 64 ? rows : Array.from({ length: 64 }, (_, index) => rows[Math.round(index * (rows.length - 1) / 63)]);
   const fitted = [{ xMm: 0, yMm: 0, zMm: zMin }, ...compact.map((item) => ({ xMm: Number((Math.max(0.01, item.radiusNorm * maxRadius)).toFixed(5)), yMm: 0, zMm: Number((zMin + item.zNorm * (zMax - zMin)).toFixed(5)) })), { xMm: 0, yMm: 0, zMm: zMax }];
   const next = structuredClone(graph); const node = next.nodes.find((item) => item.id === target.id);
   node.parameters.profile = fitted;
@@ -282,15 +339,15 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
   // straight edges to this curve, so no polygon mesh or LLM-invented control
   // point becomes the manufacturing source.
   const poles = fitted.filter((point) => point.xMm > 1e-8).map(({ xMm, zMm }) => ({ xMm, zMm }));
-  // OCCT's current inner-cavity routine derives its cutter from the exact
-  // measured profile. A naive spline outer wall plus a separately polyline
-  // offset can create a null Boolean on a hollow vessel. Keep that closed
-  // shell on its validated measured-wire path until the fitter also supplies
-  // a matched rational inner offset; the v3 product envelope still records
-  // the fitted NURBS and its provenance for review. Solid (non-shell)
-  // revolutions can use the declared NURBS directly today.
+  // A hollow revolution needs both outer and inner walls to share a validated
+  // offset construction.  OCCT rejects a Bézier outer wall combined with a
+  // legacy polyline cavity as a null Boolean.  Until the graph carries a
+  // paired inner offset declaration, retain the measured closed wire for that
+  // shell. Solid components use the C1 Bézier path immediately; the product
+  // dossier records this gated distinction rather than claiming an unsafe
+  // curve conversion succeeded.
   const shellBacked = next.nodes.some((candidate) => candidate.componentId === node.componentId && candidate.operation === "shell");
-  node.parameters.curveSegments = shellBacked ? null : [{ kind: "nurbs", poles, degree: Math.min(3, poles.length - 1), weights: poles.map(() => 1), knots: poles.map((_, index) => index), multiplicities: poles.map(() => 1), periodic: false }];
+  node.parameters.curveSegments = shellBacked ? null : monotoneBezierSegments(poles);
   return {
     graph: next,
     applied: true,
@@ -303,7 +360,7 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
       targetDiameterMm: maxRadius * 2,
       source: Number.isFinite(targetHeightMm) && targetHeightMm > 0 && Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? "approved_dimensions" : "graph_extent",
     },
-    curveCompilation: shellBacked ? "measured_polyline_pending_matched_inner_nurbs_offset" : "declared_nurbs",
+    curveCompilation: shellBacked ? "measured_wire_pending_paired_inner_offset" : "monotone_bezier_interpolation_from_measured_silhouette",
   };
 }
 

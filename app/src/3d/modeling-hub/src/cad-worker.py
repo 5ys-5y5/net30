@@ -7,6 +7,12 @@ import json, math, pathlib, sys, time
 
 try:
     import cadquery as cq
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.Geom import Geom_BSplineCurve, Geom_BezierCurve
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    from OCP.TColgp import TColgp_Array1OfPnt, TColgp_HArray1OfPnt
+    from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+    from OCP.gp import gp_Pnt, gp_Vec
 except ImportError as error:
     raise SystemExit("cad_runtime_unavailable: install the pinned CadQuery/OCP runtime before modeling") from error
 
@@ -23,6 +29,162 @@ def transform_shape(shape, transform):
         if abs(angle) > 1e-9: shape = shape.rotate((0, 0, 0), axis, angle)
     if any(abs(item) > 1e-9 for item in translation): shape = shape.translate(translation)
     return shape
+
+
+def rational_bspline_curve(segment):
+    """Make the declared rational NURBS edge without re-interpolating it.
+
+    CadQuery's ``Workplane.spline`` is an interpolation convenience.  It does
+    not consume a graph's knots, multiplicities, or rational weights, so it
+    cannot be the manufacturing source for a declared NURBS.  This function
+    passes the approved control net directly to OCCT instead.  Invalid knot
+    vectors are a graph error rather than an excuse to substitute a generic
+    smooth curve.
+    """
+    poles = segment.get("poles") or segment.get("points") or []
+    weights = segment.get("weights") or []
+    knots = segment.get("knots") or []
+    multiplicities = segment.get("multiplicities") or []
+    degree = int(segment.get("degree") or 0)
+    if len(poles) < 2 or degree < 1 or degree >= len(poles):
+        raise RuntimeError("graph_invalid: NURBS degree requires at least degree + 1 poles")
+    if len(weights) != len(poles):
+        raise RuntimeError("graph_invalid: NURBS weights must match pole count")
+    if len(knots) != len(multiplicities) or len(knots) < 2:
+        raise RuntimeError("graph_invalid: NURBS knots and multiplicities must be paired")
+    if sum(int(value) for value in multiplicities) != len(poles) + degree + 1:
+        raise RuntimeError("graph_invalid: NURBS knot multiplicities do not match poles and degree")
+    if any(float(value) <= 0 for value in weights) or any(int(value) < 1 for value in multiplicities):
+        raise RuntimeError("graph_invalid: NURBS weights and multiplicities must be positive")
+    if any(float(right) <= float(left) for left, right in zip(knots, knots[1:])):
+        raise RuntimeError("graph_invalid: NURBS knots must be strictly increasing")
+    points = TColgp_Array1OfPnt(1, len(poles)); values = TColStd_Array1OfReal(1, len(poles))
+    for index, point in enumerate(poles, 1):
+        points.SetValue(index, gp_Pnt(float(point["xMm"]), 0, float(point["zMm"])))
+        values.SetValue(index, float(weights[index - 1]))
+    knot_values = TColStd_Array1OfReal(1, len(knots)); knot_multiplicities = TColStd_Array1OfInteger(1, len(knots))
+    for index, (knot, multiplicity) in enumerate(zip(knots, multiplicities), 1):
+        knot_values.SetValue(index, float(knot)); knot_multiplicities.SetValue(index, int(multiplicity))
+    return Geom_BSplineCurve(points, values, knot_values, knot_multiplicities, degree, bool(segment.get("periodic", False)))
+
+
+def rational_bspline_edge(segment):
+    return BRepBuilderAPI_MakeEdge(rational_bspline_curve(segment)).Edge()
+
+
+def profile_face_from_curve(curve, first, last, axis_start, axis_end):
+    """Close a radial OCCT curve with explicit, planar axial datum edges."""
+    return profile_face_from_edges([BRepBuilderAPI_MakeEdge(curve).Edge()], first, last, axis_start, axis_end)
+
+
+def profile_face_from_edges(radial_edges, first, last, axis_start, axis_end):
+    """Close one or more continuous radial edges with planar datum edges."""
+    first_point = gp_Pnt(float(first[0]), 0, float(first[1]))
+    last_point = gp_Pnt(float(last[0]), 0, float(last[1]))
+    start_point = gp_Pnt(float(axis_start[0]), 0, float(axis_start[1]))
+    end_point = gp_Pnt(float(axis_end[0]), 0, float(axis_end[1]))
+    edges = [
+        BRepBuilderAPI_MakeEdge(start_point, first_point).Edge(),
+        *radial_edges,
+        BRepBuilderAPI_MakeEdge(last_point, end_point).Edge(),
+        BRepBuilderAPI_MakeEdge(end_point, start_point).Edge(),
+    ]
+    wire_builder = BRepBuilderAPI_MakeWire()
+    for edge in edges: wire_builder.Add(edge)
+    if not wire_builder.IsDone():
+        raise RuntimeError("graph_invalid: declared NURBS profile edges cannot form a closed wire")
+    return cq.Face.makeFromWires(cq.Wire(wire_builder.Wire()))
+
+
+def bezier_edge(segment):
+    points = segment.get("points") or []
+    if len(points) != 4:
+        raise RuntimeError("graph_invalid: Bézier profile needs four control points")
+    values = TColgp_Array1OfPnt(1, 4)
+    for index, point in enumerate(points, 1): values.SetValue(index, gp_Pnt(float(point["xMm"]), 0, float(point["zMm"])))
+    return BRepBuilderAPI_MakeEdge(Geom_BezierCurve(values)).Edge()
+
+
+def bezier_profile_face(segments, axis_start, axis_end):
+    first = segments[0].get("points", [])[0]
+    last = segments[-1].get("points", [])[-1]
+    if not first or not last or abs(float(first["xMm"])) <= 1e-8 or abs(float(last["xMm"])) <= 1e-8:
+        raise RuntimeError("graph_invalid: Bézier radial profile must exclude the rotation axis")
+    previous = None
+    for segment in segments:
+        points = segment.get("points") or []
+        if len(points) != 4: raise RuntimeError("graph_invalid: Bézier profile needs four control points")
+        if previous and math.dist((float(previous["xMm"]), float(previous["zMm"])), (float(points[0]["xMm"]), float(points[0]["zMm"]))) > 1e-5:
+            raise RuntimeError("graph_invalid: Bézier profile segments are not connected")
+        previous = points[-1]
+    return profile_face_from_edges([bezier_edge(segment) for segment in segments], (first["xMm"], first["zMm"]), (last["xMm"], last["zMm"]), axis_start, axis_end)
+
+
+def rational_profile_face(segment, axis_start, axis_end):
+    """Close one declared radial NURBS with only the approved axial datum edges."""
+    poles = segment.get("poles") or segment.get("points") or []
+    if len(poles) < 2:
+        raise RuntimeError("graph_invalid: NURBS profile requires two radial poles")
+    if any(abs(float(point["xMm"])) <= 1e-8 for point in poles):
+        raise RuntimeError("graph_invalid: NURBS radial profile must exclude the rotation axis")
+    first, last = poles[0], poles[-1]
+    return profile_face_from_curve(rational_bspline_curve(segment), (first["xMm"], first["zMm"]), (last["xMm"], last["zMm"]), axis_start, axis_end)
+
+
+def interpolated_offset_curve(points):
+    """Fit the manufactured inner-wall offset through measured offset samples.
+
+    The planar offset of a rational B-spline is generally not itself the same
+    rational B-spline.  OCCT therefore creates the derived inner wall by
+    interpolation through the normal-offset samples.  Its tolerance is owned
+    by the graph shell validation, rather than pretending the source control
+    net can be translated unchanged.
+    """
+    if len(points) < 4:
+        raise RuntimeError("graph_invalid: NURBS shell offset needs at least four valid samples")
+    values = TColgp_HArray1OfPnt(1, len(points))
+    for index, (x_mm, z_mm) in enumerate(points, 1): values.SetValue(index, gp_Pnt(x_mm, 0, z_mm))
+    fitter = GeomAPI_Interpolate(values, False, 1e-5)
+    fitter.Perform()
+    if not fitter.IsDone(): raise RuntimeError("graph_invalid: OCCT could not interpolate NURBS shell offset")
+    return fitter.Curve()
+
+
+def inner_revolve_from_nurbs(segment, thickness):
+    """Derive an open cavity from the same rational outer curve.
+
+    Sampling is bounded and happens inside OCCT's geometric domain.  It is
+    used only when all normal offsets stay strictly inside the outer envelope;
+    otherwise the declared shell is rejected for review rather than falling
+    back to a cylinder or a mismatched polyline cutter.
+    """
+    curve = rational_bspline_curve(segment)
+    first_parameter, last_parameter = curve.FirstParameter(), curve.LastParameter()
+    sample_count = 48
+    samples = []
+    outer_min_z = float("inf")
+    for index in range(sample_count + 1):
+        parameter = first_parameter + (last_parameter - first_parameter) * index / sample_count
+        point, tangent = gp_Pnt(), gp_Vec(); curve.D1(parameter, point, tangent)
+        length = math.hypot(tangent.X(), tangent.Z())
+        if length <= 1e-9: continue
+        # For a bottom→mouth radial contour, (dz, -dx) points outward. Reverse
+        # it when an input curve is supplied in the opposite direction.
+        normal_x, normal_z = tangent.Z() / length, -tangent.X() / length
+        if normal_x < 0: normal_x, normal_z = -normal_x, -normal_z
+        outer_min_z = min(outer_min_z, point.Z())
+        samples.append((point.X() - thickness * normal_x, point.Z() - thickness * normal_z))
+    if len(samples) < 4 or not math.isfinite(outer_min_z):
+        raise RuntimeError("graph_invalid: NURBS shell offset has insufficient tangent samples")
+    # Preserve a verified bottom thickness.  A normal on the flat heel often
+    # has zero Z component, so beginning exactly at the first offset point
+    # would open the cavity through the base.
+    inner = [(x, z) for x, z in samples if z >= outer_min_z + thickness - 1e-6]
+    if len(inner) < 4 or min(x for x, _ in inner) <= 1e-5:
+        raise RuntimeError("graph_invalid: NURBS shell offset exceeds the approved outer profile")
+    return cq.Workplane("XZ").newObject([
+        profile_face_from_curve(interpolated_offset_curve(inner), inner[0], inner[-1], (0.0, inner[0][1]), (0.0, inner[-1][1]))
+    ]).revolve(360, (0, 0, 0), (0, 1, 0))
 
 
 def revolve(params):
@@ -68,6 +230,29 @@ def revolve(params):
     # a curve that was never approved. CadQuery creates the OCCT edge, so the
     # subsequent STEP and GLB tessellation still have one B-Rep source.
     declared_curve = next((segment for segment in segments if segment.get("kind") in ("nurbs", "bezier")), None)
+    if declared_curve and declared_curve.get("kind") == "nurbs":
+        # A rational NURBS is an approved engineering curve.  Build its OCCT
+        # edge from the exact control net, rather than asking CadQuery to fit a
+        # second unrelated interpolation.  The two closing edges are planar
+        # assembly datums retained from the graph profile.
+        axis_start = next((point for point in points if abs(point[0]) <= 1e-8), points[0])
+        axis_end = next((point for point in reversed(points) if abs(point[0]) <= 1e-8), points[-1])
+        try:
+            face = rational_profile_face(declared_curve, axis_start, axis_end)
+            return cq.Workplane("XZ").newObject([face]).revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
+        except Exception as error:
+            if isinstance(error, RuntimeError): raise
+            raise RuntimeError("graph_invalid: declared NURBS profile cannot form an OCCT face") from error
+    bezier_segments = [segment for segment in segments if segment.get("kind") == "bezier"]
+    if bezier_segments and len(bezier_segments) == len(segments):
+        axis_start = next((point for point in points if abs(point[0]) <= 1e-8), points[0])
+        axis_end = next((point for point in reversed(points) if abs(point[0]) <= 1e-8), points[-1])
+        try:
+            face = bezier_profile_face(bezier_segments, axis_start, axis_end)
+            return cq.Workplane("XZ").newObject([face]).revolve(float(params.get("angleDeg") or 360), (0, 0, 0), (0, 1, 0))
+        except Exception as error:
+            if isinstance(error, RuntimeError): raise
+            raise RuntimeError("graph_invalid: declared Bézier profile cannot form an OCCT face") from error
     if declared_curve and len(declared) >= 2:
         try:
             # The NURBS declaration describes the *visible radial contour*.
@@ -157,6 +342,10 @@ def inner_revolve_from_profile(params, thickness):
     deliberately opens above the rim; it never substitutes an arbitrary
     cylinder for the cavity.
     """
+    segments = params.get("curveSegments") or []
+    declared_nurbs = next((segment for segment in segments if segment.get("kind") == "nurbs"), None)
+    if declared_nurbs:
+        return inner_revolve_from_nurbs(declared_nurbs, thickness)
     raw = [(float(point["xMm"]), float(point["zMm"])) for point in (params.get("profile") or [])]
     visible = [(x, z) for x, z in raw if x > 1e-6]
     if len(visible) < 2:

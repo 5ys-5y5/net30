@@ -10,7 +10,7 @@ import {
   applyQuestionValue,
   responseJson,
 } from "./modeling-spec.mjs";
-import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
+import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphHash, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -110,6 +110,10 @@ assert.ok(graphSketchPlan(printCanonical.product, printCanonical.graph).componen
 const preCurveFieldResponse = fixtureGraphOutput({ product: { name: "기존 응답" }, prompt: "compatibility", requestedComponents: ["유리병"], imageIds: [] });
 delete preCurveFieldResponse.components[0].features[0].parameters.curveSegments;
 assert.doesNotThrow(() => canonicalizeGraph(preCurveFieldResponse, ["유리병"], []), "stored responses from before curveSegments must remain refinable");
+const legacyGraph = structuredClone(printCanonical.graph);
+for (const node of legacyGraph.nodes) delete node.parameters.curveSegments;
+assert.doesNotThrow(() => validateGraph(legacyGraph), "legacy stored graphs without the additive curve field remain refinable");
+assert.match(graphHash(legacyGraph), /^[a-f0-9]{64}$/, "legacy graph compatibility must produce a deterministic working hash");
 const nodeHostedPrint = fixtureGraphOutput({ product: { name: "노드 host 인쇄" }, prompt: "test", requestedComponents: ["유리병", "전면 인쇄"], imageIds: ["image-1"] });
 nodeHostedPrint.components[1].hostComponentKey = null;
 const nodeHostedCanonical = canonicalizeGraph(nodeHostedPrint, ["유리병", "전면 인쇄"], ["image-1"]);

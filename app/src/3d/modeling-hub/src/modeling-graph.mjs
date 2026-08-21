@@ -115,7 +115,18 @@ export const modelingPatchSchema = z.object({
 }).strict();
 
 export function valueHash(value) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
-export function graphHash(graph) { return valueHash(modelingGraphSchema.parse(graph)); }
+
+/** Additive migration for revisions saved before declared curve support.
+ * This only writes the explicit `null` meaning that earlier snapshots did not
+ * contain. It must not invent a new curve while a user is refining an old
+ * B-Rep asset. */
+export function normaliseGraphCompatibility(graph) {
+  const next = structuredClone(graph);
+  for (const node of next?.nodes ?? []) if (node?.parameters && node.parameters.curveSegments === undefined) node.parameters.curveSegments = null;
+  return next;
+}
+
+export function graphHash(graph) { return valueHash(modelingGraphSchema.parse(normaliseGraphCompatibility(graph))); }
 export function modelingGraphJsonSchema() { return z.toJSONSchema(modelingGraphOutputSchema, { target: "draft-7" }); }
 export function modelingComponentRepairJsonSchema() { return z.toJSONSchema(modelingComponentRepairOutputSchema, { target: "draft-7" }); }
 export function modelingPatchJsonSchema() { return z.toJSONSchema(modelingPatchSchema, { target: "draft-7" }); }
@@ -469,7 +480,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
 }
 
 export function validateGraph(graph) {
-  const parsed = modelingGraphSchema.parse(graph); const components = new Set(parsed.components.map((item) => item.id)); const nodes = new Map(parsed.nodes.map((item) => [item.id, item]));
+  const parsed = modelingGraphSchema.parse(normaliseGraphCompatibility(graph)); const components = new Set(parsed.components.map((item) => item.id)); const nodes = new Map(parsed.nodes.map((item) => [item.id, item]));
   for (const component of parsed.components) {
     if (component.hostComponentId === component.id) throw new Error(`graph_invalid: ${component.id}은 자기 자신을 host로 사용할 수 없습니다.`);
     if (component.hostComponentId && !components.has(component.hostComponentId)) throw new Error(`graph_invalid: ${component.id}의 host component가 없습니다.`);
