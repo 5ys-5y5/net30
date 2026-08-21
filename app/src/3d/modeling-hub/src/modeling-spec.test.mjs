@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   analyseDraft,
   compileApprovedDraftToModelingSpec,
+  draftAnalysisJsonSchema,
   draftPayloadSchema,
   draftReady,
   normaliseComponentInput,
@@ -13,6 +14,10 @@ process.env.NET30_OPENAI_MODELS = "fixture";
 
 assert.deepEqual(normaliseComponentInput(" 유리병, 뚜껑 , 밀봉 라이너 "), ["유리병", "뚜껑", "밀봉 라이너"]);
 assert.throws(() => normaliseComponentInput("뚜껑, 뚜껑"), /중복/);
+const analysisSchema = draftAnalysisJsonSchema();
+const componentOutput = analysisSchema.properties.components.items;
+assert.equal("requestedName" in componentOutput.properties, false);
+assert.deepEqual([...componentOutput.required].sort(), Object.keys(componentOutput.properties).sort());
 
 const input = draftPayloadSchema.parse({
   version: "net30.modeling-draft.v4",
@@ -23,6 +28,8 @@ const input = draftPayloadSchema.parse({
   imageIds: [],
   skuId: "all-in-one-pilot",
 });
+assert.equal(draftPayloadSchema.parse({ version: "net30.modeling-draft.v7", operation: "create-parent", model: "fixture", product: { source: "new", name: "새 부모" }, componentInput: "유리병", prompt: "유리병" }).operation, "create-parent");
+assert.throws(() => draftPayloadSchema.parse({ version: "net30.modeling-draft.v7", operation: "create-parent", model: "fixture", parentModelId: "parent", product: { source: "new", name: "새 부모" }, componentInput: "유리병", prompt: "유리병" }), /새 부모 생성/);
 const analysis = await analyseDraft(input, []);
 assert.deepEqual(analysis.components.map((component) => component.displayName), ["뚜껑"]);
 const draft = {

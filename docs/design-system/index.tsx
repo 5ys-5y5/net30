@@ -11,6 +11,7 @@ import type {
   IframeHTMLAttributes,
   ReactNode,
   Ref,
+  SVGAttributes,
 } from "react";
 import { CLASS, ELEMENT, joinClasses } from "./tokens";
 import type {
@@ -245,6 +246,12 @@ export function ScopedApprovalBar({ children, ...props }: HTMLAttributes<HTMLDiv
 export function ProcessProgressPanel({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={CLASS.processProgressPanel} aria-live="polite" {...props} />; }
 export function ProgressStageList({ children, ...props }: HTMLAttributes<HTMLOListElement>) { return <ol className={CLASS.progressStageList} {...props} />; }
 export function ProgressStage({ state, children, ...props }: HTMLAttributes<HTMLLIElement> & { state: "queued" | "running" | "complete" | "failed" }) { return <li className={CLASS.progressStage} data-state={state} {...props}>{children}</li>; }
+/** Safe building blocks for a server-validated vector sketch and user markup. */
+export function SketchReviewPanel({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) { return <Surface className={joinClasses(CLASS.sketchReviewPanel, className)} {...props} />; }
+export function SketchCanvas({ className = "", ...props }: SVGAttributes<SVGSVGElement>) { return <svg className={joinClasses(CLASS.sketchCanvas, className)} {...props} />; }
+export function SketchAnnotationLayer({ children, ...props }: SVGAttributes<SVGGElement>) { return <g className={CLASS.sketchAnnotationLayer} {...props}>{children}</g>; }
+export function PenToolbar({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.penToolbar} role="toolbar" aria-label="스케치 주석 도구" {...props}>{children}</div>; }
+export function IterationNavigator({ children, ...props }: HTMLAttributes<HTMLDivElement>) { return <div className={CLASS.iterationNavigator} aria-label="스케치 검토 이력" {...props}>{children}</div>; }
 
 export function SiteHeader({
   label,
@@ -307,14 +314,17 @@ export function SectionHeading({
   label,
   title,
   copy,
+  aside,
 }: {
   label: string;
   title: readonly string[];
   copy: readonly string[];
+  aside?: ReactNode;
 }) {
   return <header className={CLASS.sectionHead}>
     <div><Label>{label}</Label><h2><Lines value={title} /></h2></div>
     <p><Lines value={copy} /></p>
+    {aside}
   </header>;
 }
 
