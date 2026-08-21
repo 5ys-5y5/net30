@@ -19,6 +19,10 @@ const canonical = canonicalizeGraph(output, ["유리병"], []);
 const v3 = adaptGraphToV3(canonical.graph, evidence);
 assert.equal(v3.version, "net30.modeling-graph.v3"); assert.equal(v3.components[0].localCoordinateSystem, "component-local");
 
+const invalidSweep = fixtureGraphOutput({ product: { name: "invalid sweep proof" }, requestedComponents: ["튜브"], imageIds: [] });
+invalidSweep.components[0].features[0] = { ...invalidSweep.components[0].features[0], operation: "sweep", parameters: { ...invalidSweep.components[0].features[0].parameters, profile: null, path: null, radiusMm: null } };
+assert.throws(() => canonicalizeGraph(invalidSweep, ["튜브"], []), /graph_repair_required: component-1\.sweep\.pathAndSection/, "a sweep without an approved centreline and section must be repaired before any CAD process starts");
+
 const unsafeArtworkGraph = { ...canonical.graph, nodes: canonical.graph.nodes.map((node, index) => index === 0 ? { ...node, operation: "surface_artwork", parameters: { ...node.parameters, artworkImageId: "material" } } : node) };
 const scoped = enforceEvidenceScopes(unsafeArtworkGraph, evidence);
 assert.equal(scoped.graph.nodes[0].parameters.artworkImageId, "primary");

@@ -105,6 +105,28 @@ try {
   const loftReport = JSON.parse(await fs.readFile(`${loftStem}.validation.json`, "utf8"));
   assert.equal(loftReport.valid, true); assert.equal(loftReport.closed, true); assert.equal(loftReport.solidCount, 1, "a generic multi-profile loft must become one canonical B-Rep solid");
   assert.ok(Math.abs(loftReport.boundsMm.z - 30) <= .01, "the loft's component-local axial datum must survive persisted B-Rep export");
+  const sweepOutput = fixtureGraphOutput({ product: { name: "swept handle proof" }, prompt: "curved industrial tube", requestedComponents: ["손잡이"] , imageIds: [] });
+  const sweepBase = sweepOutput.components[0].features[0];
+  sweepBase.key = "handle-sweep"; sweepBase.operation = "sweep"; sweepBase.inputKeys = [];
+  sweepBase.parameters = {
+    ...sweepBase.parameters,
+    primitive: null, curveSegments: null, profiles: null,
+    profile: null,
+    path: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 0, yMm: 0, zMm: 30 }, { xMm: 24, yMm: 12, zMm: 48 }],
+    dimensionsMm: null, radiusMm: 3.5, innerRadiusMm: null, heightMm: null, thicknessMm: null, count: null, spacingMm: null, depthMm: null,
+  };
+  const sweepCanonical = canonicalizeGraph(sweepOutput, ["손잡이"], []); const sweepComponent = sweepCanonical.graph.components[0]; const sweepStem = path.join(temporary, sweepComponent.id); const sweepRequest = path.join(temporary, "sweep.request.json");
+  await fs.writeFile(sweepRequest, JSON.stringify({ graphComponent: sweepComponent, graphNodes: sweepCanonical.graph.nodes, paths: { step: `${sweepStem}.step`, brep: `${sweepStem}.brep`, stl: `${sweepStem}.stl`, report: `${sweepStem}.validation.json` }, tessellation: { chordMm: .05, angularDeg: 7 } }));
+  const sweepRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), sweepRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(sweepRun.status, 0, `${sweepRun.stdout}\n${sweepRun.stderr}`);
+  const sweepReport = JSON.parse(await fs.readFile(`${sweepStem}.validation.json`, "utf8"));
+  assert.equal(sweepReport.valid, true); assert.equal(sweepReport.closed, true); assert.equal(sweepReport.solidCount, 1, "a 3-D swept tube must become one canonical B-Rep solid");
+  assert.equal(sweepReport.stepRoundTrip?.withinTolerance, true, "a swept B-Rep must retain its path and section through STEP export/import");
+  // Frenet orientation rotates the circular section through the final elbow,
+  // so the envelope is not the raw endpoint plus two radii on each axis. The
+  // persisted B-Rep must nevertheless span every path axis; a planar
+  // placeholder extrusion would have no comparable Y extent.
+  assert.ok(sweepReport.boundsMm.x > 20 && sweepReport.boundsMm.y > 15 && sweepReport.boundsMm.z > 47, "the swept B-Rep must retain all three path axes rather than flattening to a placeholder extrusion");
   const housingOutput = fixtureGraphOutput({ product: { name: "extruded housing proof" }, prompt: "rectangular housing", requestedComponents: ["하우징"], imageIds: [] });
   const housingBase = housingOutput.components[0].features[0];
   housingBase.key = "housing-extrude"; housingBase.operation = "extrude"; housingBase.inputKeys = [];

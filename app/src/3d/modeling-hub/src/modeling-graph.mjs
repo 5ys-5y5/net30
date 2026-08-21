@@ -19,13 +19,18 @@ export const FEATURE_OPERATIONS = Object.freeze([
   "hole", "groove", "rib", "thread", "pattern", "fillet", "chamfer", "transform", "mate",
   "uv_projection", "surface_decal", "surface_artwork", "volume", "instance_distribution",
 ]);
-export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "loft", "primitive", "shell", "boolean", "rib", "pattern", "transform", "mate", "surface_decal", "surface_artwork", "volume", "instance_distribution"]);
+export const COMPILED_OPERATIONS = Object.freeze(["revolve", "extrude", "loft", "sweep", "primitive", "shell", "boolean", "rib", "pattern", "transform", "mate", "surface_decal", "surface_artwork", "volume", "instance_distribution"]);
 const NORMALIZED_MODIFIER_OPERATIONS = new Set();
 export const ANALYSIS_OPERATIONS = Object.freeze(["profile", ...COMPILED_OPERATIONS]);
 
 const featureParameters = z.object({
   primitive: z.enum(["box", "cylinder", "cone", "sphere", "torus"]).nullable(),
   profile: z.array(profilePoint).max(128).nullable(),
+  // `profile` is a component-local cross section for sweep; `path` is its
+  // ordered, three-dimensional centreline. Keeping both as explicit values
+  // prevents an image model from smuggling an unreviewed code expression or
+  // an ambiguous implicit path into the CAD compiler.
+  path: z.array(profilePoint).min(2).max(128).nullable(),
   curveSegments: z.array(curveSegment).max(64).nullable(),
   profiles: z.array(z.array(profilePoint).max(128)).max(16).nullable(),
   dimensionsMm: vector3.nullable(),
@@ -67,7 +72,7 @@ const featureKey = z.array(z.string().min(1).max(100));
 // Zod's ordinary union emits the former while retaining the same exhaustive
 // operation/input-cardinality validation when the response is parsed.
 const featureOutput = z.union([
-  ...["profile", "primitive", "revolve", "extrude", "loft", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
+  ...["profile", "primitive", "revolve", "extrude", "loft", "sweep", "surface_decal", "surface_artwork", "volume", "instance_distribution"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.max(0) }).strict()),
   ...["shell", "rib", "transform", "mate"].map((operation) => z.object({ ...featureOutputBase, operation: z.literal(operation), inputKeys: featureKey.min(1).max(1) }).strict()),
   z.object({ ...featureOutputBase, operation: z.literal("pattern"), inputKeys: featureKey.min(2).max(2) }).strict(),
   z.object({ ...featureOutputBase, operation: z.literal("boolean"), inputKeys: featureKey.min(2).max(32) }).strict(),
@@ -122,7 +127,10 @@ export function valueHash(value) { return createHash("sha256").update(JSON.strin
  * B-Rep asset. */
 export function normaliseGraphCompatibility(graph) {
   const next = structuredClone(graph);
-  for (const node of next?.nodes ?? []) if (node?.parameters && node.parameters.curveSegments === undefined) node.parameters.curveSegments = null;
+  for (const node of next?.nodes ?? []) if (node?.parameters) {
+    if (node.parameters.curveSegments === undefined) node.parameters.curveSegments = null;
+    if (node.parameters.path === undefined) node.parameters.path = null;
+  }
   return next;
 }
 
@@ -148,7 +156,7 @@ export function fixtureGraphOutput(payload) {
       const representation = print ? "visual_surface" : content ? "instance_set" : "brep_solid";
       const op = print ? "surface_decal" : content ? "instance_distribution" : ring ? "extrude" : "revolve";
       const materialValue = print ? { name: "이미지에서 추출한 인쇄 잉크", baseColor: "#f4f4f0", roughness: .35, metallic: 0, transmission: 0, ior: 1.45, opacity: 1 } : closure || ring ? { name: "Polypropylene", baseColor: "#083da9", roughness: .34, metallic: 0, transmission: 0, ior: 1.49, opacity: 1 } : { name: "Borosilicate glass", baseColor: "#d7e8f6", roughness: .08, metallic: 0, transmission: .82, ior: 1.52, opacity: .32 };
-      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : print ? { x: 40, y: 28, z: .08 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: print ? { ...defaultTransform(), translationMm: { x: 0, y: 0, z: 50 } } : defaultTransform() };
+      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, path: null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : print ? { x: 40, y: 28, z: .08 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: print ? { ...defaultTransform(), translationMm: { x: 0, y: 0, z: 50 } } : defaultTransform() };
       return { componentKey: key, representation, summary: `${name}의 이미지 기반 형상 그래프`, hostComponentKey: print ? bodyKey : null, material: materialValue, transform: defaultTransform(), features: [{ key: `${key}-root`, operation: op, inputKeys: [], parameters, rationale: `${name}의 시각적 실루엣과 재질을 표현합니다.`, confidence: .72 }] };
     }),
     interfaces: componentKeys.length > 1 ? [{ key: "closure-main", componentKeys: componentKeys.slice(0, Math.min(3, componentKeys.length)), kind: "mate", clearanceMm: .25, rationale: "공통 조립 축과 결합 간극" }] : [],
@@ -344,7 +352,14 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     };
     for (const feature of features) {
       if (feature.inputKeys.some((key) => !currentFeatures.has(key))) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.inputKeys`);
-      if (["profile", "primitive", "revolve", "extrude"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
+      if (["profile", "primitive", "revolve", "extrude", "loft", "sweep"].includes(feature.operation) && feature.inputKeys.length) throw new Error(`graph_repair_required: ${component.componentKey}.${feature.operation}.topology`);
+      if (feature.operation === "sweep") {
+        const params = feature.parameters;
+        const hasSection = (params.profile?.length ?? 0) >= 3 || Number(params.radiusMm) > 0;
+        if (!params.path || params.path.length < 2 || !hasSection) throw new Error(`graph_repair_required: ${component.componentKey}.sweep.pathAndSection`);
+        if ((params.profile ?? []).some((point) => Math.abs(Number(point.zMm)) > 1e-6)) throw new Error(`graph_repair_required: ${component.componentKey}.sweep.localSectionPlane`);
+        if (params.path.some((point, index) => index > 0 && Math.hypot(point.xMm - params.path[index - 1].xMm, point.yMm - params.path[index - 1].yMm, point.zMm - params.path[index - 1].zMm) <= 1e-8)) throw new Error(`graph_repair_required: ${component.componentKey}.sweep.zeroLengthPathSegment`);
+      }
       if (feature.operation === "rib") {
         if (feature.inputKeys.length !== 1) throw new Error(`graph_repair_required: ${component.componentKey}.rib.inputKeys`);
         const followingPattern = features.find((candidate) => candidate.operation === "pattern" && candidate.inputKeys.at(-1) === feature.key);

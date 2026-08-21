@@ -298,6 +298,54 @@ def loft(params):
     return workplane.loft(combine=True)
 
 
+def sweep(params):
+    """Sweep one approved component-local section along an explicit 3-D path.
+
+    The graph carries a closed XY section (``profile``) or a circle radius,
+    and an ordered component-local path.  OCCT, not a display mesh, owns the
+    resulting solid.  A Frenet frame makes non-planar industrial tubes and
+    handles valid without treating the path as a sequence of approximate
+    cylinders.  The section is deliberately translated to the first path
+    point; children stay local and the XDE assembly remains the only place
+    where component placement can occur.
+    """
+    raw_path = params.get("path") or []
+    if len(raw_path) < 2:
+        raise RuntimeError("graph_invalid: sweep requires an ordered path with at least two points")
+    points = [(float(point["xMm"]), float(point["yMm"]), float(point["zMm"])) for point in raw_path]
+    if any(math.dist(left, right) <= 1e-8 for left, right in zip(points, points[1:])):
+        raise RuntimeError("graph_invalid: sweep path has a zero-length segment")
+    path_builder = BRepBuilderAPI_MakeWire()
+    for start, end in zip(points, points[1:]):
+        path_builder.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(*start), gp_Pnt(*end)).Edge())
+    if not path_builder.IsDone():
+        raise RuntimeError("graph_invalid: sweep path cannot form an OCCT wire")
+    path = cq.Wire(path_builder.Wire())
+
+    section = params.get("profile") or []
+    radius = params.get("radiusMm")
+    start = points[0]
+    if section:
+        if len(section) < 3:
+            raise RuntimeError("graph_invalid: sweep profile needs at least three ordered points")
+        if any(abs(float(point["zMm"])) > 1e-6 for point in section):
+            raise RuntimeError("graph_invalid: sweep profile must use its local XY section plane (zMm=0)")
+        contour = [(float(point["xMm"]), float(point["yMm"])) for point in section]
+        if math.dist(contour[0], contour[-1]) <= 1e-8:
+            contour.pop()
+        if len(contour) < 3:
+            raise RuntimeError("graph_invalid: sweep profile collapses after closing-point normalization")
+        profile = cq.Workplane("XY").transformed(offset=start).moveTo(*contour[0]).polyline(contour[1:]).close()
+    elif radius is not None and float(radius) > 0:
+        profile = cq.Workplane("XY").transformed(offset=start).circle(float(radius))
+    else:
+        raise RuntimeError("graph_invalid: sweep requires a closed profile or positive radiusMm")
+    try:
+        return profile.sweep(path, makeSolid=True, isFrenet=True, transition="transformed", combine=True, clean=True)
+    except Exception as error:
+        raise RuntimeError("graph_invalid: sweep section and path cannot form a closed OCCT solid") from error
+
+
 def radial_pattern(shape, count):
     if count is None or int(count) < 1:
         raise RuntimeError("graph_invalid: radial pattern requires a positive count")
@@ -549,6 +597,7 @@ def compile_graph(graph_component, graph_nodes):
         elif op == "loft": shape = loft(params)
         elif op == "primitive": shape = primitive(params)
         elif op == "extrude": shape = extrude(params)
+        elif op == "sweep": shape = sweep(params)
         elif op == "boolean":
             if len(inputs) < 2: raise RuntimeError(f"graph_invalid: boolean node {node['id']} requires two inputs")
             mode = params.get("operation")
