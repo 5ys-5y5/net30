@@ -67,6 +67,12 @@ const featureParameters = z.object({
   count: z.number().int().min(0).max(1000).nullable(),
   spacingMm: z.number().min(0).max(2000).nullable(),
   depthMm: z.number().min(0).max(1000).nullable(),
+  // A shell generated from an outer-minus-inner revolve pair needs an
+  // explicit datum-facing opening.  It is derived from the measured pair by
+  // the server, never from a component name; without it a closed 2-D profile
+  // can be mistaken for a roofed closure simply because its wire returns to
+  // the rotation axis.
+  cavityOpenAt: z.enum(["top", "bottom"]).nullable(),
   offsetMm: z.number().min(-100).max(100).nullable(),
   operation: z.enum(["union", "cut", "intersect"]).nullable(),
   axis: z.enum(["x", "y", "z"]).nullable(),
@@ -155,6 +161,7 @@ export function normaliseGraphCompatibility(graph) {
   for (const node of next?.nodes ?? []) if (node?.parameters) {
     if (node.parameters.curveSegments === undefined) node.parameters.curveSegments = null;
     if (node.parameters.path === undefined) node.parameters.path = null;
+    if (node.parameters.cavityOpenAt === undefined) node.parameters.cavityOpenAt = null;
   }
   // A short-lived v2 analysis path persisted some ordinary B-Rep components
   // with their own ID as `hostComponentId`. A solid cannot be mounted on its
@@ -192,7 +199,7 @@ export function fixtureGraphOutput(payload) {
       const representation = print ? "visual_surface" : content ? "instance_set" : "brep_solid";
       const op = print ? "surface_decal" : content ? "instance_distribution" : ring ? "extrude" : "revolve";
       const materialValue = print ? { name: "이미지에서 추출한 인쇄 잉크", baseColor: "#f4f4f0", roughness: .35, metallic: 0, transmission: 0, ior: 1.45, opacity: 1 } : closure || ring ? { name: "Polypropylene", baseColor: "#083da9", roughness: .34, metallic: 0, transmission: 0, ior: 1.49, opacity: 1 } : { name: "Borosilicate glass", baseColor: "#d7e8f6", roughness: .08, metallic: 0, transmission: .82, ior: 1.52, opacity: .32 };
-      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, path: null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : print ? { x: 40, y: 28, z: .08 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: print ? { ...defaultTransform(), translationMm: { x: 0, y: 0, z: 50 } } : defaultTransform() };
+      const parameters = { primitive: content ? "sphere" : null, profile: op === "revolve" ? profileFor(closure ? "closure" : "body", closure ? 54 : 56, closure ? 25 : 100) : null, path: null, curveSegments: null, profiles: null, dimensionsMm: ring ? { x: 42, y: 42, z: 7 } : print ? { x: 40, y: 28, z: .08 } : content ? { x: 8, y: 8, z: 16 } : null, radiusMm: ring ? 21 : null, innerRadiusMm: ring ? 18 : null, heightMm: ring ? 7 : null, thicknessMm: print ? .08 : closure ? 2 : 2.2, angleDeg: op === "revolve" ? 360 : null, count: closure ? 32 : content ? 30 : null, spacingMm: null, depthMm: closure ? 1.2 : null, cavityOpenAt: null, offsetMm: print ? .15 : null, operation: null, axis: "z", projection: print ? "cylindrical" : null, hostComponentKey: print ? bodyKey : null, artworkImageId: print ? (payload.imageIds?.[0] ?? null) : null, artworkCrop: print ? { x: .08, y: .42, width: .84, height: .46 } : null, wrapDegrees: print ? 118 : null, quantity: content ? 30 : null, distribution: content ? "contained_random" : null, interfaceKey: closure || ring ? "closure-main" : null, transform: print ? { ...defaultTransform(), translationMm: { x: 0, y: 0, z: 50 } } : defaultTransform() };
       return { componentKey: key, representation, summary: `${name}의 이미지 기반 형상 그래프`, hostComponentKey: print ? bodyKey : null, material: materialValue, transform: defaultTransform(), features: [{ key: `${key}-root`, operation: op, inputKeys: [], parameters, rationale: `${name}의 시각적 실루엣과 재질을 표현합니다.`, confidence: .72 }] };
     }),
     interfaces: componentKeys.length > 1 ? [{ key: "closure-main", componentKeys: componentKeys.slice(0, Math.min(3, componentKeys.length)), kind: "mate", clearanceMm: .25, rationale: "공통 조립 축과 결합 간극" }] : [],
@@ -207,6 +214,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
   const compatibleOutput = structuredClone(output);
   for (const component of compatibleOutput?.components ?? []) for (const feature of component?.features ?? []) {
     if (feature?.parameters && feature.parameters.curveSegments === undefined) feature.parameters.curveSegments = null;
+    if (feature?.parameters && feature.parameters.cavityOpenAt === undefined) feature.parameters.cavityOpenAt = null;
   }
   const parsed = modelingGraphOutputSchema.parse(compatibleOutput);
   if (parsed.components.length !== requestedNames.length) throw new Error("analysis_incomplete: 입력한 컴포넌트 수와 모델링 그래프가 일치하지 않습니다.");
@@ -576,6 +584,11 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
   const nodeKeyToId = new Map(); for (const component of placedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
   const components = placedComponents.map((item, index) => { const referenced = new Set(item.features.flatMap((feature) => feature.inputKeys)); const roots = item.features.filter((feature) => !referenced.has(feature.key) && !["surface_decal", "surface_artwork", "volume", "instance_distribution"].includes(feature.operation)); return { id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: (roots.length ? roots : item.features).map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }; });
   const nodes = placedComponents.flatMap((component) => component.features.map((feature) => ({ id: nodeKeyToId.get(feature.key), componentId: keyToId.get(component.componentKey), operation: feature.operation, inputNodeIds: feature.inputKeys.map((key) => nodeKeyToId.get(key)).filter(Boolean), parameters: { ...feature.parameters, hostComponentKey: feature.parameters.hostComponentKey ? keyToId.get(feature.parameters.hostComponentKey) ?? null : null }, rationale: feature.rationale, confidence: feature.confidence })));
+  // Historical shell nodes predate the explicit opening datum. A shell means
+  // an open vessel by definition, so preserve the only safe legacy intent as
+  // a top opening. New lower-opening closures must declare `bottom`; no
+  // component-name heuristic is involved.
+  for (const node of nodes) if (node.operation === "shell" && node.parameters.cavityOpenAt === null) node.parameters.cavityOpenAt = "top";
   const graph = modelingGraphSchema.parse({ version: "net30.modeling-graph.v2", units: "mm", axis: "z-up", components, nodes, interfaces: parsed.interfaces.map((item) => ({ id: `interface-${randomUUID().slice(0, 10)}`, componentIds: item.componentKeys.map((key) => keyToId.get(key)).filter(Boolean), kind: item.kind, clearanceMm: item.clearanceMm, rationale: item.rationale })), evidence: [{ id: `evidence-${randomUUID().slice(0, 10)}`, kind: imageIds.length ? "image" : "user", label: imageIds.length ? "사용자 모델링 입력 이미지" : "사용자 프롬프트", imageId: imageIds[0] ?? null }] });
   validateGraph(graph); return { product: parsed.product, graph, graphHash: graphHash(graph) };
 }

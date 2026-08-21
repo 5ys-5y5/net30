@@ -254,6 +254,23 @@ const PEN_COLORS = [
   { semantic: "assembly", color: "#ea580c", label: "조립·결합" },
 ] as const;
 
+/**
+ * The review canvas is a diagnostic projection, not the final PBR material
+ * preview. Preserve authored component colours where they are legible, but
+ * raise the contrast of transparent/light materials so their B-Rep silhouette
+ * and seams can actually be inspected against the white design-system canvas.
+ */
+function sketchReviewPaint(color: string) {
+  const match = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!match) return { fill: color, stroke: color, fillOpacity: .32, strokeOpacity: .78 };
+  const value = match[1];
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255);
+  const luminance = .2126 * channels[0] + .7152 * channels[1] + .0722 * channels[2];
+  return luminance > .72
+    ? { fill: "#9bb6c9", stroke: "#355a73", fillOpacity: .46, strokeOpacity: .94 }
+    : { fill: color, stroke: color, fillOpacity: .32, strokeOpacity: .78 };
+}
+
 function SketchReview({ draft, pending, onSave, onFeedback, onApprove }: { draft: ModelingDraft; pending: boolean; onSave: (iteration: SketchIteration, strokes: readonly SketchStroke[]) => void; onFeedback: (iteration: SketchIteration, prompt: string, strokes: readonly SketchStroke[]) => void; onApprove: (iteration: SketchIteration) => void }) {
   const iteration = draft.iterations?.find((item) => item.id === draft.activeIterationId) ?? null;
   const [strokes, setStrokes] = useState<readonly SketchStroke[]>(iteration?.markup ?? []);
@@ -273,8 +290,8 @@ function SketchReview({ draft, pending, onSave, onFeedback, onApprove }: { draft
     <Atom><Label>LLM 구조 스케치</Label><Copy>{iteration.plan.title} · 색상 펜으로 모델링 의도와 다른 부분을 표시한 뒤 피드백을 적용하거나 스케치를 승인하세요.</Copy></Atom>
     <SketchViewNavigator>{(iteration.plan.views ?? [{ id: "front", label: "정면" }]).map((view) => <ActionButton key={view.id} className={CLASS.modelingAction} data-active={viewId === view.id} role="tab" aria-selected={viewId === view.id} onClick={() => setViewId(view.id)}>{view.label}</ActionButton>)}</SketchViewNavigator>
     <SketchCanvas viewBox={`0 0 ${iteration.plan.width} ${iteration.plan.height}`} role="img" aria-label={`${iteration.plan.title} ${viewId} 주석 캔버스`} onPointerDown={begin} onPointerMove={draw} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
-      {iteration.plan.components.map((component) => { const mesh = component.meshViews?.[viewId] ?? []; const outline = component.views?.[viewId] ?? component.points; const anchor = mesh[0]?.[0] ?? outline[0]; return <g key={component.id}>
-        {mesh.length ? mesh.map((triangle, index) => <polygon key={`${component.id}-${viewId}-${index}`} data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={triangle.map((point) => `${point.x},${point.y}`).join(" ")} fill={component.color} fillOpacity="0.16" stroke={component.color} strokeOpacity="0.2" strokeWidth="0.45" />) : <polygon data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={outline.map((point) => `${point.x},${point.y}`).join(" ")} fill={component.color} fillOpacity="0.18" stroke={component.color} strokeWidth="3" />}
+      {iteration.plan.components.map((component) => { const mesh = component.meshViews?.[viewId] ?? []; const outline = component.views?.[viewId] ?? component.points; const anchor = mesh[0]?.[0] ?? outline[0]; const paint = sketchReviewPaint(component.color); return <g key={component.id}>
+        {mesh.length ? mesh.map((triangle, index) => <polygon key={`${component.id}-${viewId}-${index}`} data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={triangle.map((point) => `${point.x},${point.y}`).join(" ")} fill={paint.fill} fillOpacity={paint.fillOpacity} stroke={paint.stroke} strokeOpacity={paint.strokeOpacity} strokeWidth="0.6" />) : <polygon data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={outline.map((point) => `${point.x},${point.y}`).join(" ")} fill={paint.fill} fillOpacity={paint.fillOpacity} stroke={paint.stroke} strokeOpacity={paint.strokeOpacity} strokeWidth="3" />}
         <text x={anchor?.x ?? 0} y={(anchor?.y ?? 20) - 10} fill="currentColor" fontSize="18">{component.label}</text>
       </g>; })}
       {iteration.plan.annotations.map((annotation, index) => <text key={`${annotation.label}-${index}`} x={annotation.x} y={annotation.y} fill="currentColor" fontSize="14">{annotation.label}</text>)}
@@ -1035,6 +1052,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   </FormField>;
   const analysisInProgress = pending && !buildInProgress && (!draft || draft.state.startsWith("analyzing"));
   const analysisFailed = Boolean(draft && (["analysis_incomplete", "needs_custom_recipe"].includes(draft.state) || (draft.state === "failed" && draft.questions.length === 0)));
+  const showingAnalysisFailure = analysisFailed && !pending;
   const buildFailed = Boolean(draft?.state === "failed" && draft.questions.length > 0);
   const activeWorkflowIndex = draft ? workflowIndex(draft.state, Boolean(previewModel)) : 0;
   const flatAssetNodes = useMemo(() => activeParentTree ? flattenAssetTree(activeParentTree) : [], [activeParentTree]);
@@ -1060,7 +1078,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
   const stagePreview = analysisInProgress ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>스케치를 준비 중입니다.</Copy></header></ProcessProgressPanel></Atom>
     : previewModel ? <PreviewErrorBoundary fallback={<AssetEmptyState role="alert"><Copy>생성된 3D 모델을 표시하지 못했습니다. 결과 파일은 보존되었습니다.</Copy></AssetEmptyState>}><ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title={studio.previewTitle} src={previewSrc} /></PreviewErrorBoundary>
       : draft?.activeIterationId ? <PreviewErrorBoundary fallback={<AssetEmptyState role="alert"><Copy>스케치 미리보기를 표시하지 못했습니다. 입력과 승인 내용은 보존되었습니다.</Copy></AssetEmptyState>}><Atom className={CLASS.modelingLibraryPreviewState}><SketchReview draft={draft} pending={draftDecisionPending || buildInProgress} onSave={(iteration, strokes) => void saveSketchMarkup(iteration, strokes)} onFeedback={(iteration, feedbackPrompt, strokes) => void applySketchFeedback(iteration, feedbackPrompt, strokes)} onApprove={(iteration) => void approveSketch(iteration)} /></Atom></PreviewErrorBoundary>
-      : analysisFailed ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><AssetEmptyState role="alert"><Label>분석을 완료하지 못했습니다.</Label><Copy>{draft?.message || error}</Copy><Copy>기존 조립 파일과 구성요소는 변경되지 않았습니다. 입력을 보완하거나 다시 실행할 수 있습니다.</Copy></AssetEmptyState></Atom>
+      : showingAnalysisFailure ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><AssetEmptyState role="alert"><Label>분석을 완료하지 못했습니다.</Label><Copy>{draft?.message || error}</Copy><Copy>기존 조립 파일과 구성요소는 변경되지 않았습니다. 입력을 보완하거나 다시 실행할 수 있습니다.</Copy></AssetEmptyState></Atom>
       : draft ? <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><ProcessProgressPanel><header><Label>OPENAI × BLENDER</Label><Copy>{draft.message || "실형상 스케치를 준비하고 있습니다."}</Copy></header></ProcessProgressPanel></Atom>
         : activeParentTree?.selectedRevision.assetPath ? <ModelPreviewFrame className={joinClasses(CLASS.modelingLibraryPreview, CLASS.modelingFrame)} title="선택한 조립 파일 3D 미리보기" src={modelPreviewSrc(activeParentTree.selectedRevision.assetPath, activeParentTree.selectedRevision.id)} />
           : <Atom className={CLASS.modelingLibraryPreviewState} aria-live="polite"><Copy>{activeParentTree ? "표시할 구성요소를 선택하면 조립 파일 미리보기가 이곳에 표시됩니다." : "조립 파일을 선택하면 3D 미리보기와 승인 스케치가 이곳에 표시됩니다."}</Copy></Atom>;
@@ -1099,7 +1117,7 @@ function ModelingCatalogRegion({ definition }: { definition: ProductPageDefiniti
       </ProcessProgressPanel></BuildProgressPanel> : analysisInProgress ? <ProcessProgressPanel>
         <header><Label>OPENAI × BLENDER · 제품·부품 분석</Label><ReviewStatus>분석 중</ReviewStatus><Copy>{progress || "제품과 구성 부품을 분석하고 있습니다."}</Copy></header>
         <ProgressStageList>{(draft?.progress?.filter((item) => item.operation === "analysis") ?? [{ eventId: 0, operation: "analysis", stage: "OpenAI 분석", state: "running", message: progress || "입력 분석을 시작했습니다." }]).map((item) => <ProgressStage state={item.state} key={`${item.eventId}-${item.stage}`}><span>{item.stage}{item.total ? ` · ${item.completed ?? 0}/${item.total} ${item.unit ?? ""}` : ""}</span><span>{item.message}</span></ProgressStage>)}</ProgressStageList>
-      </ProcessProgressPanel> : analysisFailed ? <AssetEmptyState role="alert"><Label>OpenAI 분석 실패</Label><Copy>{draft?.message || error}</Copy><Copy>승인 질문과 Blender 실행은 생성되지 않았으며 기존 제품 자산은 그대로 유지됩니다. 왼쪽 입력을 확인한 뒤 분석을 다시 실행하세요.</Copy></AssetEmptyState> : previewModel ? <ModelResultPanel>
+      </ProcessProgressPanel> : showingAnalysisFailure ? <AssetEmptyState role="alert"><Label>OpenAI 분석 실패</Label><Copy>{draft?.message || error}</Copy><Copy>승인 질문과 Blender 실행은 생성되지 않았으며 기존 제품 자산은 그대로 유지됩니다. 왼쪽 입력을 확인한 뒤 분석을 다시 실행하세요.</Copy></AssetEmptyState> : previewModel ? <ModelResultPanel>
         <Atom className={CLASS.modelingToolbar}><Atom><Label>{studio.workspace.assemblyLabel}</Label><Copy className={CLASS.modelingHint}>{studio.workspace.assemblyDescription}</Copy></Atom><Link href="/">{studio.backLabel}</Link></Atom>
         <Atom className={joinClasses(CLASS.modelingResult, error && CLASS.modelingError)}><Label>{studio.resultTitle}</Label><Atom as={ELEMENT.span}>{error || result}</Atom>{downloadReady && <Link href={previewModel} download>{studio.downloadLabel}</Link>}</Atom>
         {draft ? <DecisionHistoryDisclosure label="승인 결정 내역 보기"><ReviewProgress>생성 당시 승인값 {draft.questions.length}개</ReviewProgress><DraftQuestionGroups draft={draft} readOnly /></DecisionHistoryDisclosure> : null}

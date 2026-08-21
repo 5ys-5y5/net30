@@ -15,7 +15,7 @@ import { SKU_IDS, SKU_REGISTRY } from "./sku-registry.mjs";
 import { createDraftStore } from "./draft-store.mjs";
 import { ModelingDossier } from "./modeling-dossier.mjs";
 import { analyseDraft, analyseGraphPatch, approvedDraftToLegacyPayload, approvalHash, applyQuestionValue, draftPayloadSchema, draftReady, modelingGraphComponents, modelingGraphQuestions } from "./modeling-spec.mjs";
-import { canonicalizeGraph, graphHash, graphSketchPlan } from "./modeling-graph.mjs";
+import { graphHash, graphSketchPlan } from "./modeling-graph.mjs";
 import { adaptGraphToV3 } from "./modeling-graph-v3.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 
@@ -271,24 +271,77 @@ app.post("/api/modeling/drafts/:id/reanalyze",async(req,res)=>{
     // one-component repair responses.  Only the former can seed a full
     // reanalysis; using `.at(-1)` selected `{ component }` and made retrying
     // a failed draft impossible after a useful repair had been recorded.
-    let analysis; const retainedOutput=[...(draft.inference ?? [])].reverse().map((record)=>record?.output).find((output)=>output&&typeof output.product === "object"&&Array.isArray(output.components)&&Array.isArray(output.interfaces));
-    if(retainedOutput){
-      const canonical=canonicalizeGraph(retainedOutput,draft.input.requestedComponents,draft.input.imageIds);
-      const product={...canonical.product,family:"container",dimensionsMm:{widthMm:canonical.product.widthMm,heightMm:canonical.product.heightMm,depthMm:canonical.product.depthMm,wallMm:2.2}};
-      const components=modelingGraphComponents(canonical.graph);
-      analysis={product,components,modelingGraph:canonical.graph,modelingGraphHash:canonical.graphHash,questions:modelingGraphQuestions(product,components,canonical.graph),stickerSlots:draft.stickerSlots?.length?draft.stickerSlots:[{sourceGraphicId:"korean-product-information",status:"proposed"},{sourceGraphicId:"full-price-structure",status:"proposed"}]};
-      await progressDraft(draft,{operation:"analysis",stage:"컴포넌트 graph repair",state:"complete",completed:components.length,total:components.length,unit:"components",message:"저장된 응답을 현재 compiler capability로 복구해 OpenAI 재호출을 생략했습니다."});
-    } else {
-      const inference=[];
-      analysis=await analyseDraft(draft.input,await storage.imageInputs(draft.input.imageIds),{onOpenAiStatus:async({id,status})=>progressDraft(draft,{operation:"analysis",stage:"OpenAI ModelingGraph",state:["failed","cancelled","incomplete"].includes(status)?"failed":status==="completed"?"complete":"running",message:`OpenAI 응답 ${id} · ${status}`}),onOpenAiComplete:async(record)=>{inference.push(record);draft.inference=inference;await drafts.save(draft);},onGraphRepair:async({componentKey,state,message})=>progressDraft(draft,{operation:"analysis",stage:"컴포넌트 그래프 복구",state,message:`${componentKey} · ${message}`,completed:state==="complete"?1:0,total:1,unit:"components"}),onBrepPreflight:async(diagnostics)=>{draft.brepPreflightDiagnostics=diagnostics;await drafts.save(draft);}});
+    let analysis; let retainedOutput=[...(draft.inference ?? [])].reverse().map((record)=>record?.output).find((output)=>output&&typeof output.product === "object"&&Array.isArray(output.components)&&Array.isArray(output.interfaces));
+    // Older drafts created before the append-only inference ledger fix can
+    // contain only their last `{ component }` repair.  A completed job dossier
+    // is immutable and carries the complete response set, so it is the safe
+    // recovery source instead of asking the user to repeat the same Vision
+    // analysis or silently rebuilding a different product.
+    if(!retainedOutput&&draft.jobId){
+      try {
+        const inferenceDir=path.join(jobsRoot,draft.jobId,"inference");
+        const records=await Promise.all((await fs.readdir(inferenceDir)).filter((name)=>name.endsWith(".response.json")).sort().map(async(name)=>JSON.parse(await fs.readFile(path.join(inferenceDir,name),"utf8"))));
+        const full=records.find((record)=>record?.output&&typeof record.output.product==="object"&&Array.isArray(record.output.components)&&Array.isArray(record.output.interfaces));
+        if(full?.output){
+          retainedOutput=structuredClone(full.output);
+          for(const record of records){
+            const replacement=record?.output?.component;
+            if(!replacement?.componentKey) continue;
+            retainedOutput.components=retainedOutput.components.map((component)=>component.componentKey===replacement.componentKey?replacement:component);
+          }
+          draft.inference=records;
+          await drafts.save(draft);
+        }
+      } catch { /* No immutable job dossier is available; normal analysis below reports the actionable error. */ }
     }
+    const imageInputs=await storage.imageInputs(draft.input.imageIds);
+    const analysisRuntime={
+      ...(retainedOutput?{preflightRepairRaw:retainedOutput}:{}),
+      onOpenAiStatus:async({id,status})=>progressDraft(draft,{operation:"analysis",stage:"OpenAI ModelingGraph",state:["failed","cancelled","incomplete"].includes(status)?"failed":status==="completed"?"complete":"running",message:`OpenAI 응답 ${id} · ${status}`}),
+      // Inference is an append-only evidence ledger.  A local component
+      // repair must never replace the original full-product response: the
+      // latter is the immutable graph source used by a later retry and by the
+      // product dossier.  Replacing it made a second retry see only
+      // `{ component }`, losing the basis for the other approved parts.
+      onOpenAiComplete:async(record)=>{draft.inference=[...(draft.inference??[]),record];await drafts.save(draft);},
+      onGraphRepair:async({componentKey,state,message})=>progressDraft(draft,{operation:"analysis",stage:"컴포넌트 그래프 복구",state,message:`${componentKey} · ${message}`,completed:state==="complete"?1:0,total:1,unit:"components"}),
+      onBrepPreflight:async(diagnostics)=>{draft.brepPreflightDiagnostics=diagnostics;await drafts.save(draft);},
+    };
+    // Reusing an immutable OpenAI response may avoid a costly Vision request,
+    // never the deterministic measurement/fitting/OCCT path.  The latter is
+    // what keeps a restored draft's graph, sketch and final B-Rep subject to
+    // the current compiler capabilities and approved assembly envelope.
+    analysis=await analyseDraft(draft.input,imageInputs,analysisRuntime);
+    if(retainedOutput) await progressDraft(draft,{operation:"analysis",stage:"컴포넌트 graph repair",state:"complete",completed:analysis.components.length,total:analysis.components.length,unit:"components",message:"저장된 OpenAI 응답을 현재 측정·곡선 fitting·OCCT compiler로 다시 검증했습니다. OpenAI 재호출은 생략했습니다."});
     const accepted=new Map(draft.questions.filter((item)=>["accepted","overridden"].includes(item.status)).map((item)=>[item.path,item]));
-    draft.product=analysis.product; draft.components=analysis.components; draft.modelingGraph=analysis.modelingGraph; draft.modelingGraphHash=analysis.modelingGraphHash; await refreshBrepSketch(draft);
+    // A deterministic reanalysis creates a new evidence scope, fitted graph,
+    // B-Rep review bundle and quality report. Persist the complete envelope,
+    // not only its graph: otherwise the eventual build cannot compare the
+    // same canonical B-Rep to the calibrated source image and incorrectly
+    // records contour gates as `not_measured`.
+    draft.model=analysis.model; draft.product=analysis.product; draft.components=analysis.components;
+    draft.modelingGraph=analysis.modelingGraph; draft.modelingGraphHash=analysis.modelingGraphHash;
+    draft.modelingGraphV3=analysis.modelingGraphV3 ?? null;
+    draft.evidenceManifest=analysis.evidenceManifest ?? null;
+    draft.imageEvidence=analysis.imageEvidence ?? null;
+    draft.sketchPlan=analysis.sketchPlan ?? null;
+    draft.fit=analysis.fit ?? null;
+    draft.qualityReport=analysis.qualityReport ?? null;
+    draft.productModelingFile={
+      version:"net30.product-modeling-file.v2", graph:analysis.modelingGraphV3 ?? analysis.modelingGraph,
+      graphHash:analysis.modelingGraphHash, evidence:analysis.evidenceManifest ?? null,
+      imageEvidence:analysis.imageEvidence ?? null, fit:analysis.fit ?? null,
+      questions:analysis.questions, qualityReport:analysis.qualityReport ?? null,
+      qualityProfile:draft.input.qualityProfile,
+      manufacturingStatus:analysis.qualityReport?.manufacturingStatus ?? "manufacturing_review_required",
+    };
+    await refreshBrepSketch(draft);
     draft.questions=analysis.questions.map((item)=>{const prior=accepted.get(item.path); return prior?{...item,status:prior.status,userValue:prior.userValue}:item;}); draft.stickerSlots=analysis.stickerSlots;
     createSketchIteration(draft,{prompt:retainedOutput?"저장된 OpenAI 응답의 컴포넌트 graph repair":"전체 재분석",baseGraphHash:draft.baseGraphHash});
     await saveDraft(draft,"awaiting_parameter_review","권장값과 실형상 그래프를 갱신했습니다. 새 값과 오래된 의존값을 확인하세요.");
+    await writeAnalysisDossier(draft,{status:draft.state});
     return res.json({ok:true,draft:publicDraft(draft)});
-  } catch(error) { await saveDraft(draft,"failed",error instanceof Error?error.message:String(error)); return res.status(400).json({ok:false,error:error.message,draft:publicDraft(draft)}); }
+  } catch(error) { const message=error instanceof Error?error.message:String(error); await saveDraft(draft,"failed",message); await writeAnalysisDossier(draft,{status:"failed",error:message}).catch((dossierError)=>console.error("analysis dossier failed",dossierError)); return res.status(400).json({ok:false,error:message,draft:publicDraft(draft)}); }
 });
 app.get("/api/modeling/drafts/:id/iterations",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); return draft?res.json({ok:true,iterations:draft.iterations??[],activeIterationId:draft.activeIterationId}):res.status(404).json({ok:false,error:"초안을 찾을 수 없습니다."}); });
 app.get("/api/modeling/drafts/:id/iterations/:iterationId",async(req,res)=>{ if(!authorized(req)) return res.status(401).json({ok:false,error:"인증되지 않은 요청입니다."}); const draft=await drafts.get(req.params.id); const iteration=draft?.iterations?.find((item)=>item.id===req.params.iterationId); return iteration?res.json({ok:true,iteration}):res.status(404).json({ok:false,error:"스케치 검토 항목을 찾을 수 없습니다."}); });

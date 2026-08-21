@@ -165,7 +165,7 @@ try {
   const roofBase = roofedOutput.components[0].features[0];
   roofBase.key = "roof-base"; roofBase.operation = "revolve"; roofBase.inputKeys = [];
   roofBase.parameters = { ...roofBase.parameters, primitive: null, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 25, yMm: 0, zMm: 0 }, { xMm: 25, yMm: 0, zMm: 2 }, { xMm: 22, yMm: 0, zMm: 2 }, { xMm: 22, yMm: 0, zMm: 20 }, { xMm: 0, yMm: 0, zMm: 22 }, { xMm: 0, yMm: 0, zMm: 0 }], dimensionsMm: null, radiusMm: null, heightMm: null, thicknessMm: null, count: null, spacingMm: null, depthMm: null };
-  const roofShell = { ...structuredClone(roofBase), key: "roof-shell", operation: "shell", inputKeys: [roofBase.key], parameters: { ...roofBase.parameters, profile: null, thicknessMm: 2 } };
+  const roofShell = { ...structuredClone(roofBase), key: "roof-shell", operation: "shell", inputKeys: [roofBase.key], parameters: { ...roofBase.parameters, profile: null, thicknessMm: 2, cavityOpenAt: "bottom" } };
   const roofRib = { ...structuredClone(roofBase), key: "roof-rib", operation: "rib", inputKeys: [roofShell.key], parameters: { ...roofBase.parameters, profile: null, heightMm: 15, thicknessMm: null, spacingMm: 1.2, depthMm: 1.4, count: null, transform: { translationMm: { x: 0, y: 0, z: 3 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } } };
   const roofPattern = { ...structuredClone(roofBase), key: "roof-rib-pattern", operation: "pattern", inputKeys: [roofShell.key, roofRib.key], parameters: { ...roofBase.parameters, profile: null, heightMm: null, count: 36, spacingMm: null, depthMm: null, thicknessMm: null } };
   roofedOutput.components[0].features = [roofBase, roofShell, roofRib, roofPattern];

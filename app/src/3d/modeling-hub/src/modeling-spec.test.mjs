@@ -215,6 +215,7 @@ measuredCavityOutput.components[0].features = [measuredOuter, measuredInner, mea
 const measuredCavity = normaliseAxisymmetricCavityFeatures(measuredCavityOutput);
 assert.equal(measuredCavity.converted, 1);
 assert.deepEqual(measuredCavity.raw.components[0].features.map((feature) => feature.operation), ["revolve", "shell"]);
+assert.equal(measuredCavity.raw.components[0].features.at(-1).parameters.cavityOpenAt, "top", "an outer-minus-inner vessel records its measured mouth datum instead of relying on an axis-wire heuristic");
 assert.doesNotThrow(() => canonicalizeGraph(measuredCavity.raw, ["유리병"], []));
 const shallowAnnulusOutput = fixtureGraphOutput({ product: { name: "얕은 환형 링" }, prompt: "annular ring", requestedComponents: ["링"], imageIds: [] });
 const annulusOuter = { ...structuredClone(shallowAnnulusOutput.components[0].features[0]), key: "annulus-outer", inputKeys: [], parameters: { ...shallowAnnulusOutput.components[0].features[0].parameters, profile: [{ xMm: 0, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 0 }, { xMm: 30, yMm: 0, zMm: 8 }, { xMm: 0, yMm: 0, zMm: 8 }] } };

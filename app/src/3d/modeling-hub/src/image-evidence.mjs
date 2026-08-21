@@ -183,7 +183,31 @@ export function monotoneBezierSegments(points) {
   });
 }
 
-const BREP_GENERATORS = new Set(["revolve", "extrude", "primitive"]);
+const BREP_GENERATORS = new Set(["revolve", "extrude", "loft", "sweep", "primitive"]);
+
+/**
+ * Continuous silhouette fitting is only safe when the target's exterior is
+ * the component's sole independent generating source.  A separate zero-input
+ * sweep/rib/cutter can be joined to that exterior at an old radius or height;
+ * moving only the exterior would turn an otherwise valid B-Rep into multiple
+ * solids.  Do not silently bridge it or apply a name-based placement rule:
+ * retain the approved graph and expose a topology/review requirement.
+ */
+function hasUnanchoredExteriorFeature(graph, componentId, primaryNodeId = null) {
+  const nodes = graph.nodes.filter((node) => node.componentId === componentId);
+  for (const generator of nodes) {
+    if (generator.id === primaryNodeId || !BREP_GENERATORS.has(generator.operation) || (generator.inputNodeIds?.length ?? 0) !== 0) continue;
+    const consumers = nodes.filter((node) => node.inputNodeIds?.includes(generator.id));
+    // A standalone sweep that is unioned into a fitted exterior has no
+    // parametric surface attachment. Moving the exterior would detach it.
+    if (generator.operation === "sweep" && consumers.some((node) => node.operation === "boolean" && node.parameters?.operation === "union")) return true;
+    // A direct primitive/extrude pattern seed has no transform node that can
+    // be re-anchored to the measured exterior. A transform-wrapped seed is
+    // handled deterministically by fitClosureOutline instead.
+    if (consumers.some((node) => node.operation === "pattern" && node.inputNodeIds?.at(-1) === generator.id)) return true;
+  }
+  return false;
+}
 
 function radialTranslation(parameters = {}) {
   const value = parameters.transform?.translationMm ?? { x: 0, y: 0 };
@@ -498,6 +522,9 @@ export function fitMeasuredClosureAssembly(graph, approvedDimensions = null, pri
   const candidate = patternedRadialComponent(original);
   if (!candidate) return { graph, applied: false, adjustments: [], reason: "patterned_closure_not_found" };
   const closure = original.components.find((component) => component.id === candidate.component.id);
+  if (hasUnanchoredExteriorFeature(original, closure.id)) {
+    return { graph, applied: false, adjustments: [], reason: "closure_topology_requires_anchor_review" };
+  }
   const closureRange = localAxialRange(original, closure);
   if (!closureRange || closureRange.max - closureRange.min <= 1e-6) return { graph, applied: false, adjustments: [], reason: "closure_height_unmeasurable" };
   const next = structuredClone(original);
@@ -689,6 +716,9 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
     .map((node) => ({ node, span: Math.max(...node.parameters.profile.map((point) => point.zMm)) - Math.min(...node.parameters.profile.map((point) => point.zMm)) }));
   const target = candidates.sort((left, right) => right.span - left.span)[0]?.node;
   if (!target) return { graph, applied: false, reason: "no_axisymmetric_brep" };
+  if (hasUnanchoredExteriorFeature(graph, target.componentId, target.id)) {
+    return { graph, applied: false, reason: "component_topology_requires_anchor_review" };
+  }
   const source = target.parameters.profile;
   const sourceZMin = Math.min(...source.map((point) => point.zMm)); const sourceZMax = Math.max(...source.map((point) => point.zMm));
   const sourceMaxRadius = Math.max(...source.map((point) => Math.abs(point.xMm)));

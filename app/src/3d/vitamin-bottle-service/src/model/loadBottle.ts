@@ -97,6 +97,12 @@ export async function loadBottle(
     root.add(displayMesh);
   });
 
+  // Child meshes keep the imported GLB matrix (including the mm → metre
+  // scale) with matrixAutoUpdate disabled.  Box3 otherwise observes their
+  // unscaled geometry on a freshly-created parent, makes fitCamera clamp to
+  // its minimum zoom, and leaves an otherwise valid manufacturing model tiny
+  // in every preview. Propagate those fixed matrices before measuring bounds.
+  root.updateMatrixWorld(true);
   const bounds = new Box3().setFromObject(root);
 
   return {

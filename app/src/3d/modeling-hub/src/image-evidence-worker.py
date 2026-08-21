@@ -50,16 +50,13 @@ def analyse(item):
     if active.size < 16:
         raise RuntimeError("evidence_missing: primary image silhouette is not separable from its background")
     top, bottom = int(active.min()), int(active.max())
-    rows = _samples(foreground, top, bottom)
-    if len(rows) < 12:
+    # Keep a preliminary scale only for the independently detected cap. The
+    # final product silhouette is recomputed below after its robust top datum
+    # has been established.
+    rough_rows = _samples(foreground, top, bottom)
+    if len(rough_rows) < 12:
         raise RuntimeError("evidence_missing: insufficient measurable silhouette rows")
-    center = float(np.median([(row["left"] + row["right"]) / 2 for row in rows]))
-    half_width = max((row["right"] - row["left"] + 1) / 2 for row in rows)
-    silhouette = [{
-        "zNorm": round((bottom - row["y"]) / max(1, bottom - top), 7),
-        "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
-        "centerOffsetNorm": round((((row["left"] + row["right"]) / 2) - center) / half_width, 7),
-    } for row in rows]
+    rough_half_width = max((row["right"] - row["left"] + 1) / 2 for row in rough_rows)
     red, green, blue = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     # Require substantial absolute chroma, not just a blue-tinted transparent
     # glass pixel.  This keeps the blue closure separate from the bottle.
@@ -79,7 +76,7 @@ def analyse(item):
         cap = {
             "topY": cap_top, "bottomY": cap_bottom,
             "heightNorm": round((cap_bottom - cap_top + 1) / max(1, bottom - top + 1), 7),
-            "outerDiameterRatio": round(cap_width / max(1.0, 2 * half_width), 7) if cap_width else None,
+            "outerDiameterRatio": round(cap_width / max(1.0, 2 * rough_half_width), 7) if cap_width else None,
         }
         # Keep the coloured closure's actual left/right envelope as a separate
         # curve. It is deliberately not mixed into the transparent vessel
@@ -99,7 +96,7 @@ def analyse(item):
         if len(cap_rows) >= 12:
             cap["silhouette"] = [{
                 "zNorm": round((cap_bottom - row["y"]) / max(1, cap_bottom - cap_top), 7),
-                "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
+                "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / rough_half_width, 7),
             } for row in cap_rows]
     # Vertical luminance transitions across the cap band are a measurable rib
     # cue.  The feature planner may use it, but it is never a mandatory count.
@@ -112,6 +109,24 @@ def analyse(item):
         # paired light/dark transitions represent one rib; this remains only a
         # confidence-weighted hint rather than a claimed engineering value.
         rib_hint = {"edgePeakCount": len(peaks), "estimatedRepeatCount": max(0, round(len(peaks) / 2)), "confidence": round(min(.85, len(peaks) / 80), 3)}
+    # A strongly detected coloured closure is a wider, connected product
+    # datum than a few anti-aliased/chromatic pixels above it.  Those isolated
+    # pixels previously became the global top, compressing every following
+    # sample and making the measured assembly look like it had a pointed cap.
+    # This does not invent a product category: it only uses the independently
+    # measured wide blue envelope already accepted as a closure evidence cue.
+    if cap and cap["topY"] > top:
+        top = int(cap["topY"])
+    rows = _samples(foreground, top, bottom)
+    if len(rows) < 12:
+        raise RuntimeError("evidence_missing: insufficient measurable silhouette rows")
+    center = float(np.median([(row["left"] + row["right"]) / 2 for row in rows]))
+    half_width = max((row["right"] - row["left"] + 1) / 2 for row in rows)
+    silhouette = [{
+        "zNorm": round((bottom - row["y"]) / max(1, bottom - top), 7),
+        "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
+        "centerOffsetNorm": round((((row["left"] + row["right"]) / 2) - center) / half_width, 7),
+    } for row in rows]
     body_start = min(bottom, (cap["bottomY"] + 1) if cap else top)
     body_rows = _samples(foreground, body_start, bottom, 64)
     body = [{

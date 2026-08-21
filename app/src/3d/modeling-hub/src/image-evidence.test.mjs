@@ -16,6 +16,10 @@ const types = ["image/jpeg", "image/png", "image/webp"];
 const inputs = await Promise.all(files.map(async (filename, index) => ({ id: `fixture-image-${index + 1}`, filename, dataUrl: `data:${types[index]};base64,${(await fs.readFile(path.join(root, filename))).toString("base64")}` })));
 const evidence = await measureImageEvidence(inputs);
 assert.equal(evidence.images.filter((item) => item.ok).length, 3, "all fixed fixture images must be measurable without an LLM");
+const primarySilhouette = evidence.images.find((item) => item.ok && item.measurement?.filename === "Duran laboratory bottles 100.jpg")?.measurement?.silhouette ?? [];
+assert.ok(primarySilhouette.length >= 12, "the primary product image must expose a usable assembly silhouette");
+assert.equal(evidence.images[0].measurement.bounds.topY, evidence.images[0].measurement.cap.topY, "a detected wide coloured closure must define the product top instead of a stray sub-cap pixel");
+assert.ok(evidence.images[0].measurement.cap.silhouette[0]?.radiusNorm >= .5, "the measured cap contour must begin with a substantial closure width");
 assert.ok(evidence.images[0].measurement.cap.bottomY < evidence.images[0].measurement.bounds.bottomY, "primary image must isolate a cap boundary from the bottle");
 assert.ok(evidence.images[0].measurement.cap.outerDiameterRatio > .8, "primary image must expose a measured cap envelope separately from the bottle contour");
 assert.ok(evidence.images[0].measurement.cap.silhouette.length >= 12, "primary image must expose a separate closure outline for the revolved B-Rep");
@@ -76,6 +80,30 @@ const closureProfiles = capAssemblyFit.graph.nodes.filter((node) => node.compone
 assert.ok(Math.max(...closureProfiles.map((point) => point.zMm)) + fittedClosure.transform.translationMm.z <= 100.01, "closure local B-Rep and assembly transform must remain inside the approved overall-height datum");
 assert.ok(capAssemblyFit.graph.nodes.some((node) => node.componentId === fittedClosure.id && node.operation === "revolve" && node.parameters.curveSegments?.length), "the measured closure outline must be declared as OCCT Bézier curves, not a display-only polyline");
 assert.equal(typeof graphHash(capAssemblyFit.graph), "string", "a fitted Bézier closure must remain serialisable by the strict graph schema");
+
+// A separate sweep joined to the cap is not attached to the fitted outline.
+// Moving the outline alone would leave a disconnected B-Rep, so the fitter
+// must surface a topology-review requirement rather than inventing a bridge.
+const unanchoredClosureGraph = structuredClone(ribbedGraph);
+const patternedRoot = unanchoredClosureGraph.nodes.find((node) => node.operation === "pattern");
+const independentSweep = {
+  ...structuredClone(unanchoredClosureGraph.nodes.find((node) => node.operation === "revolve")),
+  id: "unanchored-sweep", operation: "sweep", inputNodeIds: [],
+};
+const joinedRoot = {
+  ...structuredClone(patternedRoot), id: "unanchored-union", operation: "boolean", inputNodeIds: [patternedRoot.id, independentSweep.id],
+  parameters: { ...patternedRoot.parameters, operation: "union" },
+};
+unanchoredClosureGraph.nodes.push(independentSweep, joinedRoot);
+unanchoredClosureGraph.components[0].rootNodeIds = [joinedRoot.id];
+const unanchoredClosureFit = fitMeasuredClosureAssembly(unanchoredClosureGraph, { widthMm: 56, depthMm: 56, heightMm: 100 }, { cap: { heightNorm: .25, silhouette: Array.from({ length: 16 }, (_, index) => ({ zNorm: index / 15, radiusNorm: .9 })) } });
+assert.equal(unanchoredClosureFit.applied, false, "fitting must not detach an independent exterior feature from its B-Rep host");
+assert.equal(unanchoredClosureFit.reason, "closure_topology_requires_anchor_review", "the actionable topology requirement must be recorded instead of silently changing geometry");
+const closureEnvelopeFit = fitRadialAssemblyEnvelope(capAssemblyFit.graph, { widthMm: 56, depthMm: 56 }, { cap: { outerDiameterRatio: 1 } });
+const constrainedClosureProfile = closureEnvelopeFit.graph.nodes
+  .filter((node) => node.componentId === fittedClosure.id && node.operation === "revolve")
+  .flatMap((node) => node.parameters.profile ?? []);
+assert.ok(Math.max(...constrainedClosureProfile.map((point) => point.xMm)) <= 28.000001, "the approved full assembly envelope must constrain a closure after its image-outline fit");
 const compiledDatumFit = fitCompiledClosureDatum(capAssemblyFit.graph, { diagnostics: [{ componentId: fittedClosure.id, code: "ok", boundsMm: { z: 24.5 } }] }, { heightMm: 100 });
 assert.equal(compiledDatumFit.applied, true, "the assembly datum must use the actual compiled child B-Rep height when it differs from the conservative graph envelope");
 assert.equal(compiledDatumFit.graph.components[0].transform.translationMm.z, 75.5);

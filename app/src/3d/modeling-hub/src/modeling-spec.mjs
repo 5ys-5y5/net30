@@ -416,7 +416,11 @@ export function normaliseAxisymmetricCavityFeatures(raw) {
         ...feature,
         operation: "shell",
         inputKeys: [outerKey],
-        parameters: { ...feature.parameters, operation: null, thicknessMm: wallMm, profile: null, profiles: null, primitive: null, dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null, angleDeg: null, count: null, spacingMm: null, depthMm: null, offsetMm: null, axis: null, projection: null, hostComponentKey: null, artworkImageId: null, artworkCrop: null, wrapDegrees: null, quantity: null, distribution: null, interfaceKey: null, transform: null },
+        // This normalized topology is a vessel: its observed inner profile
+        // terminates at the upper datum and becomes the mouth.  The explicit
+        // datum prevents the CAD kernel from inferring a cap roof merely
+        // because the outer 2-D wire closes back to the rotation axis.
+        parameters: { ...feature.parameters, operation: null, thicknessMm: wallMm, profile: null, profiles: null, primitive: null, dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null, angleDeg: null, count: null, spacingMm: null, depthMm: null, cavityOpenAt: "top", offsetMm: null, axis: null, projection: null, hostComponentKey: null, artworkImageId: null, artworkCrop: null, wrapDegrees: null, quantity: null, distribution: null, interfaceKey: null, transform: null },
         rationale: `${feature.rationale} Inner cavity was deterministically derived from measured outer/inner radial separation (${wallMm.toFixed(3)} mm).`,
         confidence: Math.min(feature.confidence ?? 1, inner.confidence ?? 1),
       });
@@ -467,7 +471,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     if (!(process.env.OPENAI_API_KEY ?? "").trim()) throw new Error("OpenAI 분석 키가 설정되지 않았습니다. 기본 형상으로 대체하지 않았습니다.");
     const images = imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl, detail: "high" }));
     try {
-      raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and only the operations allowed by the supplied strict schema from the images and prompt; never classify by the component name alone. Every generating operation (profile, primitive, revolve, extrude, loft, sweep) has no inputKeys. A sweep must contain an ordered non-repeated 3-D path and either a positive radiusMm or a closed local XY profile. Express every union, cut, or intersect exclusively as a separate Boolean node with two or more preceding operands; do not use a legacy inline operation on a generating feature. A shell, rib, transform, or mate has exactly one preceding input; a radial pattern has exactly [base solid, rib seed]. Each brep_solid has one terminal B-Rep root and at least one revolve, extrude, primitive, loft, or sweep generator. Express rounded silhouettes directly with sufficiently detailed profile curves rather than an unavailable fillet/chamfer operation. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. It must include hostComponentKey, allowed artworkImageId and artworkCrop, projection, positive physical dimensionsMm.x/y, and transform.translationMm.z so the server can align the crop to the same approved mm position. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters. Respect EvidenceManifest allowedFor/excludedFrom exactly: only an image allowed for artwork may be artworkImageId; never transfer a different product's silhouette, dimensions, logo, or print.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
+      raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and only the operations allowed by the supplied strict schema from the images and prompt; never classify by the component name alone. Every generating operation (profile, primitive, revolve, extrude, loft, sweep) has no inputKeys. A sweep must contain an ordered non-repeated 3-D path and either a positive radiusMm or a closed local XY profile. Express every union, cut, or intersect exclusively as a separate Boolean node with two or more preceding operands; do not use a legacy inline operation on a generating feature. A shell, rib, transform, or mate has exactly one preceding input; a radial pattern has exactly [base solid, rib seed]. A shell must declare its graph-authored cavityOpenAt datum: use top for an open vessel mouth and bottom only for a roofed lower-datum closure. Each brep_solid has one terminal B-Rep root and at least one revolve, extrude, primitive, loft, or sweep generator. Express rounded silhouettes directly with sufficiently detailed profile curves rather than an unavailable fillet/chamfer operation. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. It must include hostComponentKey, allowed artworkImageId and artworkCrop, projection, positive physical dimensionsMm.x/y, and transform.translationMm.z so the server can align the crop to the same approved mm position. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters. Respect EvidenceManifest allowedFor/excludedFrom exactly: only an image allowed for artwork may be artworkImageId; never transfer a different product's silhouette, dimensions, logo, or print.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
     } catch (error) { lastError = error; raw = null; }
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
@@ -504,12 +508,15 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const approvedDimensions = { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm };
   const locallyNormalised = normaliseComponentLocalCoordinates(evidenceScoped.graph);
   const fitted = fitPrimaryAxisymmetricComponent(locallyNormalised.graph, imageEvidence, primaryImageId, approvedDimensions);
-  // First fit the generic radial feature envelope, then replace the outer
-  // closure curve from its colour-band silhouette. Reversing this order would
-  // scale an already measured outline a second time through a patterned seed.
-  const envelopeFit = fitRadialAssemblyEnvelope(fitted.graph, approvedDimensions, primaryMeasurement);
-  const closureFit = fitMeasuredClosureAssembly(envelopeFit.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? envelopeFit.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
-  const placementFit = fitAxialAssemblyEnvelope(closureFit.graph, approvedDimensions);
+  // The colour-band fit may replace a closure profile from raw photographic
+  // samples.  It must run before the assembly envelope constraint: a noisy
+  // or rounded cap sample can otherwise re-expand the final B-Rep beyond an
+  // already approved overall width/depth.  The envelope fit is deliberately
+  // graph-native, so this is a constraint solve on the same curve and pattern
+  // parameters consumed by OCCT rather than a display-only scale.
+  const closureFit = fitMeasuredClosureAssembly(fitted.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? fitted.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
+  const envelopeFit = fitRadialAssemblyEnvelope(closureFit.graph, approvedDimensions, primaryMeasurement);
+  const placementFit = fitAxialAssemblyEnvelope(envelopeFit.graph, approvedDimensions);
   // The physical decal position is graph data.  Re-project the *vertical*
   // photograph crop from that datum before the first B-Rep preview, so the
   // preview, user approval questions and final artwork cannot disagree about
@@ -551,11 +558,14 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     }
     // The first curve fit uses image samples, while the actual OCCT shell,
     // Boolean and pattern operations can move the final exterior slightly.
-    // Feed that *compiled* contour back into the same graph at most twice.
-    // A candidate is committed only after a fresh OCCT preflight succeeds;
-    // therefore an optimisation attempt cannot leave a draft with a graph
-    // that no longer produces a closed B-Rep.
-    for (let iteration = 0; iteration < 2; iteration += 1) {
+    // Feed that *compiled* contour back into the same graph. This is a
+    // bounded constrained fit, never a hidden mesh deformation: every
+    // accepted candidate must be a fresh valid OCCT B-Rep. Stop after two
+    // consecutive <0.2% improvements and preserve an explicit evidence
+    // request instead of pretending that the remaining discrepancy is solved.
+    const contourFitLimit = payload.qualityProfile === "speed" ? 8 : 20;
+    let stalledContourFits = 0;
+    for (let iteration = 0; iteration < contourFitLimit; iteration += 1) {
       const compiledContour = compareBrepAssemblyContour(brepPreflight, imageEvidence, primaryImageId);
       if (!compiledContour || (compiledContour.iou >= .97 && compiledContour.rmsMm <= .35 && compiledContour.hausdorff95Mm <= .75)) break;
       const candidate = fitCompiledAssemblyContour(canonical.graph, brepPreflight, imageEvidence, primaryImageId);
@@ -575,8 +585,14 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
         compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: "candidate_not_improved", adjustments: candidate.adjustments, before: compiledContour, after: candidateContour ?? null });
         break;
       }
+      const relativeImprovement = (compiledContour.rmsMm - candidateContour.rmsMm) / Math.max(compiledContour.rmsMm, 1e-9);
+      stalledContourFits = relativeImprovement < .002 ? stalledContourFits + 1 : 0;
       canonical.graph = candidateGraph; canonical.graphHash = graphHash(canonical.graph); brepPreflight = candidatePreflight;
-      compiledContourFits.push({ iteration: iteration + 1, applied: true, adjustments: candidate.adjustments, before: compiledContour, after: candidateContour });
+      compiledContourFits.push({ iteration: iteration + 1, applied: true, adjustments: candidate.adjustments, before: compiledContour, after: candidateContour, relativeImprovement });
+      if (stalledContourFits >= 2) {
+        compiledContourFits.push({ iteration: iteration + 1, applied: false, reason: "improvement_plateau_requires_evidence", consecutiveWeakImprovements: stalledContourFits });
+        break;
+      }
     }
   }
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };

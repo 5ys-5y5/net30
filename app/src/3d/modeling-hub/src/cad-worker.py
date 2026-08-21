@@ -411,7 +411,11 @@ def inner_revolve_from_profile(params, thickness):
     # radius is a roofed closure, not an open vessel. Its cavity must break
     # through the lower datum while stopping below the roof; treating it like
     # a bottle cavity cuts through the roof and can split the cap B-Rep.
-    roofed = outer_top_z > z_max + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top_z) <= 1e-6 for x, z in raw)
+    # The opening datum is graph-authored/measured.  Falling back to the old
+    # wire-shape heuristic is only for pre-v3 assets; a normal bottle's closed
+    # planar wire also returns to the axis and must not be mistaken for a cap.
+    declared_opening = params.get("cavityOpenAt")
+    roofed = declared_opening == "bottom" if declared_opening in ("top", "bottom") else outer_top_z > z_max + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top_z) <= 1e-6 for x, z in raw)
     start_z = z_min + thickness
     inner_top_z = z_max
     if start_z >= inner_top_z - 1e-6:
@@ -617,12 +621,13 @@ def compile_graph(graph_component, graph_nodes):
             if thickness <= 0: raise RuntimeError(f"graph_invalid: shell node {node['id']} requires positive thicknessMm")
             source = nodes_by_id.get(node.get("inputNodeIds", [None])[0])
             if source and source.get("operation") == "revolve":
-                source_params = source.get("parameters") or {}
+                source_params = {**(source.get("parameters") or {}), "cavityOpenAt": params.get("cavityOpenAt")}
                 profile = [(float(point["xMm"]), float(point["zMm"])) for point in (source_params.get("profile") or [])]
                 visible = [(x, z) for x, z in profile if x > 1e-6]
                 visible_top = max((z for _, z in visible), default=-float("inf"))
                 outer_top = max((z for _, z in profile), default=-float("inf"))
-                roofed = outer_top > visible_top + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top) <= 1e-6 for x, z in profile)
+                declared_opening = params.get("cavityOpenAt")
+                roofed = declared_opening == "bottom" if declared_opening in ("top", "bottom") else outer_top > visible_top + 1e-6 and any(abs(x) <= 1e-6 and abs(z - outer_top) <= 1e-6 for x, z in profile)
                 if roofed:
                     cavity = inner_revolve_from_profile(source_params, thickness)
                     candidate = inputs[0].cut(cavity)
