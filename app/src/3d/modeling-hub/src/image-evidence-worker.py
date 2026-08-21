@@ -70,7 +70,17 @@ def analyse(item):
     blue_rows = np.flatnonzero(blue_mask.sum(axis=1) >= max(12, w // 8))
     cap = None
     if blue_rows.size:
-        cap = {"topY": int(blue_rows.min()), "bottomY": int(blue_rows.max()), "heightNorm": round((blue_rows.max() - blue_rows.min() + 1) / max(1, bottom - top + 1), 7)}
+        cap_top, cap_bottom = int(blue_rows.min()), int(blue_rows.max())
+        cap_x = np.flatnonzero(blue_mask[cap_top:cap_bottom + 1].any(axis=0))
+        # This is a measured visual envelope, not an asserted nominal cap
+        # diameter.  The Node layer calibrates it only with an approved overall
+        # product width and records the source so users can override it.
+        cap_width = int(cap_x.max() - cap_x.min() + 1) if cap_x.size else 0
+        cap = {
+            "topY": cap_top, "bottomY": cap_bottom,
+            "heightNorm": round((cap_bottom - cap_top + 1) / max(1, bottom - top + 1), 7),
+            "outerDiameterRatio": round(cap_width / max(1.0, 2 * half_width), 7) if cap_width else None,
+        }
     # Vertical luminance transitions across the cap band are a measurable rib
     # cue.  The feature planner may use it, but it is never a mandatory count.
     rib_hint = None

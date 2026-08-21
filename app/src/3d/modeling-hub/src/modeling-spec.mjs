@@ -392,10 +392,11 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   if (!canonical) throw new Error("analysis_incomplete: 컴포넌트 그래프 복구 횟수를 초과했습니다.");
   const evidenceScoped = enforceEvidenceScopes(canonical.graph, evidenceManifest);
   const primaryImageId = evidenceManifest.items.find((item) => item.role === "primary_product")?.imageId ?? null;
+  const primaryMeasurement = imageEvidence.images.find((item) => item.ok && item.measurement?.imageId === primaryImageId)?.measurement ?? null;
   const approvedDimensions = { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm };
   const locallyNormalised = normaliseComponentLocalCoordinates(evidenceScoped.graph);
   const fitted = fitPrimaryAxisymmetricComponent(locallyNormalised.graph, imageEvidence, primaryImageId, approvedDimensions);
-  const envelopeFit = fitRadialAssemblyEnvelope(fitted.graph, approvedDimensions);
+  const envelopeFit = fitRadialAssemblyEnvelope(fitted.graph, approvedDimensions, primaryMeasurement);
   const placementFit = fitAxialAssemblyEnvelope(envelopeFit.graph, approvedDimensions);
   canonical.graph = validateGraph(placementFit.graph);
   canonical.graphHash = graphHash(canonical.graph);

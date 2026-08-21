@@ -102,7 +102,10 @@ function radialEnvelopeForNode(nodes, nodeId, cache = new Map()) {
   } else if (["shell", "pattern", "transform", "mate"].includes(node.operation)) {
     envelope = finite.length ? Math.max(...finite) : null;
   }
-  if (Number.isFinite(envelope)) envelope += radialTranslation(params);
+  // A rib's local transform x is its radial placement datum in cad-worker.py,
+  // not a second world-space translation.  Adding it here doubled the measured
+  // cap radius and prevented the fitter from expanding undersized caps.
+  if (Number.isFinite(envelope) && node.operation !== "rib") envelope += radialTranslation(params);
   cache.set(nodeId, envelope);
   return envelope;
 }
@@ -163,12 +166,13 @@ function scaleRadialParameters(parameters, scale) {
  * radial extent.  Off-axis, non-radial, and arbitrary geometry remain a
  * reviewer question rather than being distorted automatically.
  */
-export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null) {
+export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null, primaryMeasurement = null) {
   const targetDiameter = Math.min(Number(approvedDimensions?.widthMm), Number(approvedDimensions?.depthMm));
   if (!Number.isFinite(targetDiameter) || targetDiameter <= 0) return { graph, applied: false, adjustments: [] };
   const targetRadius = targetDiameter / 2;
   const next = structuredClone(graph); const nodes = new Map(next.nodes.map((node) => [node.id, node]));
   const adjustments = [];
+  const measuredCapRatio = Number(primaryMeasurement?.cap?.outerDiameterRatio);
   for (const component of next.components) {
     if (component.representation !== "brep_solid") continue;
     const translation = component.transform?.translationMm ?? {};
@@ -178,10 +182,17 @@ export function fitRadialAssemblyEnvelope(graph, approvedDimensions = null) {
     if (Math.hypot(Number(translation.x ?? 0), Number(translation.y ?? 0)) > 1e-6 || Math.abs(Number(rotation.x ?? 0)) > 1e-6 || Math.abs(Number(rotation.y ?? 0)) > 1e-6) continue;
     const cache = new Map();
     const envelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(nodes, id, cache)).filter(Number.isFinite));
-    if (!Number.isFinite(envelope) || envelope <= targetRadius + 1e-6) continue;
-    const scale = targetRadius / envelope;
-    for (const node of next.nodes.filter((item) => item.componentId === component.id)) node.parameters = scaleRadialParameters(node.parameters, scale);
-    adjustments.push({ componentId: component.id, sourceRadiusMm: envelope, targetRadiusMm: targetRadius, scale, source: "approved_assembly_envelope" });
+    const componentNodes = next.nodes.filter((item) => item.componentId === component.id);
+    const ribbedRadialFeature = componentNodes.some((node) => node.operation === "pattern" && node.inputNodeIds.some((id) => nodes.get(id)?.operation === "rib"));
+    const measuredTargetRadius = ribbedRadialFeature && Number.isFinite(measuredCapRatio) && measuredCapRatio > .25
+      ? Math.min(targetRadius, targetRadius * measuredCapRatio)
+      : targetRadius;
+    const outsideMaximum = envelope > targetRadius + 1e-6;
+    const measuredMismatch = ribbedRadialFeature && Math.abs(envelope - measuredTargetRadius) > .25;
+    if (!Number.isFinite(envelope) || (!outsideMaximum && !measuredMismatch)) continue;
+    const scale = (outsideMaximum ? targetRadius : measuredTargetRadius) / envelope;
+    for (const node of componentNodes) node.parameters = scaleRadialParameters(node.parameters, scale);
+    adjustments.push({ componentId: component.id, sourceRadiusMm: envelope, targetRadiusMm: outsideMaximum ? targetRadius : measuredTargetRadius, scale, source: outsideMaximum ? "approved_assembly_envelope" : "primary_cap_measurement" });
   }
   return { graph: next, applied: adjustments.length > 0, adjustments };
 }
