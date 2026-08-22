@@ -39,7 +39,57 @@ function publicJob(job) { const { clients, promise, ...value }=job; return value
 function emitDraft(draft, progress = null) { const detail={ eventId:progress?.eventId,state:draft.state,message:draft.message,revision:draft.revision,progress,at:draft.updatedAt }; for (const client of draftClients.get(draft.id)??[]) client.write(`${detail.eventId?`id: ${detail.eventId}\n`:""}data: ${JSON.stringify(detail)}\n\n`); }
 async function saveDraft(draft, state, message) { draft.state=state; draft.message=message; draft.revision += 1; await drafts.save(draft); emitDraft(draft); return draft; }
 async function progressDraft(draft, progress) { const event=await drafts.appendProgress(draft,progress); emitDraft(draft,event); return event; }
-function publicDraft(draft) { return { ...draft, approval: draftReady(draft) }; }
+function outlineHull(points) {
+  const unique = [...new Map((points ?? []).filter((point) => Number.isFinite(point?.x) && Number.isFinite(point?.y)).map((point) => [`${point.x.toFixed(4)}:${point.y.toFixed(4)}`, point])).values()];
+  if (unique.length <= 3) return unique;
+  const sorted = [...unique].sort((left, right) => left.x - right.x || left.y - right.y);
+  const cross = (origin, left, right) => (left.x - origin.x) * (right.y - origin.y) - (left.y - origin.y) * (right.x - origin.x);
+  const chain = (items) => { const output = []; for (const point of items) { while (output.length >= 2 && cross(output.at(-2), output.at(-1), point) <= 0) output.pop(); output.push(point); } return output; };
+  const lower = chain(sorted); const upper = chain([...sorted].reverse());
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+function publicSketchPlan(plan) {
+  if (!plan) return null;
+  // Historical drafts saved the transient STL triangle lists used by the old
+  // review renderer.  They are not model source, make a draft response tens
+  // of megabytes, and make a reload appear to have lost the review workspace.
+  // Derive a compact exterior symbol at the API boundary; immutable source
+  // files and artifact hashes remain untouched on disk.
+  const hadLegacyTessellation = (plan.components ?? []).some((component) => component.meshViews && Object.values(component.meshViews).some((triangles) => Array.isArray(triangles) && triangles.length));
+  return {
+    ...plan,
+    annotations: hadLegacyTessellation
+      ? [{ label: "동일 OCCT B-Rep의 정규화된 외곽선입니다. 검토용 삼각형 메시는 표시하지 않습니다.", x: 36, y: 42 }]
+      : plan.annotations ?? [],
+    components: (plan.components ?? []).map((component) => {
+      const existingViews = component.views ?? {};
+      const legacyViews = component.meshViews ?? {};
+      const views = { ...existingViews };
+      for (const [viewId, triangles] of Object.entries(legacyViews)) {
+        if (Array.isArray(views[viewId]) && views[viewId].length >= 3) continue;
+        const outline = outlineHull(Array.isArray(triangles) ? triangles.flat() : []);
+        if (outline.length >= 3) views[viewId] = outline;
+      }
+      const points = Array.isArray(views.front) && views.front.length ? views.front : component.points ?? [];
+      const { meshViews: _discardedTemporaryTessellation, ...compact } = component;
+      return { ...compact, points, views };
+    }),
+  };
+}
+
+export function compactDraftForClient(draft) {
+  const activeIterationId = draft.activeIterationId ?? null;
+  return {
+    ...draft,
+    sketchPlan: publicSketchPlan(draft.sketchPlan),
+    iterations: (draft.iterations ?? []).map((iteration) => iteration.id === activeIterationId
+      ? { ...iteration, plan: publicSketchPlan(iteration.plan) }
+      : { id: iteration.id, ordinal: iteration.ordinal, status: iteration.status, markupRevision: iteration.markupRevision, resultGraphHash: iteration.resultGraphHash, baseGraphHash: iteration.baseGraphHash, createdAt: iteration.createdAt, updatedAt: iteration.updatedAt }),
+  };
+}
+
+function publicDraft(draft) { return { ...compactDraftForClient(draft), approval: draftReady(draft) }; }
 async function writeAnalysisDossier(draft, { status, error = null } = {}) {
   // A failed analysis is a first-class product-modeling attempt. Keep its
   // evidence and explicit OpenAI outputs for diagnosis, but never persist
