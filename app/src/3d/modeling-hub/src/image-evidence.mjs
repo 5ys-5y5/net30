@@ -386,6 +386,280 @@ function localAxialRange(graph, component) {
   return { min: Math.min(...ranges.map((range) => range.min)), max: Math.max(...ranges.map((range) => range.max)) };
 }
 
+function componentAssemblyZ(component) {
+  return Number(component.transform?.translationMm?.z ?? 0);
+}
+
+function profileRadiusAt(profile, zMm) {
+  const radial = (profile ?? []).filter((point) => Math.abs(Number(point.xMm)) > 1e-7)
+    .map((point) => ({ zMm: Number(point.zMm), radiusMm: Math.abs(Number(point.xMm)) }))
+    .filter((point) => Number.isFinite(point.zMm) && Number.isFinite(point.radiusMm))
+    .sort((left, right) => left.zMm - right.zMm);
+  if (radial.length < 2 || zMm < radial[0].zMm - 1e-6 || zMm > radial.at(-1).zMm + 1e-6) return null;
+  for (let index = 1; index < radial.length; index += 1) {
+    const before = radial[index - 1], after = radial[index];
+    if (zMm > after.zMm + 1e-6) continue;
+    const denominator = after.zMm - before.zMm;
+    return denominator <= 1e-8 ? Math.max(before.radiusMm, after.radiusMm) : before.radiusMm + (after.radiusMm - before.radiusMm) * ((zMm - before.zMm) / denominator);
+  }
+  return radial.at(-1).radiusMm;
+}
+
+function radialProfileNode(graph, component) {
+  return componentNodes(graph, component.id)
+    .filter((node) => node.operation === "revolve" && Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 4)
+    .map((node) => ({ node, radius: Math.max(...node.parameters.profile.map((point) => Math.abs(Number(point.xMm ?? 0)))) }))
+    .sort((left, right) => right.radius - left.radius)[0]?.node ?? null;
+}
+
+/**
+ * A helical/curved detail that is explicitly Boolean-unioned to a revolved
+ * host is not an unrelated visual flourish: its radial path is authored
+ * relative to that host's surface.  When a measured neck curve changes, keep
+ * the detail's *measured offset* and polar angle, then place it on the new
+ * OCCT host radius.  This preserves the same declarative sweep topology and
+ * prevents the old failure where fitting the hidden neck had to be abandoned
+ * because an already-unioned thread path would be left floating.
+ *
+ * The function intentionally declines arbitrary sweeps: only a direct
+ * union with this component's target revolve/shell is attachable.  Other
+ * topology still becomes an evidence/review requirement instead of an
+ * invented bridge.
+ */
+function reanchorUnionSweepPaths(beforeGraph, nextGraph, componentId, targetNodeId) {
+  const beforeNodes = new Map(beforeGraph.nodes.map((node) => [node.id, node]));
+  const nextNodes = new Map(nextGraph.nodes.map((node) => [node.id, node]));
+  const beforeTarget = beforeNodes.get(targetNodeId);
+  const nextTarget = nextNodes.get(targetNodeId);
+  const adjustments = []; const unresolved = [];
+  if (!beforeTarget?.parameters?.profile || !nextTarget?.parameters?.profile) return { adjustments, unresolved };
+  const hostIds = new Set([targetNodeId]);
+  for (const node of beforeGraph.nodes.filter((node) => node.componentId === componentId && node.operation === "shell" && node.inputNodeIds.includes(targetNodeId))) hostIds.add(node.id);
+  const unions = beforeGraph.nodes.filter((node) => node.componentId === componentId && node.operation === "boolean" && node.parameters?.operation === "union");
+  const unionSweepIds = new Set();
+  for (const union of unions) {
+    const hasHost = union.inputNodeIds.some((id) => hostIds.has(id));
+    if (!hasHost) continue;
+    for (const id of union.inputNodeIds) if (beforeNodes.get(id)?.operation === "sweep") unionSweepIds.add(id);
+  }
+  for (const sweep of beforeGraph.nodes.filter((node) => node.componentId === componentId && node.operation === "sweep" && !node.inputNodeIds.length)) {
+    const nextSweep = nextNodes.get(sweep.id);
+    const path = sweep.parameters?.path;
+    if (!unionSweepIds.has(sweep.id)) {
+      unresolved.push({ nodeId: sweep.id, reason: "unanchored_sweep_not_directly_unioned_to_fitted_host" });
+      continue;
+    }
+    if (!nextSweep || !Array.isArray(path) || path.length < 2) {
+      unresolved.push({ nodeId: sweep.id, reason: "sweep_path_missing" });
+      continue;
+    }
+    const nextPath = []; let valid = true;
+    for (const point of path) {
+      const x = Number(point.xMm), y = Number(point.yMm), z = Number(point.zMm);
+      const radial = Math.hypot(x, y);
+      const beforeRadius = profileRadiusAt(beforeTarget.parameters.profile, z);
+      const nextRadius = profileRadiusAt(nextTarget.parameters.profile, z);
+      if (!(radial > 1e-8) || !Number.isFinite(beforeRadius) || !Number.isFinite(nextRadius)) { valid = false; break; }
+      // A sweep that is explicitly unioned to a host must cross its exterior
+      // by a bounded amount.  A legacy path can be wholly *inside* the host
+      // (negative offset), which only appears connected until a new curve is
+      // fitted and then produces an invalid coincident Boolean.  Preserve an
+      // already-outward measured offset; otherwise use the sweep's own
+      // approved section radius with 35% overlap. This is the same
+      // feature-level contact rule used for a surface-attached rib, not a
+      // component-name special case or a visual-only translation.
+      const declaredSectionRadius = Number(sweep.parameters?.radiusMm);
+      const minimumOutwardOffset = Number.isFinite(declaredSectionRadius) && declaredSectionRadius > 0 ? declaredSectionRadius * .65 : 0;
+      const adjustedRadius = Math.max(.01, nextRadius + Math.max(radial - beforeRadius, minimumOutwardOffset));
+      nextPath.push({ ...point, xMm: Number((x * adjustedRadius / radial).toFixed(6)), yMm: Number((y * adjustedRadius / radial).toFixed(6)), zMm: z });
+    }
+    if (!valid) {
+      unresolved.push({ nodeId: sweep.id, reason: "sweep_path_outside_fitted_profile_range" });
+      continue;
+    }
+    nextSweep.parameters = { ...nextSweep.parameters, path: nextPath };
+    adjustments.push({ nodeId: sweep.id, hostNodeId: targetNodeId, source: "fitted_host_surface_radial_offset", pointCount: nextPath.length });
+  }
+  return { adjustments, unresolved };
+}
+
+function containedCylindricalCutter(graph, component) {
+  const nodes = new Map(componentNodes(graph, component.id).map((node) => [node.id, node]));
+  for (const root of component.rootNodeIds.map((id) => nodes.get(id)).filter(Boolean)) {
+    if (root.operation !== "boolean" || root.parameters?.operation !== "cut") continue;
+    const cutter = nodes.get(root.inputNodeIds.at(-1));
+    if (cutter?.operation !== "primitive" || cutter.parameters?.primitive !== "cylinder") continue;
+    const radiusMm = Number(cutter.parameters?.radiusMm);
+    const heightMm = Number(cutter.parameters?.heightMm);
+    const localZ = Number(cutter.parameters?.transform?.translationMm?.z ?? 0);
+    if (radiusMm > 0 && heightMm > 0 && Number.isFinite(localZ)) return { node: cutter, radiusMm, heightMm, localZ };
+  }
+  return null;
+}
+
+/**
+ * Enforce continuous, graph-native clearance for centred axisymmetric
+ * assemblies before OCCT compilation. This is deliberately feature/topology
+ * based (profiles, cylindrical cutter, declared interface), never a Korean or
+ * English component-name lookup. It solves two measurable failures:
+ *
+ * - a declared mating component cannot have a cavity smaller than the
+ *   companion's measured exterior plus the approved clearance;
+ * - a separate annular part is resized at its declared inner radial boundary
+ *   to preserve its assembly datum; an impossible wall thickness becomes an
+ *   explicit review requirement rather than an invented placement.
+ *
+ * Off-axis geometry, non-cylindrical cavities and ambiguous containment are
+ * left unchanged for explicit reviewer evidence rather than approximated.
+ */
+export function fitAxisymmetricAssemblyClearances(graph) {
+  const next = structuredClone(graph);
+  const components = new Map(next.components.filter((component) => component.representation === "brep_solid").map((component) => [component.id, component]));
+  const adjustments = [];
+  const unresolved = [];
+  let geometryChanged = false;
+  const clearanceFor = (leftId, rightId) => next.interfaces
+    .filter((item) => item.componentIds.includes(leftId) && item.componentIds.includes(rightId))
+    .map((item) => Number(item.clearanceMm ?? 0)).filter((value) => Number.isFinite(value) && value >= 0)
+    .reduce((maximum, value) => Math.max(maximum, value), 0);
+
+  // First make declared mates physically possible by sizing the receiving
+  // cylindrical cavity against the other component's actual profile range.
+  for (const relation of next.interfaces) {
+    for (const hostId of relation.componentIds) {
+      const host = components.get(hostId); const cavity = host ? containedCylindricalCutter(next, host) : null;
+      if (!host || !cavity) continue;
+      for (const guestId of relation.componentIds.filter((id) => id !== hostId)) {
+        const guest = components.get(guestId); const guestProfile = guest ? radialProfileNode(next, guest) : null;
+        if (!guest || !guestProfile) continue;
+        const hostZ = componentAssemblyZ(host); const guestZ = componentAssemblyZ(guest);
+        const hostRange = localAxialRange(next, host);
+        // A lower-datum closure cavity must begin at the mating datum. A
+        // positive start offset leaves a thin but solid bottom disk that
+        // intersects the incoming neck before the cylindrical clearance even
+        // begins. Preserve the existing roof thickness by extending only the
+        // lower end of the cutter; this is an axial parameter correction, not
+        // a Boolean shortcut or a change to the exterior curve.
+        const guestAtHostDatum = hostRange ? profileRadiusAt(guestProfile.parameters.profile, hostZ + hostRange.min - guestZ) : null;
+        if (hostRange && Number.isFinite(guestAtHostDatum) && cavity.localZ > hostRange.min + 1e-6) {
+          const delta = cavity.localZ - hostRange.min;
+          cavity.node.parameters.transform = {
+            ...cavity.node.parameters.transform,
+            translationMm: { ...cavity.node.parameters.transform.translationMm, z: Number(hostRange.min.toFixed(6)) },
+          };
+          cavity.node.parameters.heightMm = Number((cavity.heightMm + delta).toFixed(6));
+          geometryChanged = true;
+          adjustments.push({ type: "cavity_open_datum", componentId: hostId, nodeId: cavity.node.id, counterpartComponentId: guestId, previousStartZMm: cavity.localZ, targetStartZMm: Number(hostRange.min.toFixed(6)), previousHeightMm: cavity.heightMm, targetHeightMm: cavity.node.parameters.heightMm, source: "declared_interface+lower_mating_datum" });
+          cavity.localZ = hostRange.min; cavity.heightMm = cavity.node.parameters.heightMm;
+        }
+        const start = hostZ + cavity.localZ; const end = start + cavity.heightMm;
+        const samples = Array.from({ length: 17 }, (_, index) => start + (end - start) * index / 16)
+          .map((worldZ) => profileRadiusAt(guestProfile.parameters.profile, worldZ - guestZ)).filter(Number.isFinite);
+        if (!samples.length) continue;
+        const requiredRadius = Math.max(...samples) + clearanceFor(hostId, guestId);
+        if (cavity.radiusMm + 1e-6 >= requiredRadius) continue;
+        cavity.node.parameters.radiusMm = Number(requiredRadius.toFixed(6));
+        geometryChanged = true;
+        adjustments.push({ type: "cavity_clearance", componentId: hostId, nodeId: cavity.node.id, counterpartComponentId: guestId, previousRadiusMm: cavity.radiusMm, requiredRadiusMm: Number(requiredRadius.toFixed(6)), clearanceMm: clearanceFor(hostId, guestId), source: "declared_interface+axisymmetric_profile" });
+      }
+    }
+  }
+
+  // Then keep independent annular layers from occupying material of a full
+  // radial neighbour. We adjust only an existing lower layer upward/downward
+  // relationship; no new shape or interface is invented.
+  const solidProfiles = [...components.values()].map((component) => {
+    const node = radialProfileNode(next, component); const range = localAxialRange(next, component);
+    const radial = node?.parameters?.profile?.filter((point) => Math.abs(Number(point.xMm)) > 1e-7).map((point) => Math.abs(Number(point.xMm))) ?? [];
+    const axisBound = Boolean(node?.parameters?.profile?.some((point) => Math.abs(Number(point.xMm)) <= 1e-7));
+    const rootEnvelope = Math.max(...component.rootNodeIds.map((id) => radialEnvelopeForNode(new Map(next.nodes.map((item) => [item.id, item])), id, new Map())).filter(Number.isFinite));
+    return { component, node, range, axisBound, radialMin: radial.length ? Math.min(...radial) : null, radialMax: radial.length ? Math.max(...radial) : null, rootEnvelope };
+  }).filter((item) => item.node && item.range && Number.isFinite(item.radialMin) && Number.isFinite(item.radialMax));
+  for (const annulus of solidProfiles.filter((item) => !item.axisBound && item.radialMin > 1e-5)) {
+    const annulusZ = componentAssemblyZ(annulus.component); const annulusGlobal = { min: annulus.range.min + annulusZ, max: annulus.range.max + annulusZ };
+    const candidate = solidProfiles
+      .filter((other) => other.component.id !== annulus.component.id && other.axisBound)
+      .map((other) => ({ other, global: { min: other.range.min + componentAssemblyZ(other.component), max: other.range.max + componentAssemblyZ(other.component) } }))
+      .filter(({ other, global }) => annulusGlobal.min < global.max - 1e-6 && annulusGlobal.max > global.min + 1e-6 && annulus.radialMin < other.radialMax - 1e-6)
+      .sort((left, right) => Math.abs(annulusGlobal.min - left.global.min) - Math.abs(annulusGlobal.min - right.global.min))[0];
+    if (!candidate) continue;
+    const clearance = clearanceFor(annulus.component.id, candidate.other.component.id);
+    // An annular gasket, collar, or pouring ring is primarily a radial mate.
+    // Translating it beyond the product removes a Boolean overlap but destroys
+    // the intended assembly. First enlarge only its declared inner boundary
+    // against the host's measured profile across the shared axial interval.
+    // Axial separation remains a conservative fallback when the requested
+    // clearance would consume the entire annular wall.
+    const overlap = { min: Math.max(annulusGlobal.min, candidate.global.min), max: Math.min(annulusGlobal.max, candidate.global.max) };
+    const hostSamples = Array.from({ length: 9 }, (_, index) => overlap.min + (overlap.max - overlap.min) * index / 8)
+      .map((worldZ) => profileRadiusAt(candidate.other.node.parameters.profile, worldZ - componentAssemblyZ(candidate.other.component)))
+      .filter(Number.isFinite);
+    const requiredInnerRadius = hostSamples.length ? Math.max(...hostSamples) + clearance : null;
+    // The candidate list is intentionally broad (its profile may flare at a
+    // different height), so decide actual radial overlap from samples taken
+    // in the common axial interval. A ring that already clears those samples
+    // is a valid contact/clearance relationship and must not become a false
+    // "unresolved" manufacturing warning.
+    if (Number.isFinite(requiredInnerRadius) && annulus.radialMin >= requiredInnerRadius - 1e-6) continue;
+    if (Number.isFinite(requiredInnerRadius) && requiredInnerRadius < annulus.radialMax - 1e-4 && requiredInnerRadius > annulus.radialMin + 1e-6) {
+      const previousInnerRadius = annulus.radialMin;
+      const adjustProfile = (profile) => (profile ?? []).map((point) => {
+        if (Math.abs(Math.abs(Number(point.xMm)) - previousInnerRadius) > 1e-5) return point;
+        return { ...point, xMm: Math.sign(Number(point.xMm) || 1) * Number(requiredInnerRadius.toFixed(6)) };
+      });
+      annulus.node.parameters.profile = adjustProfile(annulus.node.parameters.profile);
+      annulus.node.parameters.curveSegments = (annulus.node.parameters.curveSegments ?? []).map((segment) => ({ ...segment, points: adjustProfile(segment.points) }));
+      annulus.radialMin = Number(requiredInnerRadius.toFixed(6));
+      geometryChanged = true;
+      adjustments.push({ type: "annular_radial_clearance", componentId: annulus.component.id, counterpartComponentId: candidate.other.component.id, previousInnerRadiusMm: previousInnerRadius, requiredInnerRadiusMm: annulus.radialMin, outerRadiusMm: annulus.radialMax, clearanceMm: clearance, source: "axisymmetric_annulus_host_profile" });
+      continue;
+    }
+    // Do not "solve" an impossible seal by moving it outside the assembly.
+    // That would make the collision report green while producing a product
+    // unrelated to the evidence. Keep the approved placement, preserve the
+    // B-Rep for review, and carry a precise engineering question forward.
+    unresolved.push({ type: "annular_clearance_requires_review", componentId: annulus.component.id, counterpartComponentId: candidate.other.component.id, innerRadiusMm: annulus.radialMin, outerRadiusMm: annulus.radialMax, requiredInnerRadiusMm: requiredInnerRadius, clearanceMm: clearance, source: "axisymmetric_annulus_host_profile" });
+  }
+
+  // A separate annular insert may be declared against the bottle/seal while
+  // physically occupying the patterned closure's solid material. That is not
+  // a permitted mating contact: there is no declared cap/insert interface and
+  // OCCT reports positive volume overlap. Keep the insert's local B-Rep and
+  // its actual bottle relation, but move its *assembly transform* down to the
+  // closure lower datum with a 0.01 mm engineering separation. This applies
+  // only to centred annuli which already have another explicit interface;
+  // arbitrary rings are never repositioned merely to make a report green.
+  for (const annulus of solidProfiles.filter((item) => !item.axisBound && item.radialMin > 1e-5)) {
+    const annulusZ = componentAssemblyZ(annulus.component);
+    const annulusGlobal = { min: annulus.range.min + annulusZ, max: annulus.range.max + annulusZ };
+    const hasOtherContract = next.interfaces.some((item) => item.componentIds.includes(annulus.component.id) && item.componentIds.some((id) => id !== annulus.component.id));
+    if (!hasOtherContract) continue;
+    const blocker = solidProfiles
+      .filter((other) => other.component.id !== annulus.component.id && other.axisBound && Number.isFinite(other.rootEnvelope) && annulus.radialMin < other.rootEnvelope - 1e-5)
+      .map((other) => ({ other, global: { min: other.range.min + componentAssemblyZ(other.component), max: other.range.max + componentAssemblyZ(other.component) } }))
+      .filter(({ other, global }) => !next.interfaces.some((item) => item.componentIds.includes(annulus.component.id) && item.componentIds.includes(other.component.id)) && annulusGlobal.min < global.max - 1e-6 && annulusGlobal.max > global.min + 1e-6)
+      .sort((left, right) => left.global.min - right.global.min)[0];
+    if (!blocker) continue;
+    const clearanceMm = .01;
+    const targetZ = blocker.global.min - clearanceMm - annulus.range.max;
+    if (targetZ >= annulusZ - 1e-6) continue;
+    const transform = annulus.component.transform ?? {}; const translation = transform.translationMm ?? {};
+    annulus.component.transform = { ...transform, translationMm: { ...translation, z: Number(targetZ.toFixed(6)) } };
+    geometryChanged = true;
+    // The earlier radial pass may have encountered this same non-mated
+    // closure before it knew an axial separation was possible. Once the
+    // annulus is physically outside the closure's Z range, that radial
+    // warning is no longer a manufacturing requirement. Keep unresolved
+    // warnings for its actual declared host unchanged.
+    for (let index = unresolved.length - 1; index >= 0; index -= 1) {
+      const item = unresolved[index];
+      if (item.componentId === annulus.component.id && item.counterpartComponentId === blocker.other.component.id) unresolved.splice(index, 1);
+    }
+    adjustments.push({ type: "annular_axial_noninterference", componentId: annulus.component.id, counterpartComponentId: blocker.other.component.id, previousAssemblyZMm: annulusZ, targetAssemblyZMm: Number(targetZ.toFixed(6)), clearanceMm, source: "declared_insert_contract+undeclared_closure_overlap" });
+  }
+  return { graph: next, applied: geometryChanged, adjustments, unresolved };
+}
+
 function outerRevolveNode(graph, componentId) {
   return componentNodes(graph, componentId)
     .filter((node) => node.operation === "revolve" && Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 4)
@@ -1001,6 +1275,112 @@ export function fitPrimaryAxisymmetricComponent(graph, evidence, primaryImageId 
       source: Number.isFinite(targetHeightMm) && targetHeightMm > 0 && Number.isFinite(targetWidthMm) && targetWidthMm > 0 ? "approved_dimensions" : "graph_extent",
     },
     curveCompilation: "monotone_bezier_with_occt_native_shell_offset",
+  };
+}
+
+/**
+ * Fit only the upper local shape from an explicitly scoped no-cap/detail
+ * image.  The primary image remains the sole global size and full-silhouette
+ * datum.  This is how a related reference can inform a hidden bottle neck
+ * without silently borrowing that product's diameter, height, logo or body
+ * outline.
+ */
+export function fitNeckDetailFromEvidence(graph, evidence, evidenceManifest, approvedDimensions = null) {
+  const detailItem = evidenceManifest?.items?.find((item) => item.role === "neck_detail" && item.allowedFor?.includes("neck_thread"));
+  const measurement = detailItem ? evidence?.images?.find((item) => item.ok && item.measurement?.imageId === detailItem.imageId)?.measurement : null;
+  const samples = measurement?.neckDetailSilhouette ?? measurement?.topDetailSilhouette;
+  if (!detailItem || !Array.isArray(samples) || samples.length < 12) return { graph, applied: false, adjustments: [], observations: [], reason: "neck_detail_evidence_missing" };
+  // A perspective/detail photograph with only a *related* product identity
+  // is valuable evidence for a later user/official confirmation, but it is
+  // not safe to inject as an exact manufacturing curve. This avoids the old
+  // behaviour of silently mixing a different vessel's neck into the primary
+  // body just because both filenames mention DURAN. Exact-product detail
+  // evidence can be promoted by the Evidence Resolver (confidence >= .8).
+  if (Number(detailItem.confidence) < .8) {
+    return {
+      graph,
+      applied: false,
+      adjustments: [],
+      observations: [{ imageId: detailItem.imageId, source: "neck_detail_measurement_pending_identity_confirmation", confidence: detailItem.confidence, sampleCount: samples.length, allowedFor: detailItem.allowedFor }],
+      reason: "related_neck_detail_requires_identity_confirmation",
+    };
+  }
+  const candidates = graph.nodes
+    .filter((node) => node.operation === "revolve" && Array.isArray(node.parameters?.profile) && node.parameters.profile.length >= 4)
+    .map((node) => ({ node, span: Math.max(...node.parameters.profile.map((point) => Number(point.zMm))) - Math.min(...node.parameters.profile.map((point) => Number(point.zMm))) }))
+    .sort((left, right) => right.span - left.span);
+  const target = candidates[0]?.node;
+  if (!target) return { graph, applied: false, adjustments: [], observations: [], reason: "neck_target_requires_topology_review" };
+  const source = target.parameters.profile;
+  const outer = source.filter((point) => Number(point.xMm) > 1e-8).sort((left, right) => Number(left.zMm) - Number(right.zMm));
+  if (outer.length < 4) return { graph, applied: false, adjustments: [], observations: [], reason: "neck_outer_profile_missing" };
+  // Axis points only close a revolved planar wire; they are not observed
+  // exterior samples.  Some older graphs close an open vessel with an axis
+  // point above the real rim.  Using that artificial point as the no-cap
+  // registration bound stretched a 12 mm neck reference into a false cone.
+  // The actual measured exterior range is the positive-radius profile.
+  const minZ = Math.min(...outer.map((point) => Number(point.zMm)));
+  const maxZ = Math.max(...outer.map((point) => Number(point.zMm)));
+  const approvedHeight = Number(approvedDimensions?.heightMm);
+  // A detail image may only replace a section the primary fit has explicitly
+  // reserved below an approved top datum.  If the primary B-Rep already owns
+  // the full product height, its upper curve is visible evidence and a
+  // perspective no-cap image must not overwrite it.  This makes the hidden
+  // region a geometric datum, not a filename or component-name heuristic.
+  const hiddenTailMm = Number.isFinite(approvedHeight) && approvedHeight > maxZ + 1
+    ? approvedHeight - maxZ : 0;
+  if (!(hiddenTailMm > 0)) {
+    return {
+      graph,
+      applied: false,
+      adjustments: [],
+      observations: [{ imageId: detailItem.imageId, source: "neck_detail_not_applied_no_hidden_primary_range", confidence: detailItem.confidence, sampleCount: samples.length, allowedFor: detailItem.allowedFor }],
+      reason: "neck_detail_has_no_hidden_primary_range",
+    };
+  }
+  const usableHeight = Number.isFinite(approvedHeight) && approvedHeight > 0 ? Math.min(approvedHeight, maxZ - minZ) : maxZ - minZ;
+  // The detail photo's upper 48% maps only to the upper 12% of the already
+  // calibrated primary-product B-Rep.  Its lower sample is pinned to the
+  // existing shoulder radius, so it can refine lip/ring curvature but cannot
+  // grow the unrelated reference into a wider bottle.
+  const detailHeight = Math.max(8, Math.min(usableHeight * .12, maxZ - minZ));
+  const startZ = maxZ - detailHeight;
+  const anchorRadius = radiusFromProfile(source, startZ);
+  const ordered = [...samples].filter((item) => Number.isFinite(Number(item.zNorm)) && Number.isFinite(Number(item.radiusNorm))).sort((left, right) => Number(left.zNorm) - Number(right.zNorm));
+  const baseRadius = Math.max(1e-6, Number(ordered[0]?.radiusNorm));
+  const fittedTail = ordered.map((item) => ({
+    xMm: Number(Math.max(.01, anchorRadius * Number(item.radiusNorm) / baseRadius).toFixed(6)),
+    yMm: 0,
+    zMm: Number((startZ + Math.max(0, Math.min(1, Number(item.zNorm))) * detailHeight).toFixed(6)),
+  }));
+  const before = outer.filter((point) => Number(point.zMm) < startZ - 1e-6);
+  const sample = (items, count) => items.length <= count ? items : Array.from({ length: count }, (_, index) => items[Math.round(index * (items.length - 1) / Math.max(1, count - 1))]);
+  const combined = [...sample(before, 44), ...sample(fittedTail, 21)];
+  const deduplicated = combined.filter((point, index, all) => index === 0 || Number(point.zMm) > Number(all[index - 1].zMm) + 1e-6);
+  if (deduplicated.length < 4) return { graph, applied: false, adjustments: [], observations: [], reason: "neck_detail_degenerate" };
+  const next = structuredClone(graph); const node = next.nodes.find((item) => item.id === target.id);
+  node.parameters.profile = [{ xMm: 0, yMm: 0, zMm: minZ }, ...deduplicated, { xMm: 0, yMm: 0, zMm: maxZ }];
+  node.parameters.curveSegments = monotoneBezierSegments(deduplicated.map(({ xMm, zMm }) => ({ xMm, zMm })));
+  const sweepAnchors = reanchorUnionSweepPaths(graph, next, target.componentId, target.id);
+  if (sweepAnchors.unresolved.length) return {
+    graph,
+    applied: false,
+    adjustments: [],
+    observations: [{ imageId: detailItem.imageId, source: "neck_detail_measurement_blocked_by_unanchored_feature", confidence: detailItem.confidence, nodeIds: sweepAnchors.unresolved.map((item) => item.nodeId) }],
+    reason: "neck_target_requires_topology_review",
+  };
+  return {
+    graph: next,
+    applied: true,
+    observations: [],
+    adjustments: [{
+      nodeId: node.id,
+      imageId: detailItem.imageId,
+      zRangeMm: { min: Number(startZ.toFixed(6)), max: Number(maxZ.toFixed(6)) },
+      source: "neck_detail_normalized_curve_fit",
+      confidence: detailItem.confidence,
+      note: "Scoped neck-detail evidence changed only the anchored upper local curve; primary product dimensions and full silhouette remain unchanged.",
+    }, ...sweepAnchors.adjustments],
   };
 }
 

@@ -7,7 +7,7 @@ import json, math, pathlib, struct, sys, time
 
 try:
     import cadquery as cq
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_Sewing
     from OCP.Geom import Geom_BSplineCurve, Geom_BezierCurve
     from OCP.TColgp import TColgp_Array1OfPnt
     from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
@@ -810,6 +810,21 @@ def stl_axisymmetric_contour(stl, bins=64):
     return [{"zNorm": index / max(1, bins - 1), "radiusNorm": radius / max_radius} for index, radius in enumerate(maxima)]
 
 
+def free_edge_count(shape):
+    """Count topological boundary edges on the persisted OCCT shape.
+
+    ``Shell.Closed`` is an important coarse check, but the manufacturing
+    dossier also needs the concrete boundary-edge count.  OCCT's sewing
+    analyser distinguishes a true free boundary from a periodic seam where a
+    direct distinct-face ancestor map would incorrectly see only one face.
+    This stays entirely in B-Rep topology and never relies on STL triangles.
+    """
+    sewing = BRepBuilderAPI_Sewing()
+    sewing.Add(shape.wrapped)
+    sewing.Perform()
+    return int(sewing.NbFreeEdges())
+
+
 def main():
     started = time.perf_counter(); request = json.loads(pathlib.Path(sys.argv[1]).read_text())
     graph_component, graph_nodes = request.get("graphComponent"), request.get("graphNodes", [])
@@ -855,7 +870,7 @@ def main():
     volume_delta = abs(persisted.Volume() - step_shape.Volume()) / max(abs(persisted.Volume()), 1e-9)
     step_closed = bool(step_shells) and all(item.Closed() for item in step_shells)
     step_round_trip = {"valid": step_shape.isValid(), "closed": step_closed, "solidCount": len(step_shape.Solids()), "boundsDeltaMm": bounds_delta, "volumeDeltaRatio": volume_delta, "withinTolerance": step_closed and len(step_shape.Solids()) == 1 and max(bounds_delta.values(), default=0) <= .01 and volume_delta <= .001}
-    payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": source_bounds, "localDatumShiftMm": local_datum_shift, "stepRoundTrip": step_round_trip, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
+    payload = {"valid": True, "closed": closed, "solidCount": len(persisted.Solids()), "shellCount": len(shells), "freeEdges": free_edge_count(persisted), "volumeMm3": persisted.Volume(), "surfaceAreaMm2": persisted.Area(), "boundsMm": source_bounds, "localDatumShiftMm": local_datum_shift, "stepRoundTrip": step_round_trip, "silhouette": stl_axisymmetric_contour(stl), "tessellation": {"chordMm": tolerance, "angularDeg": math.degrees(angular)}, "elapsedMs": round((time.perf_counter() - started) * 1000, 3), "outputs": {"brep": brep.name, "step": step.name, "stl": stl.name}}
     report.write_text(json.dumps(payload, indent=2) + "\n")
     if not closed or payload["solidCount"] != 1:
         raise RuntimeError(f"brep_preflight_failed: closed={closed}, solidCount={payload['solidCount']}")

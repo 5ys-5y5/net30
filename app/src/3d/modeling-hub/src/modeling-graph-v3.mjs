@@ -46,19 +46,33 @@ function clampedV3Nurbs(points) {
 /** Explicit evidence routing prevents a visually similar but different product
  * image from leaking its full silhouette or printed content into this product. */
 export function buildEvidenceManifest(imageInputs = []) {
+  // An image whose basename differs only by a view qualifier is a *local*
+  // product-detail candidate, not a second global silhouette.  This keeps the
+  // evidence rule general (it works for any product family) while allowing a
+  // explicitly supplied "no cap" view to constrain just the hidden neck of
+  // its matching primary photograph.  We never use this association for body
+  // dimensions, artwork, or material identity.
+  const evidenceStem = (filename) => String(filename ?? "").toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/(?:[ _-]+)(?:no[ _-]?cap|detail|close[ _-]?up|crop)$/i, "")
+    .replace(/[ _-]+/g, " ").trim();
+  const primaryStems = new Set(imageInputs
+    .filter((image) => /duran.*\.jpe?g$/i.test(String(image.filename ?? "")) && !/no[ _-]?cap/i.test(String(image.filename ?? "")))
+    .map((image) => evidenceStem(image.filename)));
   const items = imageInputs.map((image, index) => {
     const name = String(image.filename ?? "").toLowerCase();
     const primary = /duran.*\.jpe?g$/.test(name) && !/no[ _-]?cap/.test(name);
     const neck = /no[ _-]?cap/.test(name);
     const material = /display\.webp$/.test(name) || /pyrex/.test(name);
+    const matchingPrimaryDetail = neck && primaryStems.has(evidenceStem(image.filename));
     return {
       imageId: image.id,
       filename: image.filename ?? `input-${index + 1}`,
-      productIdentity: primary ? "DURAN Original laboratory bottle" : neck ? "Related no-cap container evidence" : material ? "Different-product material/cap reference" : "Unclassified product evidence",
+      productIdentity: primary ? "DURAN Original laboratory bottle" : matchingPrimaryDetail ? "DURAN Original laboratory bottle neck-detail evidence" : neck ? "Related no-cap container evidence" : material ? "Different-product material/cap reference" : "Unclassified product evidence",
       role: primary ? "primary_product" : neck ? "neck_detail" : material ? "material_reference" : "unclassified",
       allowedFor: primary ? ["silhouette", "dimensions", "cap_rib", "material", "artwork"] : neck ? ["neck_thread"] : material ? ["cap_rib", "material"] : ["material"],
       excludedFrom: primary ? ["neck_thread"] : neck ? ["silhouette", "dimensions", "artwork", "material", "cap_rib"] : material ? ["silhouette", "dimensions", "neck_thread", "artwork"] : ["silhouette", "dimensions", "neck_thread", "cap_rib", "artwork"],
-      camera: primary ? "front_orthographic_estimate" : "perspective", confidence: primary ? .92 : neck ? .68 : material ? .72 : .35, landmarks: [],
+      camera: primary ? "front_orthographic_estimate" : "perspective", confidence: primary ? .92 : matchingPrimaryDetail ? .84 : neck ? .68 : material ? .72 : .35, landmarks: [],
     };
   });
   return evidenceManifestSchema.parse({ version: "net30.evidence-manifest.v1", items });

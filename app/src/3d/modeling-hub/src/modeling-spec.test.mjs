@@ -91,6 +91,8 @@ assert.equal(draftPayloadSchema.parse({ version: "net30.modeling-draft.v7", oper
 assert.throws(() => draftPayloadSchema.parse({ version: "net30.modeling-draft.v7", operation: "create-parent", model: "fixture", parentModelId: "parent", product: { source: "new", name: "새 부모" }, componentInput: "유리병", prompt: "유리병" }), /새 부모 생성/);
 const analysis = await analyseDraft(input, []);
 assert.deepEqual(analysis.components.map((component) => component.displayName), ["뚜껑"]);
+const repeatAnalysis = await analyseDraft(input, []);
+assert.equal(repeatAnalysis.modelingGraphHash, analysis.modelingGraphHash, "the same planner output and evidence must retain stable component/node IDs and reuse the same graph hash");
 const draft = {
   id: "fixture",
   revision: 1,

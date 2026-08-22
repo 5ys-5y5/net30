@@ -170,12 +170,57 @@ def analyse(item):
         "zNorm": round((bottom - row["y"]) / max(1, bottom - body_start), 7),
         "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
     } for row in body_rows]
+    # Keep a separately measured upper-detail contour for evidence whose
+    # declared role is neck/detail.  It is intentionally a normalized local
+    # shape, not a second product-scale calibration: a related no-cap photo
+    # may establish the lip, neck rings and shoulder continuity, but must not
+    # overwrite the primary product's overall width or height.
+    detail_end = int(round(top + (bottom - top) * .48))
+    detail_rows = _samples(foreground, top, detail_end, 48)
+    top_detail = [{
+        "zNorm": round((detail_end - row["y"]) / max(1, detail_end - top), 7),
+        "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
+    } for row in detail_rows]
+    # A no-cap reference often contains the neck, shoulder and upper body in
+    # its top crop. Treating all of those rows as one short neck curve was
+    # stretching the shoulder into the mouth. Extract only the first stable
+    # narrow band, ending before the first sustained radial expansion. This is
+    # a product-agnostic contour rule: it does not inspect labels, product
+    # names, colours, or a fixed bottle dimension. A single anti-aliased rim
+    # pixel is discarded only when it is substantially narrower than the next
+    # stable rows; a real rim is retained as part of the band.
+    neck_rows = list(detail_rows)
+    if len(neck_rows) >= 8:
+        spans = [float(row["right"] - row["left"] + 1) for row in neck_rows]
+        stable_start = 0
+        if spans[0] < float(np.median(spans[1:min(len(spans), 6)])) * .60:
+            stable_start = 1
+        stable = neck_rows[stable_start:]
+        stable_spans = [float(row["right"] - row["left"] + 1) for row in stable]
+        baseline_count = min(8, len(stable_spans))
+        baseline = float(np.median(stable_spans[:baseline_count]))
+        breakpoint = len(stable)
+        # Three consecutive wider rows distinguish a shoulder transition from
+        # an individual specular highlight or one noisy silhouette scanline.
+        for index in range(max(3, baseline_count - 1), len(stable_spans) - 2):
+            if all(value >= baseline * 1.12 for value in stable_spans[index:index + 3]):
+                breakpoint = max(8, index)
+                break
+        neck_rows = stable[:breakpoint]
+    neck_top = neck_rows[0]["y"] if neck_rows else top
+    neck_bottom = neck_rows[-1]["y"] if neck_rows else detail_end
+    neck_detail = [{
+        "zNorm": round((neck_bottom - row["y"]) / max(1, neck_bottom - neck_top), 7),
+        "radiusNorm": round(((row["right"] - row["left"] + 1) / 2) / half_width, 7),
+    } for row in neck_rows]
     return {
         "imageId": item["id"], "filename": item.get("filename", "image"),
         "widthPx": w, "heightPx": h,
         "backgroundRgb": [round(float(value), 2) for value in background],
         "axisXNorm": round(center / max(1, w), 7),
         "silhouette": silhouette, "bodySilhouette": body,
+        "topDetailSilhouette": top_detail,
+        "neckDetailSilhouette": neck_detail,
         "bounds": {"topY": top, "bottomY": bottom, "rawBottomY": raw_bottom, "halfWidthPx": round(float(half_width), 4)},
         "cap": cap, "capRibHint": rib_hint,
         "measurementMethod": "corner-background-delta-horizontal-persistence-v1",

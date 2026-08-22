@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(here, "../../../../../");
 const workerPath = path.join(here, "cad-worker.py");
+const assemblyWorkerPath = path.join(here, "cad-assembly-worker.py");
 
 function cadqueryBin() {
   return process.env.NET30_CADQUERY_BIN || path.join(repositoryRoot, ".cadquery-venv/bin/python");
@@ -55,6 +56,7 @@ function diagnostic(component, report, execution) {
   const failures = [];
   if (!report.valid) failures.push("invalid_brep");
   if (!report.closed) failures.push("open_shell");
+  if (report.freeEdges !== 0) failures.push("free_edges");
   if (report.solidCount !== 1) failures.push("multiple_or_missing_solids");
   return {
     componentId: component.id,
@@ -66,6 +68,7 @@ function diagnostic(component, report, execution) {
     closed: Boolean(report.closed),
     solidCount: Number(report.solidCount),
     shellCount: Number(report.shellCount),
+    freeEdges: Number(report.freeEdges),
     boundsMm: report.boundsMm,
     execution: { timedOut: execution.timedOut, timeoutMs: execution.timeoutMs, elapsedMs: execution.elapsedMs, status: execution.status, signal: execution.signal, stdout: execution.stdout.slice(-2_000), stderr: execution.stderr.slice(-2_000) },
   };
@@ -209,17 +212,20 @@ function brepSketchPlan(graph, meshSources, { width = 1000, height = 680, title 
  * used by the final export, so JSON topology cannot be treated as a proxy for
  * a closed, connected manufacturing solid.
  */
-export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 2, preview = null, cache = null } = {}) {
+export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency = 2, preview = null, cache = null, assembly = true } = {}) {
   const components = graph.components.filter((component) => component.representation === "brep_solid");
   if (!components.length) return { ok: true, diagnostics: [] };
   const temporary = await mkdtemp(path.join(os.tmpdir(), "net30-brep-preflight-"));
   try {
     const diagnostics = new Array(components.length); const meshSources = new Map();
+    const brepPaths = new Array(components.length);
     let nextIndex = 0;
     const inspect = async (index) => {
       const component = components[index];
       const fingerprint = componentGraphFingerprint(graph, component);
       const cached = cache?.get(fingerprint);
+      const stem = path.join(temporary, component.id);
+      const paths = { step: `${stem}.step`, brep: `${stem}.brep`, stl: `${stem}.stl`, report: `${stem}.validation.json` };
       if (cached) {
         const cachedDiagnostic = structuredClone(cached.diagnostic);
         cachedDiagnostic.execution = {
@@ -229,35 +235,38 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
           stdout: "B-Rep preflight cache hit",
         };
         diagnostics[index] = cachedDiagnostic;
+        if (cached.brep) await writeFile(paths.brep, cached.brep);
+        brepPaths[index] = paths.brep;
         if (preview && cached.triangles) meshSources.set(component.id, structuredClone(cached.triangles));
         return;
       }
-      const stem = path.join(temporary, component.id);
       const requestPath = `${stem}.request.json`;
-      const reportPath = `${stem}.validation.json`;
       await writeFile(requestPath, JSON.stringify({
         graphComponent: component,
         graphNodes: graph.nodes,
-        paths: { step: `${stem}.step`, brep: `${stem}.brep`, stl: `${stem}.stl`, report: reportPath },
+        paths,
         tessellation: { chordMm: .2, angularDeg: 15 },
       }));
       const execution = await run(cadqueryBin(), ["-u", workerPath, requestPath], timeoutMs);
       let report = null;
-      try { report = JSON.parse(await readFile(reportPath, "utf8")); } catch { /* execution diagnostic below */ }
+      try { report = JSON.parse(await readFile(paths.report, "utf8")); } catch { /* execution diagnostic below */ }
       diagnostics[index] = diagnostic(component, report, execution);
       diagnostics[index].transform = component.transform ?? { translationMm: { x: 0, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
       diagnostics[index].material = component.material ?? null;
       let stl = null;
       if (execution.ok && diagnostics[index].code === "ok") {
-        try { stl = await readFile(`${stem}.stl`); diagnostics[index].silhouette = binaryStlAxisymmetricContour(stl); } catch { /* the B-Rep diagnostic stays authoritative */ }
+        try { stl = await readFile(paths.stl); diagnostics[index].silhouette = binaryStlAxisymmetricContour(stl); } catch { /* the B-Rep diagnostic stays authoritative */ }
+        brepPaths[index] = paths.brep;
       }
       if (preview && execution.ok && diagnostics[index].code === "ok") {
-        try { meshSources.set(component.id, binaryStlTriangles(stl ?? await readFile(`${stem}.stl`), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
+        try { meshSources.set(component.id, binaryStlTriangles(stl ?? await readFile(paths.stl), preview.maxTriangles ?? 700)); } catch { /* the diagnostic is the authoritative failure result */ }
       }
       if (cache && diagnostics[index].code === "ok") {
+        const brep = await readFile(paths.brep);
         cache.set(fingerprint, {
           diagnostic: structuredClone(diagnostics[index]),
           triangles: preview ? structuredClone(meshSources.get(component.id) ?? []) : null,
+          brep,
         });
       }
     };
@@ -275,7 +284,31 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
       }
     });
     await Promise.all(workers);
-    return { ok: diagnostics.every((item) => item.code === "ok"), diagnostics, sketchPlan: preview ? brepSketchPlan(graph, meshSources, preview) : null };
+    let assemblyReport = null;
+    // Child validity is needed for every curve-fit candidate.  An XDE/STEP
+    // assembly check is deliberately reserved for the final candidate: doing
+    // the same native Boolean pair checks for every 0.2 mm contour adjustment
+    // multiplied interactive analysis time without adding a new decision.
+    if (assembly && diagnostics.every((item) => item.code === "ok") && brepPaths.every(Boolean)) {
+      const assemblyDir = path.join(temporary, "assembly");
+      const paths = { xbf: path.join(assemblyDir, "assembly.xbf"), step: path.join(assemblyDir, "assembly.step"), report: path.join(assemblyDir, "assembly.validation.json") };
+      const requestPath = path.join(assemblyDir, "assembly.request.json");
+      await mkdir(assemblyDir, { recursive: true });
+      await writeFile(requestPath, JSON.stringify({
+        name: "NET30 B-Rep preflight assembly",
+        components: components.map((component, index) => ({ id: component.id, brep: brepPaths[index], transform: component.transform })),
+        interfaces: graph.interfaces ?? [], paths, toleranceMm: .01,
+      }));
+      const execution = await run(cadqueryBin(), ["-u", assemblyWorkerPath, requestPath], timeoutMs);
+      let report = null;
+      try { report = JSON.parse(await readFile(paths.report, "utf8")); } catch { /* surfaced below without changing child diagnostics */ }
+      assemblyReport = {
+        code: report ? (execution.ok ? "ok" : "cad_assembly_preflight_failed") : (execution.timedOut ? "cad_assembly_preflight_timeout" : "cad_assembly_preflight_failed"),
+        report,
+        execution: { timedOut: execution.timedOut, timeoutMs: execution.timeoutMs, elapsedMs: execution.elapsedMs, status: execution.status, signal: execution.signal, stdout: execution.stdout.slice(-2_000), stderr: execution.stderr.slice(-2_000) },
+      };
+    }
+    return { ok: diagnostics.every((item) => item.code === "ok"), diagnostics, assembly: assemblyReport, sketchPlan: preview ? brepSketchPlan(graph, meshSources, preview) : null };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

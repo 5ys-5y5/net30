@@ -218,7 +218,13 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
   }
   const parsed = modelingGraphOutputSchema.parse(compatibleOutput);
   if (parsed.components.length !== requestedNames.length) throw new Error("analysis_incomplete: 입력한 컴포넌트 수와 모델링 그래프가 일치하지 않습니다.");
-  const keyToId = new Map(); parsed.components.forEach((item, index) => keyToId.set(item.componentKey, `cmp-${randomUUID().slice(0, 12)}-${index + 1}`));
+  // IDs participate in graph hashes, component cache keys, immutable product
+  // dossiers and user markup targets. Random IDs made re-running the exact
+  // same Vision output look like a new product and forced needless OCCT work.
+  // These are server-owned identifiers derived from the planner's stable keys;
+  // user-authored patch nodes still receive fresh IDs below.
+  const stableId = (prefix, value, length = 12) => `${prefix}-${createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, length)}`;
+  const keyToId = new Map(); parsed.components.forEach((item, index) => keyToId.set(item.componentKey, stableId("cmp", { key: item.componentKey, index })));
   if (keyToId.size !== parsed.components.length) throw new Error("analysis_incomplete: 모델링 그래프의 컴포넌트 키가 중복되었습니다.");
   /* `profile` is a declarative geometry source, not an independently emitted
    * solid. Structured output models naturally separate it from `revolve` or
@@ -581,7 +587,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
     const z = Math.max(0, targetTop - range.max);
     return { ...component, transform: { ...component.transform, translationMm: { ...component.transform.translationMm, z } }, summary: `${component.summary} (${relation.kind} 인터페이스 기준으로 z=${z.toFixed(3)} mm 배치)` };
   });
-  const nodeKeyToId = new Map(); for (const component of placedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, `node-${randomUUID().slice(0, 12)}`); }
+  const nodeKeyToId = new Map(); for (const component of placedComponents) for (const feature of component.features) { if (nodeKeyToId.has(feature.key)) throw new Error("analysis_incomplete: feature key가 중복되었습니다."); nodeKeyToId.set(feature.key, stableId("node", { componentKey: component.componentKey, featureKey: feature.key })); }
   const components = placedComponents.map((item, index) => { const referenced = new Set(item.features.flatMap((feature) => feature.inputKeys)); const roots = item.features.filter((feature) => !referenced.has(feature.key) && !["surface_decal", "surface_artwork", "volume", "instance_distribution"].includes(feature.operation)); return { id: keyToId.get(item.componentKey), requestedName: requestedNames[index], representation: item.representation, rootNodeIds: (roots.length ? roots : item.features).map((feature) => nodeKeyToId.get(feature.key)), hostComponentId: item.hostComponentKey ? keyToId.get(item.hostComponentKey) ?? null : null, material: item.material, transform: item.transform, summary: item.summary }; });
   const nodes = placedComponents.flatMap((component) => component.features.map((feature) => ({ id: nodeKeyToId.get(feature.key), componentId: keyToId.get(component.componentKey), operation: feature.operation, inputNodeIds: feature.inputKeys.map((key) => nodeKeyToId.get(key)).filter(Boolean), parameters: { ...feature.parameters, hostComponentKey: feature.parameters.hostComponentKey ? keyToId.get(feature.parameters.hostComponentKey) ?? null : null }, rationale: feature.rationale, confidence: feature.confidence })));
   // Historical shell nodes predate the explicit opening datum. A shell means
@@ -589,7 +595,7 @@ export function canonicalizeGraph(output, requestedNames, imageIds = []) {
   // a top opening. New lower-opening closures must declare `bottom`; no
   // component-name heuristic is involved.
   for (const node of nodes) if (node.operation === "shell" && node.parameters.cavityOpenAt === null) node.parameters.cavityOpenAt = "top";
-  const graph = modelingGraphSchema.parse({ version: "net30.modeling-graph.v2", units: "mm", axis: "z-up", components, nodes, interfaces: parsed.interfaces.map((item) => ({ id: `interface-${randomUUID().slice(0, 10)}`, componentIds: item.componentKeys.map((key) => keyToId.get(key)).filter(Boolean), kind: item.kind, clearanceMm: item.clearanceMm, rationale: item.rationale })), evidence: [{ id: `evidence-${randomUUID().slice(0, 10)}`, kind: imageIds.length ? "image" : "user", label: imageIds.length ? "사용자 모델링 입력 이미지" : "사용자 프롬프트", imageId: imageIds[0] ?? null }] });
+  const graph = modelingGraphSchema.parse({ version: "net30.modeling-graph.v2", units: "mm", axis: "z-up", components, nodes, interfaces: parsed.interfaces.map((item, index) => ({ id: stableId("interface", { key: item.key, componentKeys: item.componentKeys, kind: item.kind, index }, 10), componentIds: item.componentKeys.map((key) => keyToId.get(key)).filter(Boolean), kind: item.kind, clearanceMm: item.clearanceMm, rationale: item.rationale })), evidence: [{ id: stableId("evidence", { imageId: imageIds[0] ?? null, kind: imageIds.length ? "image" : "user" }, 10), kind: imageIds.length ? "image" : "user", label: imageIds.length ? "사용자 모델링 입력 이미지" : "사용자 프롬프트", imageId: imageIds[0] ?? null }] });
   validateGraph(graph); return { product: parsed.product, graph, graphHash: graphHash(graph) };
 }
 

@@ -15,7 +15,7 @@ import {
   validateGraph,
 } from "./modeling-graph.mjs";
 import { adaptGraphToV3, buildEvidenceManifest, enforceEvidenceScopes, qualityGates } from "./modeling-graph-v3.mjs";
-import { alignArtworkCropToPhysicalPlacement, compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitApprovedRadialAssemblyDatum, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, compareAxisymmetricContour, compareBrepAssemblyContour, compareBrepAxisymmetricContour, fitApprovedRadialAssemblyDatum, fitAxialAssemblyEnvelope, fitAxisymmetricAssemblyClearances, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitNeckDetailFromEvidence, fitPatternedClosureToAssemblyTop, fitPrimaryAxisymmetricComponent, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 
 export const COMPONENTS = ["bottle", "cap", "pouringRing", "liner", "decorationFront", "decorationBack", "contents"];
@@ -508,22 +508,28 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   const approvedDimensions = { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm };
   const locallyNormalised = normaliseComponentLocalCoordinates(evidenceScoped.graph);
   const fitted = fitPrimaryAxisymmetricComponent(locallyNormalised.graph, imageEvidence, primaryImageId, approvedDimensions);
+  const neckDetailFit = fitNeckDetailFromEvidence(fitted.graph, imageEvidence, evidenceManifest, approvedDimensions);
   // The colour-band fit may replace a closure profile from raw photographic
   // samples.  It must run before the assembly envelope constraint: a noisy
   // or rounded cap sample can otherwise re-expand the final B-Rep beyond an
   // already approved overall width/depth.  The envelope fit is deliberately
   // graph-native, so this is a constraint solve on the same curve and pattern
   // parameters consumed by OCCT rather than a display-only scale.
-  const closureFit = fitMeasuredClosureAssembly(fitted.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? fitted.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
+  const closureFit = fitMeasuredClosureAssembly(neckDetailFit.graph, approvedDimensions, primaryMeasurement, fitted.nodeId ? neckDetailFit.graph.nodes.find((node) => node.id === fitted.nodeId)?.componentId ?? null : null);
   const envelopeFit = fitRadialAssemblyEnvelope(closureFit.graph, approvedDimensions, primaryMeasurement);
   const approvedRadialDatum = fitApprovedRadialAssemblyDatum(envelopeFit.graph, approvedDimensions);
   const placementFit = fitAxialAssemblyEnvelope(approvedRadialDatum.graph, approvedDimensions);
   const threadFit = suppressUnverifiedThreadCuts(placementFit.graph);
+  // B-Rep child geometry stays local, but a physical assembly still has
+  // measurable radial cavities and annular layers. Solve those continuous
+  // clearance constraints before any review preview or approval question is
+  // emitted, so the graph, sketch, STEP and GLB share one collision-free datum.
+  let interfaceFit = fitAxisymmetricAssemblyClearances(threadFit.graph);
   // The physical decal position is graph data.  Re-project the *vertical*
   // photograph crop from that datum before the first B-Rep preview, so the
   // preview, user approval questions and final artwork cannot disagree about
   // which part of the input photograph is being applied.
-  const artworkFit = alignArtworkCropToPhysicalPlacement(threadFit.graph, imageEvidence, canonical.product, primaryImageId);
+  const artworkFit = alignArtworkCropToPhysicalPlacement(interfaceFit.graph, imageEvidence, canonical.product, primaryImageId);
   canonical.graph = validateGraph(artworkFit.graph);
   canonical.graphHash = graphHash(canonical.graph);
   // JSON topology checks catch missing links, but only OCCT can establish that
@@ -538,7 +544,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
   // component still receives a fresh B-Rep validity and tessellation pass.
   const brepPreflightCache = new Map();
   if (process.env.NET30_MODELING_DRAFT_FIXTURE !== "true") {
-    const preflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache });
+    const preflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache, assembly: false });
     await runtime.onBrepPreflight?.(preflight.diagnostics);
     const failed = preflight.diagnostics.filter((item) => item.code !== "ok");
     if (failed.length) {
@@ -559,7 +565,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     if (compiledClosureDatum.applied) {
       canonical.graph = validateGraph(compiledClosureDatum.graph);
       canonical.graphHash = graphHash(canonical.graph);
-      brepPreflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache });
+      brepPreflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache, assembly: false });
       await runtime.onBrepPreflight?.(brepPreflight.diagnostics);
       const compiledDatumFailures = brepPreflight.diagnostics.filter((item) => item.code !== "ok");
       if (compiledDatumFailures.length) throw new Error(`analysis_incomplete: ${compiledDatumFailures.map((item) => `${item.componentId}: ${item.message}`).join("; ")}`);
@@ -595,7 +601,7 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
       // the candidate is compiled; this is a geometry constraint, not a
       // viewport scale, so the preview/STEP/GLB remain one source of truth.
       const candidateDatum = fitApprovedRadialAssemblyDatum(candidate.graph, approvedDimensions);
-      const candidateGraph = validateGraph(candidateDatum.graph); const candidatePreflight = await preflightBrepGraph(candidateGraph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache });
+      const candidateGraph = validateGraph(candidateDatum.graph); const candidatePreflight = await preflightBrepGraph(candidateGraph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache, assembly: false });
       await runtime.onBrepPreflight?.(candidatePreflight.diagnostics);
       const candidateFailures = candidatePreflight.diagnostics.filter((item) => item.code !== "ok");
       if (candidateFailures.length) {
@@ -619,6 +625,29 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
         break;
       }
     }
+    // A bounded contour fit changes only exterior graph control points, but a
+    // changed exterior may be the counterpart of an already sized cavity or
+    // annular seal. Re-run the same deterministic interface fitter after the
+    // last accepted candidate. This keeps the review B-Rep, STEP and final
+    // assembly collision check on one graph hash instead of letting a late
+    // visual improvement reintroduce material interference.
+    const finalInterfaceFit = fitAxisymmetricAssemblyClearances(canonical.graph);
+    if (finalInterfaceFit.applied) {
+      canonical.graph = validateGraph(finalInterfaceFit.graph);
+      canonical.graphHash = graphHash(canonical.graph);
+      brepPreflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache, assembly: false });
+      await runtime.onBrepPreflight?.(brepPreflight.diagnostics);
+      const finalInterfaceFailures = brepPreflight.diagnostics.filter((item) => item.code !== "ok");
+      if (finalInterfaceFailures.length) throw new Error(`analysis_incomplete: ${finalInterfaceFailures.map((item) => `${item.componentId}: ${item.message}`).join("; ")}`);
+      interfaceFit = { graph: canonical.graph, applied: true, adjustments: [...interfaceFit.adjustments, ...finalInterfaceFit.adjustments], unresolved: [...(interfaceFit.unresolved ?? []), ...(finalInterfaceFit.unresolved ?? [])] };
+    } else if (finalInterfaceFit.unresolved?.length) {
+      interfaceFit = { ...interfaceFit, unresolved: [...(interfaceFit.unresolved ?? []), ...finalInterfaceFit.unresolved] };
+    }
+    // All curve and interface fitting is now frozen. Run exactly one actual
+    // XDE/STEP assembly preflight against this graph hash before exposing the
+    // review questions; component-only previews must not hide a real overlap.
+    brepPreflight = await preflightBrepGraph(canonical.graph, { preview: { title: `${canonical.product.name} B-Rep 조립 검토`, maxTriangles: 700 }, cache: brepPreflightCache, assembly: true });
+    await runtime.onBrepPreflight?.(brepPreflight.diagnostics);
   }
   const product = { ...canonical.product, family: "container", dimensionsMm: { widthMm: canonical.product.widthMm, heightMm: canonical.product.heightMm, depthMm: canonical.product.depthMm, wallMm: 2.2 } };
   const components = modelingGraphComponents(canonical.graph); const questions = modelingGraphQuestions(product, components, canonical.graph);
@@ -629,9 +658,11 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     valid: brepPreflight.diagnostics.every((item) => item.valid),
     closed: brepPreflight.diagnostics.every((item) => item.closed),
     solidCount: Math.max(...brepPreflight.diagnostics.map((item) => item.solidCount ?? Infinity)),
+    freeEdges: brepPreflight.diagnostics.reduce((total, item) => total + Number(item.freeEdges ?? Infinity), 0),
+    interferenceCount: brepPreflight.assembly?.report?.interferenceCount,
   } : null;
-  const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, evidenceComplete: false });
-  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, closureAssembly: closureFit.adjustments, unverifiedThreadCuts: threadFit.adjustments, artworkPlacement: artworkFit.adjustments, compiledClosureDatum: compiledClosureDatum.adjustments, compiledContourFits, assemblyEnvelope: envelopeFit.adjustments, approvedRadialDatum: approvedRadialDatum.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [] }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
+  const qualityReport = qualityGates({ graphHash: canonical.graphHash, contour, brep: preflightBrep, step: brepPreflight?.assembly?.report ? { boundsDeltaMm: Math.max(...Object.values(brepPreflight.assembly.report.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: brepPreflight.assembly.report.volumeDeltaRatio ?? Infinity } : null, evidenceComplete: false });
+  return { model, product, components, questions, modelingGraph: canonical.graph, modelingGraphHash: canonical.graphHash, modelingGraphV3, evidenceManifest, imageEvidence, sketchPlan: brepPreflight?.sketchPlan ? { ...brepPreflight.sketchPlan, graphHash: canonical.graphHash } : null, fit: { applied: fitted.applied, nodeId: fitted.nodeId ?? null, curveCompilation: fitted.curveCompilation ?? null, contour, graphContour, componentLocalCoordinates: locallyNormalised.adjustments, primaryBodyCalibration: fitted.calibration ?? null, neckDetail: neckDetailFit.adjustments, neckDetailObservations: neckDetailFit.observations ?? [], closureAssembly: closureFit.adjustments, unverifiedThreadCuts: threadFit.adjustments, interfaceClearances: interfaceFit.adjustments, unresolvedInterfaceClearances: interfaceFit.unresolved ?? [], artworkPlacement: artworkFit.adjustments, compiledClosureDatum: compiledClosureDatum.adjustments, compiledContourFits, assemblyEnvelope: envelopeFit.adjustments, approvedRadialDatum: approvedRadialDatum.adjustments, assemblyHeight: placementFit.adjustments, brepPreflight: brepPreflight?.diagnostics ?? [], assemblyPreflight: brepPreflight?.assembly ?? null }, evidenceWarnings: evidenceScoped.warnings, qualityReport, stickerSlots: ["korean-product-information", "full-price-structure"].map((sourceGraphicId) => ({ sourceGraphicId, status: "proposed" })) };
 }
 
 export async function analyseGraphPatch({ draft, prompt, strokes = [], imageInputs = [], scope }) {

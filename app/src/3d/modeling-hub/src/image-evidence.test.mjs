@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseDraft } from "./modeling-spec.mjs";
 import { canonicalizeGraph, fixtureGraphOutput, graphHash } from "./modeling-graph.mjs";
-import { alignArtworkCropToPhysicalPlacement, fitApprovedRadialAssemblyDatum, fitAxialAssemblyEnvelope, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
+import { alignArtworkCropToPhysicalPlacement, fitApprovedRadialAssemblyDatum, fitAxialAssemblyEnvelope, fitAxisymmetricAssemblyClearances, fitCompiledAssemblyContour, fitCompiledClosureDatum, fitMeasuredClosureAssembly, fitNeckDetailFromEvidence, fitPatternedClosureToAssemblyTop, fitRadialAssemblyEnvelope, measureImageEvidence, normaliseComponentLocalCoordinates, suppressUnverifiedThreadCuts } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
 process.env.NET30_OPENAI_MODEL = "fixture";
@@ -27,6 +27,9 @@ assert.ok(evidence.images[0].measurement.cap.outerDiameterRatio > .8, "primary i
 assert.ok(evidence.images[0].measurement.cap.silhouette.length >= 12, "primary image must expose a separate closure outline for the revolved B-Rep");
 assert.equal(evidence.images[0].measurement.cap.silhouetteSource, "foreground_product_contour_with_blue_band_crop", "closure geometry must use the measured foreground outline after the blue band identifies its scope");
 assert.ok(evidence.images[0].measurement.cap.blueSilhouette.length >= 12, "blue-only closure samples must remain available as colour/repeat evidence rather than being mistaken for the exterior curve");
+assert.ok(evidence.images[1].measurement.topDetailSilhouette.length >= 12, "the no-cap reference must expose a measured upper neck/detail contour");
+assert.ok(evidence.images[1].measurement.neckDetailSilhouette.length >= 8, "the no-cap reference must isolate a stable narrow neck band before fitting");
+assert.ok(evidence.images[1].measurement.neckDetailSilhouette.length < evidence.images[1].measurement.topDetailSilhouette.length, "the shoulder/body rows must not be stretched into the short hidden-neck curve");
 
 const analysis = await analyseDraft({
   model: "fixture", product: { source: "new", name: "DURAN GL45 100 mL 실험용 병" },
@@ -38,7 +41,36 @@ assert.equal(analysis.fit.contour.imageId, "fixture-image-1", "no-cap and PYREX 
 assert.ok(analysis.fit.contour.rmsMm <= .35, "measured profile must meet the contour fitting gate");
 assert.equal(analysis.modelingGraphV3.components[0].curves[0].provenance.source, "image_measurement");
 assert.ok(analysis.fit.primaryBodyCalibration.visibleBodyHeightMm <= analysis.fit.primaryBodyCalibration.targetHeightMm, "a primary image fit must never extend a measured contour beyond the approved local B-Rep datum");
+assert.equal(analysis.fit.neckDetail.length, 0, "a no-cap view must not overwrite an already visible primary exterior");
+assert.equal(analysis.fit.neckDetailObservations[0].imageId, "fixture-image-2", "the no-cap measurement must be retained for the hidden-neck review range");
 assert.equal(analysis.fit.artworkPlacement.length, 1, "an artwork with approved mm dimensions must align its primary-image crop before review");
+
+// A matching no-cap photo can alter only a primary curve range that was
+// explicitly reserved behind the cap. It remains barred from body silhouette,
+// dimensions, artwork, and material routing.
+const noCapFit = fitNeckDetailFromEvidence(analysis.modelingGraph, evidence, analysis.evidenceManifest, { widthMm: 56, heightMm: 105, depthMm: 56 });
+assert.equal(noCapFit.applied, false, "a matching no-cap detail must wait when the primary photo already owns the full exterior");
+assert.equal(noCapFit.reason, "neck_detail_has_no_hidden_primary_range");
+
+const hiddenNeckGraph = structuredClone(analysis.modelingGraph);
+const hiddenTarget = hiddenNeckGraph.nodes.filter((node) => node.operation === "revolve" && node.parameters?.profile?.length >= 4)
+  .sort((left, right) => right.parameters.profile.length - left.parameters.profile.length)[0];
+const hiddenComponent = hiddenNeckGraph.components.find((component) => component.id === hiddenTarget.componentId);
+const originalMinZ = Math.min(...hiddenTarget.parameters.profile.map((point) => point.zMm));
+const originalMaxZ = Math.max(...hiddenTarget.parameters.profile.map((point) => point.zMm));
+for (const point of hiddenTarget.parameters.profile) point.zMm = Number((originalMinZ + (point.zMm - originalMinZ) * (95 - originalMinZ) / (originalMaxZ - originalMinZ)).toFixed(6));
+const outerRadius = Math.max(...hiddenTarget.parameters.profile.map((point) => Math.abs(point.xMm)));
+const sweep = {
+  id: "hidden-neck-thread", componentId: hiddenComponent.id, operation: "sweep", inputNodeIds: [],
+  parameters: { path: [{ xMm: outerRadius + .5, yMm: 0, zMm: 86 }, { xMm: 0, yMm: outerRadius + .5, zMm: 90 }, { xMm: -(outerRadius + .5), yMm: 0, zMm: 94 }], radiusMm: .4 },
+};
+const host = hiddenNeckGraph.nodes.find((node) => node.componentId === hiddenComponent.id && node.operation === "shell" && node.inputNodeIds.includes(hiddenTarget.id)) ?? hiddenTarget;
+const union = { id: "hidden-neck-thread-union", componentId: hiddenComponent.id, operation: "boolean", inputNodeIds: [host.id, sweep.id], parameters: { operation: "union" } };
+hiddenNeckGraph.nodes.push(sweep, union); hiddenComponent.rootNodeIds = [union.id];
+const hiddenNoCapFit = fitNeckDetailFromEvidence(hiddenNeckGraph, evidence, analysis.evidenceManifest, { widthMm: 56, heightMm: 105, depthMm: 56 });
+assert.equal(hiddenNoCapFit.applied, true, "a matching no-cap detail must update the actual primary range reserved behind the cap");
+assert.equal(hiddenNoCapFit.adjustments[0].imageId, "fixture-image-2", "the scoped no-cap measurement remains limited to the declared neck evidence role");
+assert.ok(hiddenNoCapFit.adjustments.some((item) => item.source === "fitted_host_surface_radial_offset"), "a joined thread sweep must follow the revised host curve instead of blocking detail fitting");
 
 const artworkOutput = fixtureGraphOutput({ product: { name: "physical artwork crop" }, prompt: "print", requestedComponents: ["vessel", "front print"], imageIds: ["artwork-primary"] });
 const artworkGraph = canonicalizeGraph(artworkOutput, ["vessel", "front print"], ["artwork-primary"]);
@@ -98,6 +130,69 @@ const closureProfiles = capAssemblyFit.graph.nodes.filter((node) => node.compone
 assert.ok(Math.max(...closureProfiles.map((point) => point.zMm)) + fittedClosure.transform.translationMm.z <= 100.01, "closure local B-Rep and assembly transform must remain inside the approved overall-height datum");
 assert.ok(capAssemblyFit.graph.nodes.some((node) => node.componentId === fittedClosure.id && node.operation === "revolve" && node.parameters.curveSegments?.length), "the measured closure outline must be declared as OCCT Bézier curves, not a display-only polyline");
 assert.equal(typeof graphHash(capAssemblyFit.graph), "string", "a fitted Bézier closure must remain serialisable by the strict graph schema");
+
+// Clearance fitting uses feature topology and declared interfaces, never the
+// display names of a bottle/cap/ring. A too-small closure cutter and a
+// separate annular layer must be corrected in the same graph before OCCT
+// sees either a sketch or final B-Rep.
+const clearanceTransform = (z) => ({ translationMm: { x: 0, y: 0, z }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } });
+const clearanceGraph = {
+  components: [
+    { id: "outer", representation: "brep_solid", transform: clearanceTransform(0), rootNodeIds: ["outer-revolve"] },
+    { id: "receiving", representation: "brep_solid", transform: clearanceTransform(80), rootNodeIds: ["receiving-cut"] },
+    { id: "annulus", representation: "brep_solid", transform: clearanceTransform(80), rootNodeIds: ["annulus-revolve"] },
+  ],
+  nodes: [
+    { id: "outer-revolve", componentId: "outer", operation: "revolve", inputNodeIds: [], parameters: { profile: [{ xMm: 0, zMm: 0 }, { xMm: 20, zMm: 0 }, { xMm: 20, zMm: 100 }, { xMm: 0, zMm: 100 }] } },
+    { id: "receiving-outer", componentId: "receiving", operation: "revolve", inputNodeIds: [], parameters: { profile: [{ xMm: 0, zMm: 0 }, { xMm: 27, zMm: 0 }, { xMm: 27, zMm: 25 }, { xMm: 0, zMm: 25 }] } },
+    { id: "receiving-cutter", componentId: "receiving", operation: "primitive", inputNodeIds: [], parameters: { primitive: "cylinder", radiusMm: 14, heightMm: 23, transform: clearanceTransform(1) } },
+    { id: "receiving-cut", componentId: "receiving", operation: "boolean", inputNodeIds: ["receiving-outer", "receiving-cutter"], parameters: { operation: "cut" } },
+    { id: "annulus-revolve", componentId: "annulus", operation: "revolve", inputNodeIds: [], parameters: { profile: [{ xMm: 22, zMm: 1 }, { xMm: 28, zMm: 1 }, { xMm: 28, zMm: 4 }, { xMm: 22, zMm: 4 }] } },
+  ],
+  interfaces: [{ id: "thread", componentIds: ["outer", "receiving"], kind: "thread", clearanceMm: .2 }],
+};
+const clearanceFit = fitAxisymmetricAssemblyClearances(clearanceGraph);
+const clearanceCutter = clearanceFit.graph.nodes.find((node) => node.id === "receiving-cutter");
+assert.equal(clearanceCutter.parameters.transform.translationMm.z, 0, "a lower-datum closure cavity must open at its mating datum instead of leaving intersecting material");
+assert.ok(clearanceCutter.parameters.heightMm >= 24, "opening the lower cavity must preserve its roof by extending only the lower end");
+assert.ok(clearanceCutter.parameters.radiusMm >= 20.2, "a declared interface cavity must contain the measured companion radius plus clearance");
+assert.equal(clearanceFit.graph.components.find((component) => component.id === "annulus").transform.translationMm.z, 80, "a radial seal must not be moved away from its declared assembly datum to hide an impossible mate");
+const correctedAnnulus = clearanceFit.graph.nodes.find((node) => node.id === "annulus-revolve");
+assert.ok(Math.min(...correctedAnnulus.parameters.profile.map((point) => Math.abs(point.xMm))) >= 27, "a solvable annular mate must increase its inner radius rather than moving the component away");
+assert.deepEqual(clearanceFit.adjustments.map((item) => item.type), ["cavity_open_datum", "cavity_clearance", "annular_radial_clearance"], "the dossier must preserve deterministic geometry corrections only");
+assert.equal(clearanceFit.unresolved.length, 0, "a ring with remaining wall thickness must not be marked unresolved");
+
+const impossibleAnnulusGraph = structuredClone(clearanceGraph);
+impossibleAnnulusGraph.nodes.find((node) => node.id === "annulus-revolve").parameters.profile.forEach((point) => { if (Math.abs(point.xMm) > 22) point.xMm = Math.sign(point.xMm) * 22.05; });
+const impossibleAnnulusFit = fitAxisymmetricAssemblyClearances(impossibleAnnulusGraph);
+assert.equal(impossibleAnnulusFit.graph.components.find((component) => component.id === "annulus").transform.translationMm.z, 80, "an impossible annular mate must preserve its evidence-backed assembly datum");
+assert.equal(impossibleAnnulusFit.unresolved[0]?.type, "annular_clearance_requires_review", "an annulus that cannot retain a wall after clearance must become an explicit engineering question");
+
+const alreadyClearAnnulusGraph = structuredClone(clearanceFit.graph);
+const alreadyClearAnnulusFit = fitAxisymmetricAssemblyClearances(alreadyClearAnnulusGraph);
+assert.equal(alreadyClearAnnulusFit.unresolved.length, 0, "a profile that only flares outside the shared axial interval must not create a false interference warning");
+
+// An insert which is contracted to the vessel but has no contract with a
+// patterned/solid closure must be moved to the closure datum rather than
+// remaining as positive solid overlap. This is an assembly constraint over
+// actual radial profiles, not a component display-name rule.
+const axialInsertGraph = {
+  components: [
+    { id: "vessel", representation: "brep_solid", transform: clearanceTransform(0), rootNodeIds: ["vessel-solid"] },
+    { id: "closure", representation: "brep_solid", transform: clearanceTransform(80), rootNodeIds: ["closure-solid"] },
+    { id: "insert", representation: "brep_solid", transform: clearanceTransform(82), rootNodeIds: ["insert-solid"] },
+  ],
+  nodes: [
+    { id: "vessel-solid", componentId: "vessel", operation: "revolve", inputNodeIds: [], parameters: { profile: [{ xMm: 0, zMm: 0 }, { xMm: 20, zMm: 0 }, { xMm: 20, zMm: 100 }, { xMm: 0, zMm: 100 }] } },
+    { id: "closure-solid", componentId: "closure", operation: "revolve", inputNodeIds: [], parameters: { profile: [{ xMm: 0, zMm: 0 }, { xMm: 30, zMm: 0 }, { xMm: 30, zMm: 20 }, { xMm: 0, zMm: 20 }] } },
+    { id: "insert-solid", componentId: "insert", operation: "revolve", inputNodeIds: [], parameters: { profile: [{ xMm: 25, zMm: 1 }, { xMm: 30, zMm: 1 }, { xMm: 30, zMm: 4 }, { xMm: 25, zMm: 4 }] } },
+  ],
+  interfaces: [{ id: "insert-vessel-seal", componentIds: ["insert", "vessel"], kind: "seal", clearanceMm: .2 }],
+};
+const axialInsertFit = fitAxisymmetricAssemblyClearances(axialInsertGraph);
+assert.ok(axialInsertFit.adjustments.some((item) => item.type === "annular_axial_noninterference" && item.counterpartComponentId === "closure"), "an undeclared closure/insert overlap must be resolved at the assembly datum");
+assert.ok(axialInsertFit.graph.components.find((component) => component.id === "insert").transform.translationMm.z < 80, "the insert must move below the closure rather than remain inside its material");
+assert.equal(axialInsertFit.unresolved.length, 0, "an axial separation must clear its superseded radial warning");
 
 // A separate sweep joined to the cap is not attached to the fitted outline.
 // Moving the outline alone would leave a disconnected B-Rep, so the fitter

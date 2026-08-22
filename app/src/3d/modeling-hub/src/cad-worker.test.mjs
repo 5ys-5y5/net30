@@ -20,7 +20,7 @@ try {
   const run = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), requestPath], { encoding: "utf8", timeout: 120000 });
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   const report = JSON.parse(await fs.readFile(`${stem}.validation.json`, "utf8"));
-  assert.equal(report.valid, true); assert.equal(report.closed, true); assert.ok(report.volumeMm3 > 0); assert.ok(report.boundsMm.z > 90);
+  assert.equal(report.valid, true); assert.equal(report.closed, true); assert.equal(report.freeEdges, 0, "a manufacturing component must report no B-Rep boundary edges"); assert.ok(report.volumeMm3 > 0); assert.ok(report.boundsMm.z > 90);
   assert.equal(typeof report.stepRoundTrip?.withinTolerance, "boolean", "every canonical B-Rep must publish a component STEP round-trip verdict for the manufacturing gate");
   assert.ok(report.silhouette?.length >= 12, "the persisted OCCT tessellation must expose an exterior contour for image-evidence verification");
   assert.ok(report.silhouette[0].radiusNorm > .1 && report.silhouette.at(-1).radiusNorm > .1, "a closed revolved solid must measure its adjacent exterior at the first and last contour sections instead of collapsing both boundary poles to zero");
@@ -102,6 +102,8 @@ try {
   assert.ok(legacyRibReport.surfaceAreaMm2 > 2 * Math.PI * 25 * 20, "all declared legacy rib instances must contribute actual B-Rep surface, not collapse to one box");
   const preflight = await preflightBrepGraph(capCanonical.graph, { preview: { title: "ribbed closure B-Rep review", maxTriangles: 80 } });
   assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
+  assert.equal(preflight.assembly?.report?.interferenceCount, 0, "a final preflight must run an XDE/STEP assembly check even when it contains one child");
+  assert.equal(preflight.assembly?.report?.roundTripWithinTolerance, true, "the final assembly preflight must publish the STEP round-trip verdict");
   assert.equal(preflight.sketchPlan?.version, "net30.brep-sketch.v1", "an approvable sketch must be derived from the same OCCT preflight solid");
   assert.equal(preflight.sketchPlan?.components[0]?.id, capComponent.id);
   assert.ok((preflight.sketchPlan?.components[0]?.meshViews?.front?.length ?? 0) > 0, "the review sketch must contain sampled B-Rep triangles, not a placeholder rectangle");
@@ -191,6 +193,12 @@ try {
   const assemblyRun = spawnSync(python, [path.join(here, "cad-assembly-worker.py"), assemblyRequest], { encoding: "utf8", timeout: 120000 });
   assert.equal(assemblyRun.status, 0, `${assemblyRun.stdout}\n${assemblyRun.stderr}`); const assemblyReport = JSON.parse(await fs.readFile(assemblyPaths.report, "utf8"));
   assert.equal(assemblyReport.valid, true); assert.equal(assemblyReport.roundTripWithinTolerance, true); assert.ok((await fs.stat(assemblyPaths.xbf)).size > 100); assert.ok((await fs.stat(assemblyPaths.step)).size > 100);
+  assert.equal(assemblyReport.interferenceCount, 0, "a one-component assembly has no forbidden pairwise material intersections");
+  const overlapRequest = path.join(temporary, "overlap-assembly.request.json"); const overlapPaths = { xbf: path.join(temporary, "overlap.xbf"), step: path.join(temporary, "overlap.step"), report: path.join(temporary, "overlap.report.json") };
+  await fs.writeFile(overlapRequest, JSON.stringify({ name: "interference proof", components: [{ id: "left", brep: `${stem}.brep` }, { id: "right", brep: `${stem}.brep`, transform: { translationMm: { x: 1, y: 0, z: 0 }, rotationDeg: { x: 0, y: 0, z: 0 } } }], interfaces: [{ id: "declared-mate", componentIds: ["left", "right"], kind: "mate", clearanceMm: .2 }], paths: overlapPaths, toleranceMm: .01 }));
+  const overlapRun = spawnSync(python, [path.join(here, "cad-assembly-worker.py"), overlapRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(overlapRun.status, 0, `${overlapRun.stdout}\n${overlapRun.stderr}`); const overlapReport = JSON.parse(await fs.readFile(overlapPaths.report, "utf8"));
+  assert.ok(overlapReport.interferenceCount > 0, "a declared mate still cannot hide overlapping B-Rep material"); assert.ok(overlapReport.interferencePairs[0].relations.some((item) => item.id === "declared-mate"), "the dossier must retain interface context for an interference");
   // A numerically out-of-tolerance STEP must remain inspectable as a valid
   // B-Rep assembly.  The JS release gate turns this report into a manufacturing
   // blocker; the worker itself must not prevent the visual review GLB.

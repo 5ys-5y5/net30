@@ -65,10 +65,10 @@ async function cadExports(spec, cadDir, quality) {
   const assemblyDir = path.join(path.dirname(cadDir), "assembly"); await fs.mkdir(assemblyDir, { recursive: true });
   const assemblyPaths = { xbf: path.join(assemblyDir, "assembly.xbf"), step: path.join(assemblyDir, "assembly.step"), report: path.join(assemblyDir, "assembly.validation.json") };
   const assemblyRequest = path.join(assemblyDir, "assembly.request.json");
-  await fs.writeFile(assemblyRequest, JSON.stringify({ name: spec.contract.product.name, components: Object.entries(sources).map(([id, item]) => ({ id, brep: item.brep, transform: spec.modelingGraph?.components.find((component) => component.id === id)?.transform ?? null })), paths: assemblyPaths, toleranceMm: .01 }));
+  await fs.writeFile(assemblyRequest, JSON.stringify({ name: spec.contract.product.name, components: Object.entries(sources).map(([id, item]) => ({ id, brep: item.brep, transform: spec.modelingGraph?.components.find((component) => component.id === id)?.transform ?? null })), interfaces: spec.modelingGraph?.interfaces ?? [], paths: assemblyPaths, toleranceMm: .01 }));
   await run(python, [path.resolve(path.dirname(fileURLToPath(import.meta.url)), "cad-assembly-worker.py"), assemblyRequest], 4 * 60 * 1000);
   const assemblyValidation = JSON.parse(await fs.readFile(assemblyPaths.report, "utf8"));
-  const geometryBlockers = Object.entries(validation).flatMap(([id, report]) => [report.valid ? null : `${id}: B-Rep validity failure`, report.closed ? null : `${id}: open shell/free edge review required`, report.solidCount === 1 ? null : `${id}: expected one connected manufacturing solid, found ${report.solidCount}`, report.stepRoundTrip?.withinTolerance ? null : `${id}: component STEP round-trip exceeds tolerance (bounds ${Math.max(...Object.values(report.stepRoundTrip?.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })).toFixed(6)} mm, volume ${(Number(report.stepRoundTrip?.volumeDeltaRatio ?? Infinity) * 100).toFixed(4)}%)`].filter(Boolean));
+  const geometryBlockers = Object.entries(validation).flatMap(([id, report]) => [report.valid ? null : `${id}: B-Rep validity failure`, report.closed ? null : `${id}: open shell/free edge review required`, report.freeEdges === 0 ? null : `${id}: ${report.freeEdges ?? "unmeasured"} free B-Rep edge(s)`, report.solidCount === 1 ? null : `${id}: expected one connected manufacturing solid, found ${report.solidCount}`, report.stepRoundTrip?.withinTolerance ? null : `${id}: component STEP round-trip exceeds tolerance (bounds ${Math.max(...Object.values(report.stepRoundTrip?.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })).toFixed(6)} mm, volume ${(Number(report.stepRoundTrip?.volumeDeltaRatio ?? Infinity) * 100).toFixed(4)}%)`].filter(Boolean));
   // The parent XDE/STEP can be valid while its numeric round-trip exceeds the
   // manufacturing tolerance.  Keep that fact explicit in the dossier and
   // release gate, but do not throw away the valid child B-Reps: their GLB is
@@ -77,7 +77,8 @@ async function cadExports(spec, cadDir, quality) {
   const assemblyBlockers = assemblyValidation.roundTripWithinTolerance
     ? []
     : [`assembly STEP round-trip exceeds tolerance (bounds ${Math.max(...Object.values(assemblyValidation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })).toFixed(6)} mm, volume ${(Number(assemblyValidation.volumeDeltaRatio ?? Infinity) * 100).toFixed(4)}%)`];
-  const blockers = [...spec.contract.unresolved, ...geometryBlockers, ...assemblyBlockers];
+  const interferenceBlockers = assemblyValidation.interferenceCount > 0 ? [`assembly has ${assemblyValidation.interferenceCount} forbidden B-Rep interference pair(s)`] : [];
+  const blockers = [...spec.contract.unresolved, ...geometryBlockers, ...assemblyBlockers, ...interferenceBlockers];
   return { available: true, sources, validation, assembly: { ...assemblyPaths, validation: assemblyValidation }, tessellation: profile, manufacturingStatus: blockers.length ? "manufacturing_review_required" : "dimensional_candidate", blockers };
 }
 
@@ -127,7 +128,7 @@ export async function executeBlenderModeling(rawPayload, { assetRoot, jobId = `j
   const expectedDimensions = modelingSpec.contract.dimensionsMm;
   const actualBounds = cad.assembly.validation.sourceBoundsMm;
   const dimensions = { toleranceMm: .5, maxDeltaMm: Math.max(Math.abs(actualBounds.x - expectedDimensions.widthMm), Math.abs(actualBounds.y - expectedDimensions.depthMm), Math.abs(actualBounds.z - expectedDimensions.heightMm)) };
-  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, dimensions, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed), solidCount: Math.max(...Object.values(cad.validation).map((item) => item.solidCount ?? Infinity)) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
+  const qualityReport = qualityGates({ graphHash: payload.graphHash ?? "0".repeat(64), contour, dimensions, brep: { valid: Object.values(cad.validation).every((item) => item.valid), closed: Object.values(cad.validation).every((item) => item.closed), solidCount: Math.max(...Object.values(cad.validation).map((item) => item.solidCount ?? Infinity)), freeEdges: Object.values(cad.validation).reduce((sum, item) => sum + Number(item.freeEdges ?? Infinity), 0), interferenceCount: Number(cad.assembly.validation.interferenceCount ?? Infinity) }, step: { boundsDeltaMm: Math.max(...Object.values(cad.assembly.validation.boundsDeltaMm ?? { x: Infinity, y: Infinity, z: Infinity })), volumeDeltaRatio: cad.assembly.validation.volumeDeltaRatio ?? Infinity }, evidenceComplete: !cad.blockers.length });
   await dossier.writeSnapshot("validation/quality-gates.json", qualityReport);
   dossier.record("quality.gates", qualityReport);
   // A syntactically valid GLB is not a successful product model. Keep it as a

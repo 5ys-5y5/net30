@@ -9,6 +9,8 @@ const evidence = buildEvidenceManifest([
   { id: "material", filename: "Duran laboratory bottles 100 display.webp" },
 ]);
 assert.deepEqual(evidence.items.map((item) => item.role), ["primary_product", "neck_detail", "material_reference"]);
+assert.equal(evidence.items[1].confidence, .84, "a matching no-cap filename is narrow same-product neck evidence, not a second global silhouette");
+assert.equal(evidence.items[1].productIdentity, "DURAN Original laboratory bottle neck-detail evidence");
 assert.ok(evidence.items[2].excludedFrom.includes("silhouette"));
 
 const fit = fitAxisymmetricProfile([{ xMm: 22, zMm: 0 }, { xMm: 27, zMm: 8 }, { xMm: 28, zMm: 45 }, { xMm: 25, zMm: 77 }, { xMm: 17, zMm: 98 }]);
