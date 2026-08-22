@@ -271,6 +271,21 @@ function sketchReviewPaint(color: string) {
     : { fill: color, stroke: color, fillOpacity: .32, strokeOpacity: .78 };
 }
 
+function normalisedMeshOutline(mesh: readonly (readonly SketchPoint[])[]) {
+  // Earlier immutable drafts stored low-resolution STL triangles.  Do not
+  // render those triangles in the approval canvas: preserve their evidence
+  // but reduce them to a single stable exterior symbol until the draft is
+  // revised with the current B-Rep-outline plan.
+  const points = mesh.flat();
+  const unique = [...new Map(points.map((point) => [`${point.x.toFixed(4)}:${point.y.toFixed(4)}`, point])).values()];
+  if (unique.length <= 3) return unique;
+  const sorted = [...unique].sort((left, right) => left.x - right.x || left.y - right.y);
+  const cross = (origin: SketchPoint, left: SketchPoint, right: SketchPoint) => (left.x - origin.x) * (right.y - origin.y) - (left.y - origin.y) * (right.x - origin.x);
+  const build = (items: readonly SketchPoint[]) => { const chain: SketchPoint[] = []; for (const point of items) { while (chain.length >= 2 && cross(chain.at(-2)!, chain.at(-1)!, point) <= 0) chain.pop(); chain.push(point); } return chain; };
+  const lower = build(sorted); const upper = build([...sorted].reverse());
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
 function SketchReview({ draft, pending, onSave, onFeedback, onApprove }: { draft: ModelingDraft; pending: boolean; onSave: (iteration: SketchIteration, strokes: readonly SketchStroke[]) => void; onFeedback: (iteration: SketchIteration, prompt: string, strokes: readonly SketchStroke[]) => void; onApprove: (iteration: SketchIteration) => void }) {
   const iteration = draft.iterations?.find((item) => item.id === draft.activeIterationId) ?? null;
   const [strokes, setStrokes] = useState<readonly SketchStroke[]>(iteration?.markup ?? []);
@@ -287,11 +302,11 @@ function SketchReview({ draft, pending, onSave, onFeedback, onApprove }: { draft
   const draw = (event: ReactPointerEvent<SVGSVGElement>) => { const id = activeStroke.current; if (!id) return; const next = pointerPoint(event); if (!next) return; setStrokes((current) => current.map((stroke) => { if (stroke.id !== id || stroke.points.length >= 300) return stroke; const prior = stroke.points.at(-1); if (prior && Math.hypot(prior.x - next.x, prior.y - next.y) < .003) return stroke; return { ...stroke, points: [...stroke.points, next] }; })); };
   const end = (event?: ReactPointerEvent<SVGSVGElement>) => { if (event?.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); activeStroke.current = null; };
   return <SketchReviewPanel>
-    <Atom><Label>LLM 구조 스케치</Label><Copy>{iteration.plan.title} · 색상 펜으로 모델링 의도와 다른 부분을 표시한 뒤 피드백을 적용하거나 스케치를 승인하세요.</Copy></Atom>
+    <Atom><Label>모델링 형상 스케치</Label><Copy>{iteration.plan.title} · 동일 graph의 정규화된 외곽선과 조립 위치를 검토합니다. 색상 펜으로 다른 부분을 표시한 뒤 피드백을 적용하거나 스케치를 승인하세요.</Copy></Atom>
     <SketchViewNavigator>{(iteration.plan.views ?? [{ id: "front", label: "정면" }]).map((view) => <ActionButton key={view.id} className={CLASS.modelingAction} data-active={viewId === view.id} role="tab" aria-selected={viewId === view.id} onClick={() => setViewId(view.id)}>{view.label}</ActionButton>)}</SketchViewNavigator>
     <SketchCanvas viewBox={`0 0 ${iteration.plan.width} ${iteration.plan.height}`} role="img" aria-label={`${iteration.plan.title} ${viewId} 주석 캔버스`} onPointerDown={begin} onPointerMove={draw} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
-      {iteration.plan.components.map((component) => { const mesh = component.meshViews?.[viewId] ?? []; const outline = component.views?.[viewId] ?? component.points; const anchor = mesh[0]?.[0] ?? outline[0]; const paint = sketchReviewPaint(component.color); return <g key={component.id}>
-        {mesh.length ? mesh.map((triangle, index) => <polygon key={`${component.id}-${viewId}-${index}`} data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={triangle.map((point) => `${point.x},${point.y}`).join(" ")} fill={paint.fill} fillOpacity={paint.fillOpacity} stroke={paint.stroke} strokeOpacity={paint.strokeOpacity} strokeWidth="0.6" />) : <polygon data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={outline.map((point) => `${point.x},${point.y}`).join(" ")} fill={paint.fill} fillOpacity={paint.fillOpacity} stroke={paint.stroke} strokeOpacity={paint.strokeOpacity} strokeWidth="3" />}
+      {iteration.plan.components.map((component) => { const mesh = component.meshViews?.[viewId] ?? []; const outline = component.views?.[viewId] ?? (mesh.length ? normalisedMeshOutline(mesh) : component.points); const anchor = outline[0]; const paint = sketchReviewPaint(component.color); return <g key={component.id}>
+        <polygon data-sketch-component={component.id} data-sketch-node={component.nodeIds?.[0] ?? ""} points={outline.map((point) => `${point.x},${point.y}`).join(" ")} fill={paint.fill} fillOpacity={paint.fillOpacity} stroke={paint.stroke} strokeOpacity={paint.strokeOpacity} strokeWidth="3" />
         <text x={anchor?.x ?? 0} y={(anchor?.y ?? 20) - 10} fill="currentColor" fontSize="18">{component.label}</text>
       </g>; })}
       {iteration.plan.annotations.map((annotation, index) => <text key={`${annotation.label}-${index}`} x={annotation.x} y={annotation.y} fill="currentColor" fontSize="14">{annotation.label}</text>)}

@@ -183,27 +183,58 @@ function projected(point, view, explodedOffset = 0) {
   return { x: point.x, y: point.z };
 }
 
-function normaliseProjectedMeshes(entries, view, width, height) {
-  const source = entries.flatMap((entry) => entry.triangles.flatMap((triangle) => triangle.map((point) => projected(point, view, entry.explodedOffset))));
-  if (!source.length) return entries.map((entry) => ({ ...entry, triangles: [] }));
+function convexHull(points) {
+  const unique = [...new Map(points.map((point) => [`${point.x.toFixed(5)}:${point.y.toFixed(5)}`, point])).values()];
+  if (unique.length <= 3) return unique;
+  const sorted = [...unique].sort((left, right) => left.x - right.x || left.y - right.y);
+  const cross = (origin, left, right) => (left.x - origin.x) * (right.y - origin.y) - (left.y - origin.y) * (right.x - origin.x);
+  const lower = []; for (const point of sorted) { while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), point) <= 0) lower.pop(); lower.push(point); }
+  const upper = []; for (const point of [...sorted].reverse()) { while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop(); upper.push(point); }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+function axisymmetricOutline(component, diagnostic, graph) {
+  // A revolved B-Rep already has an exact axial exterior measurement in its
+  // OCCT report.  The approval drawing deliberately uses that measured curve
+  // rather than exposing the temporary display triangles.  It keeps shoulder,
+  // neck and cap silhouette changes legible while leaving STL/GLB tessellation
+  // solely in the export path where it belongs.
+  const samples = diagnostic?.silhouette;
+  const hasRevolve = graph.nodes.some((node) => node.componentId === component.id && node.operation === "revolve");
+  const bounds = diagnostic?.boundsMm;
+  if (!hasRevolve || !Array.isArray(samples) || samples.length < 4 || !(Number(bounds?.x) > 0) || !(Number(bounds?.z) > 0)) return null;
+  const radius = Number(bounds.x) / 2;
+  const height = Number(bounds.z);
+  const left = samples.map((sample) => ({ x: -radius * Number(sample.radiusNorm), y: 0, z: height * Number(sample.zNorm) }));
+  const right = [...samples].reverse().map((sample) => ({ x: radius * Number(sample.radiusNorm), y: 0, z: height * Number(sample.zNorm) }));
+  return [...left, ...right].map((point) => assemblyPoint(point, component.transform));
+}
+
+function normaliseProjectedOutlines(entries, view, width, height) {
+  const source = entries.flatMap((entry) => entry.outline.map((point) => projected(point, view, entry.explodedOffset)));
+  if (!source.length) return entries.map((entry) => ({ ...entry, outline: [] }));
   const minX = Math.min(...source.map((point) => point.x)); const maxX = Math.max(...source.map((point) => point.x)); const minY = Math.min(...source.map((point) => point.y)); const maxY = Math.max(...source.map((point) => point.y));
   const scale = Math.min((width - 120) / Math.max(.001, maxX - minX), (height - 140) / Math.max(.001, maxY - minY));
   const toCanvas = (point) => ({ x: 60 + (point.x - minX) * scale, y: height - 64 - (point.y - minY) * scale });
-  return entries.map((entry) => ({ ...entry, triangles: entry.triangles.map((triangle) => triangle.map((point) => toCanvas(projected(point, view, entry.explodedOffset)))) }));
+  return entries.map((entry) => ({ ...entry, outline: entry.outline.map((point) => toCanvas(projected(point, view, entry.explodedOffset))) }));
 }
 
-function brepSketchPlan(graph, meshSources, { width = 1000, height = 680, title = "OCCT B-Rep 검토" } = {}) {
+function brepSketchPlan(graph, meshSources, { width = 1000, height = 680, title = "OCCT B-Rep 검토" } = {}, diagnostics = []) {
   const views = [{ id: "front", label: "정면" }, { id: "side", label: "측면" }, { id: "isometric", label: "등각" }, { id: "exploded", label: "분해" }];
   const solids = graph.components.filter((component) => component.representation === "brep_solid");
+  const diagnosticsByComponent = new Map(diagnostics.map((item) => [item.componentId, item]));
   const entries = solids.map((component, index) => ({
-    id: component.id, label: component.requestedName, color: component.material.baseColor, note: "동일 OCCT B-Rep의 저해상도 검토 테셀레이션", nodeIds: graph.nodes.filter((node) => node.componentId === component.id).map((node) => node.id),
-    triangles: (meshSources.get(component.id) ?? []).map((triangle) => triangle.map((point) => assemblyPoint(point, component.transform))), explodedOffset: (index - (solids.length - 1) / 2) * 38,
+    id: component.id, label: component.requestedName, color: component.material.baseColor, note: "동일 OCCT B-Rep에서 측정한 정규화된 외곽선", nodeIds: graph.nodes.filter((node) => node.componentId === component.id).map((node) => node.id),
+    // For non-revolved products the conservative convex exterior is used as
+    // the review symbol.  It is intentionally not a manufacturing contour;
+    // it prevents display tessellation from being mistaken for design intent.
+    outline: axisymmetricOutline(component, diagnosticsByComponent.get(component.id), graph) ?? convexHull((meshSources.get(component.id) ?? []).flatMap((triangle) => triangle.map((point) => assemblyPoint(point, component.transform)))), explodedOffset: (index - (solids.length - 1) / 2) * 38,
   }));
-  const perView = Object.fromEntries(views.map((view) => [view.id, normaliseProjectedMeshes(entries, view.id, width, height)]));
+  const perView = Object.fromEntries(views.map((view) => [view.id, normaliseProjectedOutlines(entries, view.id, width, height)]));
   return { version: "net30.brep-sketch.v1", width, height, title, views, components: entries.map((entry, index) => {
-    const meshViews = Object.fromEntries(views.map((view) => [view.id, perView[view.id][index].triangles])); const points = meshViews.front?.[0] ?? [];
-    return { id: entry.id, label: entry.label, color: entry.color, note: entry.note, nodeIds: entry.nodeIds, points, views: {}, meshViews };
-  }), annotations: [{ label: "OCCT B-Rep 정본의 저해상도 검토 투영입니다. 단면은 승인된 절단 평면이 생길 때까지 표시하지 않습니다.", x: 36, y: 42 }] };
+    const outlineViews = Object.fromEntries(views.map((view) => [view.id, perView[view.id][index].outline])); const points = outlineViews.front ?? [];
+    return { id: entry.id, label: entry.label, color: entry.color, note: entry.note, nodeIds: entry.nodeIds, points, views: outlineViews };
+  }), annotations: [{ label: "동일 OCCT B-Rep의 정규화된 외곽선입니다. 검토용 삼각형 메시는 표시하지 않습니다.", x: 36, y: 42 }] };
 }
 
 /**
@@ -308,7 +339,7 @@ export async function preflightBrepGraph(graph, { timeoutMs = 45000, concurrency
         execution: { timedOut: execution.timedOut, timeoutMs: execution.timeoutMs, elapsedMs: execution.elapsedMs, status: execution.status, signal: execution.signal, stdout: execution.stdout.slice(-2_000), stderr: execution.stderr.slice(-2_000) },
       };
     }
-    return { ok: diagnostics.every((item) => item.code === "ok"), diagnostics, assembly: assemblyReport, sketchPlan: preview ? brepSketchPlan(graph, meshSources, preview) : null };
+    return { ok: diagnostics.every((item) => item.code === "ok"), diagnostics, assembly: assemblyReport, sketchPlan: preview ? brepSketchPlan(graph, meshSources, preview, diagnostics) : null };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

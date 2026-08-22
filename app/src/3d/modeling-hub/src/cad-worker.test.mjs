@@ -106,7 +106,8 @@ try {
   assert.equal(preflight.assembly?.report?.roundTripWithinTolerance, true, "the final assembly preflight must publish the STEP round-trip verdict");
   assert.equal(preflight.sketchPlan?.version, "net30.brep-sketch.v1", "an approvable sketch must be derived from the same OCCT preflight solid");
   assert.equal(preflight.sketchPlan?.components[0]?.id, capComponent.id);
-  assert.ok((preflight.sketchPlan?.components[0]?.meshViews?.front?.length ?? 0) > 0, "the review sketch must contain sampled B-Rep triangles, not a placeholder rectangle");
+  assert.ok((preflight.sketchPlan?.components[0]?.views?.front?.length ?? 0) >= 4, "the review sketch must contain the normalized exterior from the same B-Rep, not a placeholder rectangle");
+  assert.equal(preflight.sketchPlan?.components[0]?.meshViews, undefined, "the approval sketch must never expose temporary STL triangles as design geometry");
   const loftOutput = fixtureGraphOutput({ product: { name: "lofted nozzle proof" }, prompt: "tapered square nozzle", requestedComponents: ["노즐"] , imageIds: [] });
   const loftBase = loftOutput.components[0].features[0];
   loftBase.key = "nozzle-loft"; loftBase.operation = "loft"; loftBase.inputKeys = [];
