@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalizeGraph, fixtureGraphOutput } from "./modeling-graph.mjs";
+import { canonicalizeGraph, fixtureGraphOutput, graphOutputFromTopologyPlan } from "./modeling-graph.mjs";
 import { preflightBrepGraph } from "./brep-preflight.mjs";
 import { monotoneBezierSegments } from "./image-evidence.mjs";
 
@@ -57,6 +57,22 @@ try {
   const shellReport = JSON.parse(await fs.readFile(`${shellStem}.validation.json`, "utf8"));
   assert.equal(shellReport.valid, true); assert.equal(shellReport.closed, true); assert.equal(shellReport.solidCount, 1, "the NURBS outer wall and derived inner offset must remain one closed B-Rep solid");
   assert.equal(shellReport.stepRoundTrip?.withinTolerance, true, "the one-wire annular shell must retain its inner cavity through STEP export/import");
+  // The compact vision topology planner never supplies a sampled profile or a
+  // cylinder substitute. Its deterministic expansion must still create the
+  // same closed, hollow OCCT component before any image fitter refines the
+  // continuous generating curve.
+  const compactOutput = graphOutputFromTopologyPlan({
+    product: { name: "compact topology proof", intendedUse: "container", widthMm: 56, heightMm: 105, depthMm: 56, capacityMl: 100 },
+    components: [{ componentKey: "component-1", kind: "axisymmetric_vessel", unsupportedOperation: null, material: { name: "glass", baseColor: "#d7e8f6", roughness: .08, metallic: 0, transmission: .8, ior: 1.52, opacity: .3 }, hostComponentKey: null, hasCavity: true, ribsObserved: false, ribCount: null, artwork: { artworkImageId: null, artworkCrop: null, projection: null, widthRatio: null, heightRatio: null, zRatio: null }, rationale: "measured rotational vessel", confidence: .8 }],
+    interfaces: [],
+  }, ["arbitrary container"]);
+  const compactCanonical = canonicalizeGraph(compactOutput, ["arbitrary container"], []); const compactComponent = compactCanonical.graph.components[0];
+  const compactStem = path.join(temporary, `${compactComponent.id}-topology`); const compactRequest = path.join(temporary, "compact-topology.request.json");
+  await fs.writeFile(compactRequest, JSON.stringify({ graphComponent: compactComponent, graphNodes: compactCanonical.graph.nodes, paths: { step: `${compactStem}.step`, brep: `${compactStem}.brep`, stl: `${compactStem}.stl`, report: `${compactStem}.validation.json` }, tessellation: { chordMm: .2, angularDeg: 15 } }));
+  const compactRun = spawnSync(python, ["-u", path.join(here, "cad-worker.py"), compactRequest], { encoding: "utf8", timeout: 120000 });
+  assert.equal(compactRun.status, 0, `${compactRun.stdout}\n${compactRun.stderr}`);
+  const compactReport = JSON.parse(await fs.readFile(`${compactStem}.validation.json`, "utf8"));
+  assert.equal(compactReport.closed, true); assert.equal(compactReport.solidCount, 1, "a compact topology vessel must export as one hollow B-Rep solid");
   const bezierShellGraph = structuredClone(shellCanonical.graph);
   const bezierShellRevolve = bezierShellGraph.nodes.find((node) => node.componentId === shellComponent.id && node.operation === "revolve");
   bezierShellRevolve.parameters.curveSegments = monotoneBezierSegments(bezierShellRevolve.parameters.profile.filter((point) => point.xMm > 0).map(({ xMm, zMm }) => ({ xMm, zMm })));

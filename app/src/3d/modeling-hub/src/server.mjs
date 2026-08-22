@@ -100,6 +100,13 @@ async function writeAnalysisDossier(draft, { status, error = null } = {}) {
   dossier.record("analysis.state", { status, error, message: draft.message, progress: draft.progress ?? [] });
   for (const response of draft.inference ?? []) dossier.record("inference.completed", response);
   await dossier.writeSnapshot("inference/analysis.request.json", { model: draft.input?.model, prompt: draft.input?.prompt, imageIds: draft.input?.imageIds ?? [], requestedComponents: draft.input?.requestedComponents ?? [], qualityProfile: draft.input?.qualityProfile ?? "balanced" });
+  // The response is a product-modeling decision record, not disposable UI
+  // state. Persist the sanitized structured topology/patch response beside its
+  // request so a later B-Rep discrepancy can be traced to an explicit model
+  // choice without retaining API credentials or uploaded image bytes.
+  for (const [index, response] of (draft.inference ?? []).entries()) {
+    await dossier.writeSnapshot(`inference/${String(index + 1).padStart(2, "0")}.response.json`, response);
+  }
   if (draft.evidenceManifest) await dossier.writeSnapshot("evidence/manifest.json", draft.evidenceManifest);
   if (draft.imageEvidence) await dossier.writeSnapshot("evidence/image-measurements.json", draft.imageEvidence);
   if (draft.modelingGraph) await dossier.writeSnapshot("graph/modeling-graph.json", draft.modelingGraph);

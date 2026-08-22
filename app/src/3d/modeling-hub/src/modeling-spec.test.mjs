@@ -10,7 +10,7 @@ import {
   applyQuestionValue,
   responseJson,
 } from "./modeling-spec.mjs";
-import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphHash, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
+import { ANALYSIS_OPERATIONS, applyModelingPatch, canonicalizeGraph, fixtureGraphOutput, graphHash, graphOutputFromTopologyPlan, graphSketchPlan, modelingComponentRepairJsonSchema, modelingGraphJsonSchema, modelingPatchJsonSchema, modelingTopologyPlanJsonSchema, validateGraph, valueHash } from "./modeling-graph.mjs";
 import { monotoneBezierSegments } from "./image-evidence.mjs";
 
 process.env.NET30_MODELING_DRAFT_FIXTURE = "true";
@@ -35,6 +35,7 @@ function auditStrictSchema(schema, path = "root") {
   for (const [key, value] of Object.entries(schema.$defs ?? {})) auditStrictSchema(value, `${path}.$defs.${key}`);
 }
 auditStrictSchema(modelingGraphJsonSchema());
+auditStrictSchema(modelingTopologyPlanJsonSchema());
 auditStrictSchema(modelingComponentRepairJsonSchema());
 auditStrictSchema(modelingPatchJsonSchema());
 assert.equal(ANALYSIS_OPERATIONS.includes("fillet"), false);
@@ -52,6 +53,31 @@ for (const segment of boundedBezier) {
 const strictFeatureOperations = modelingGraphJsonSchema().properties.components.items.properties.features.items.anyOf.map((variant) => variant.properties.operation.const);
 assert.equal(strictFeatureOperations.includes("fillet"), false);
 assert.equal(strictFeatureOperations.includes("boolean"), true);
+
+// Vision selects only the small discrete topology.  The server must expand it
+// into a strict, editable B-Rep graph without asking the model for profile
+// samples, CSG wiring, or a fallback cylinder.  This path is intentionally
+// independent of Korean/English display-name matching.
+const compactTopologyPlan = {
+  product: { name: "measured assembly", intendedUse: "container", widthMm: 56, heightMm: 105, depthMm: 56, capacityMl: 100 },
+  components: [
+    { componentKey: "component-1", kind: "axisymmetric_vessel", unsupportedOperation: null, material: { name: "glass", baseColor: "#d7e8f6", roughness: .08, metallic: 0, transmission: .8, ior: 1.52, opacity: .3 }, hostComponentKey: null, hasCavity: true, ribsObserved: false, ribCount: null, artwork: { artworkImageId: null, artworkCrop: null, projection: null, widthRatio: null, heightRatio: null, zRatio: null }, rationale: "measured rotational vessel", confidence: .8 },
+    { componentKey: "component-2", kind: "axisymmetric_closure", unsupportedOperation: null, material: { name: "PP", baseColor: "#083da9", roughness: .32, metallic: 0, transmission: 0, ior: 1.49, opacity: 1 }, hostComponentKey: null, hasCavity: true, ribsObserved: true, ribCount: 36, artwork: { artworkImageId: null, artworkCrop: null, projection: null, widthRatio: null, heightRatio: null, zRatio: null }, rationale: "ribbed closure", confidence: .82 },
+    { componentKey: "component-3", kind: "surface_artwork", unsupportedOperation: null, material: { name: "ink", baseColor: "#ffffff", roughness: .3, metallic: 0, transmission: 0, ior: 1.45, opacity: 1 }, hostComponentKey: "component-1", hasCavity: false, ribsObserved: false, ribCount: null, artwork: { artworkImageId: "primary", artworkCrop: { x: .1, y: .4, width: .7, height: .2 }, projection: "cylindrical", widthRatio: .7, heightRatio: .2, zRatio: .52 }, rationale: "observed front print", confidence: .78 },
+  ],
+  interfaces: [{ key: "closure", componentKeys: ["component-1", "component-2"], kind: "mate", clearanceMm: .2, rationale: "shared axis" }],
+};
+const compactRaw = graphOutputFromTopologyPlan(compactTopologyPlan, ["임의 용기", "임의 마개", "전면 인쇄"], ["primary"]);
+const compactGraph = canonicalizeGraph(compactRaw, ["임의 용기", "임의 마개", "전면 인쇄"], ["primary"]).graph;
+assert.ok(compactGraph.nodes.some((node) => node.operation === "shell"), "a vessel topology must create an explicit B-Rep cavity rather than a generic solid");
+assert.ok(compactGraph.nodes.some((node) => node.operation === "pattern" && node.parameters.count === 36), "a closure topology must retain its measured repeat contract");
+assert.equal(compactGraph.nodes.find((node) => node.operation === "surface_artwork")?.parameters.hostComponentKey, compactGraph.components[0].id, "front print must bind to its selected host surface, not a name recipe");
+const compactMeasuredPlan = structuredClone(compactTopologyPlan);
+compactMeasuredPlan.components[1].ribCount = null;
+const compactMeasuredGraph = canonicalizeGraph(graphOutputFromTopologyPlan(compactMeasuredPlan, ["임의 용기", "임의 마개", "전면 인쇄"], ["primary"], { images: [{ measurement: { capRibHint: { estimatedRepeatCount: 20, confidence: .51 } } }] }), ["임의 용기", "임의 마개", "전면 인쇄"], ["primary"]).graph;
+assert.equal(compactMeasuredGraph.nodes.find((node) => node.operation === "pattern")?.parameters.count, 20, "observed ribs with an uncertain count must use the measured proposed repeat value, never disappear or become a magic default");
+assert.throws(() => graphOutputFromTopologyPlan({ ...compactTopologyPlan, components: [{ ...compactTopologyPlan.components[0], componentKey: "wrong" }] }, ["only one"]), /키와 입력 순서/);
+assert.throws(() => graphOutputFromTopologyPlan({ ...compactTopologyPlan, components: [{ ...compactTopologyPlan.components[0], kind: "unsupported", unsupportedOperation: "freeform_subdivision_surface" }] }, ["임의 용기"]), /unsupported_operation/, "unsupported topology must stop rather than become a generic primitive");
 
 const originalApiKey = process.env.OPENAI_API_KEY;
 process.env.OPENAI_API_KEY = "test-key";

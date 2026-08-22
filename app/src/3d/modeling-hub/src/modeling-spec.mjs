@@ -5,9 +5,11 @@ import {
   applyModelingPatch,
   canonicalizeGraph,
   fixtureGraphOutput,
+  graphOutputFromTopologyPlan,
   graphHash,
   modelingComponentRepairJsonSchema,
   modelingGraphJsonSchema,
+  modelingTopologyPlanJsonSchema,
   modelingPatchJsonSchema,
   modelingPatchSchema,
   valueHash,
@@ -471,7 +473,9 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     if (!(process.env.OPENAI_API_KEY ?? "").trim()) throw new Error("OpenAI 분석 키가 설정되지 않았습니다. 기본 형상으로 대체하지 않았습니다.");
     const images = imageInputs.map((image) => ({ type: "input_image", image_url: image.dataUrl, detail: "high" }));
     try {
-      raw = await responseJson({ model, name: "net30_modeling_graph", schema: modelingGraphJsonSchema(), instructions: `Create a safe declarative ModelingGraph plan. The requested components, in immutable order, are ${JSON.stringify(requested)}. Return exactly ${requested.length} component graph fragments using unique componentKey values. Infer representation and only the operations allowed by the supplied strict schema from the images and prompt; never classify by the component name alone. Every generating operation (profile, primitive, revolve, extrude, loft, sweep) has no inputKeys. A sweep must contain an ordered non-repeated 3-D path and either a positive radiusMm or a closed local XY profile. Express every union, cut, or intersect exclusively as a separate Boolean node with two or more preceding operands; do not use a legacy inline operation on a generating feature. A shell, rib, transform, or mate has exactly one preceding input; a radial pattern has exactly [base solid, rib seed]. A shell must declare its graph-authored cavityOpenAt datum: use top for an open vessel mouth and bottom only for a roofed lower-datum closure. Each brep_solid has one terminal B-Rep root and at least one revolve, extrude, primitive, loft, or sweep generator. Express rounded silhouettes directly with sufficiently detailed profile curves rather than an unavailable fillet/chamfer operation. A print, mark, scale, or logo seen in the image is a visual surface_decal with a host surface, not a generic cylinder. It must include hostComponentKey, allowed artworkImageId and artworkCrop, projection, positive physical dimensionsMm.x/y, and transform.translationMm.z so the server can align the crop to the same approved mm position. Never write Python, HTML, executable expressions, file paths, or URLs. Use null for unused strict-schema parameters. Respect EvidenceManifest allowedFor/excludedFrom exactly: only an image allowed for artwork may be artworkImageId; never transfer a different product's silhouette, dimensions, logo, or print.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nEvery product-dependent graph leaf will be reviewed by the user.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
+      const componentKeys = requested.map((_, index) => `component-${index + 1}`);
+      const topologyPlan = await responseJson({ model, name: "net30_manufacturing_topology_plan", schema: modelingTopologyPlanJsonSchema(), instructions: `Plan only the discrete, manufacturable topology of the requested product. The server, not you, will measure the silhouette, fit the continuous NURBS/Bezier generating curves, calculate local transforms, create cavities, and compile the OCCT B-Rep. Return exactly ${requested.length} components in this immutable order with these immutable keys: ${JSON.stringify(componentKeys)}. Infer the component kind from the images and prompt, never from a name regex: axisymmetric_vessel for a hollow rotational body, axisymmetric_closure for a rotational closure with possible radial ribs, axisymmetric_annulus for an annular insert/ring, or surface_artwork for observed print/mark/logo attached to a requested host. If none applies, return kind=unsupported and name the exact unsupported operation; the server will stop for review rather than substitute a primitive. Do not return profile points, curve control points, primitives, Boolean wiring, CSG fragments, mesh data, SVG, code, paths, URLs, or hidden numerical guesses. A print is surface_artwork; it is not a generic cylinder and it must name its host component key. Set ribsObserved=true whenever radial ribs are visible. When their count is visible, return the best positive integer ribCount; use null only when the count is genuinely not observable. hasCavity is true only when the visual product requires an interior void. Respect EvidenceManifest allowedFor/excludedFrom: only artwork-permitted images may be used as artworkImageId.`, input: [{ role: "user", content: [{ type: "input_text", text: `Product: ${payload.product.name ?? payload.product.productId}\nPrompt: ${payload.prompt}\nRequested components (name is a user label; key is immutable): ${JSON.stringify(requested.map((name, index) => ({ key: componentKeys[index], requestedName: name })))}\nEvidenceManifest: ${JSON.stringify(evidenceManifest)}\nImage IDs available for artwork references: ${JSON.stringify(payload.imageIds)}\nMeasured repeat evidence (only a proposal; do not transfer different-product geometry): ${JSON.stringify(imageEvidence.images.filter((item) => item.ok).map((item) => ({ imageId: item.measurement?.imageId, capRibHint: item.measurement?.capRibHint ?? null })))}\nThe server will turn this compact decision into the reviewed ModelingGraph.` }, ...images] }] }, { onStatus: runtime.onOpenAiStatus, onComplete: runtime.onOpenAiComplete });
+      raw = graphOutputFromTopologyPlan(topologyPlan, requested, payload.imageIds, imageEvidence);
     } catch (error) { lastError = error; raw = null; }
   }
   if (!raw) throw new Error(`analysis_incomplete: ${lastError?.message ?? "모델링 그래프를 생성하지 못했습니다."}`);
@@ -578,13 +582,14 @@ export async function analyseDraft(payload, imageInputs, runtime = {}) {
     // consecutive <0.2% improvements and preserve an explicit evidence
     // request instead of pretending that the remaining discrepancy is solved.
     // Continuous fitting is deliberately bounded by both iteration count and
-    // wall time. Each candidate is a real OCCT compilation; rerunning the
-    // entire assembly twenty times before the first review made a useful
-    // preview take several minutes. "quality" may use all twenty attempts,
-    // while the interactive profiles stop at their published preview budget
-    // and leave the remaining uncertainty visible for review.
-    const contourFitLimit = payload.qualityProfile === "speed" ? 8 : 20;
-    const contourFitBudgetMs = payload.qualityProfile === "speed" ? 45_000 : payload.qualityProfile === "quality" ? 180_000 : 90_000;
+    // wall time. Every candidate is a fresh OCCT compile. In a balanced
+    // browser review, four improvements expose the meaningful curve change;
+    // later sub-percent iterations were consuming another minute while an
+    // unmodelled topology/detail still dominated the remaining error. The
+    // quality profile retains the longer 20-step run for an explicit final
+    // precision pass, rather than making every first sketch pay that cost.
+    const contourFitLimit = payload.qualityProfile === "speed" ? 2 : payload.qualityProfile === "quality" ? 20 : 4;
+    const contourFitBudgetMs = payload.qualityProfile === "speed" ? 25_000 : payload.qualityProfile === "quality" ? 180_000 : 60_000;
     const contourFitStartedAt = Date.now();
     let stalledContourFits = 0;
     for (let iteration = 0; iteration < contourFitLimit; iteration += 1) {

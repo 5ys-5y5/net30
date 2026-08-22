@@ -130,6 +130,191 @@ export const modelingGraphOutputSchema = z.object({
   interfaces: z.array(z.object({ key: z.string().min(1).max(120), componentKeys: z.array(z.string().min(1).max(100)).min(2).max(12), kind: z.enum(["mate", "contact", "clearance", "thread", "seal"]), clearanceMm: z.number().min(-20).max(100).nullable(), rationale: z.string().max(600) }).strict()).max(60),
 }).strict();
 
+/*
+ * This is deliberately much smaller than ``modelingGraphOutputSchema``.  A
+ * vision model is good at choosing *which* manufactured topology is present;
+ * it is not the authoritative source for dozens of sampled curve points,
+ * boolean wiring, or repeated-feature coordinates.  Those continuous values
+ * come from the measured evidence and the static OCCT compiler.
+ *
+ * Keep this schema separate from the persisted graph.  It is an inference
+ * protocol only: the server expands it into the same strict graph consumed by
+ * the fitter, reviewer, OCCT and Blender.  Therefore it cannot quietly add a
+ * name-based recipe or an unreviewed primitive fallback.
+ */
+const topologyPlanKind = z.enum([
+  "axisymmetric_vessel",
+  "axisymmetric_closure",
+  "axisymmetric_annulus",
+  "surface_artwork",
+  "unsupported",
+]);
+const topologyPlanOutputSchema = z.object({
+  product: z.object({
+    name: z.string().min(1).max(160),
+    intendedUse: z.string().max(800),
+    widthMm: z.number().min(1).max(2000),
+    heightMm: z.number().min(1).max(4000),
+    depthMm: z.number().min(1).max(2000),
+    capacityMl: z.number().min(0).max(100000).nullable(),
+  }).strict(),
+  components: z.array(z.object({
+    componentKey: z.string().min(1).max(100),
+    kind: topologyPlanKind,
+    unsupportedOperation: z.string().max(160).nullable(),
+    material,
+    hostComponentKey: z.string().max(100).nullable(),
+    hasCavity: z.boolean(),
+    ribsObserved: z.boolean(),
+    ribCount: z.number().int().min(0).max(256).nullable(),
+    artwork: z.object({
+      artworkImageId: z.string().max(160).nullable(),
+      artworkCrop: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), width: z.number().min(0).max(1), height: z.number().min(0).max(1) }).strict().nullable(),
+      projection: z.enum(["planar", "cylindrical", "uv"]).nullable(),
+      widthRatio: z.number().min(.001).max(1).nullable(),
+      heightRatio: z.number().min(.001).max(1).nullable(),
+      zRatio: z.number().min(0).max(1).nullable(),
+    }).strict(),
+    rationale: z.string().max(600),
+    confidence: z.number().min(0).max(1),
+  }).strict()).min(1).max(30),
+  interfaces: z.array(z.object({ key: z.string().min(1).max(120), componentKeys: z.array(z.string().min(1).max(100)).min(2).max(12), kind: z.enum(["mate", "contact", "clearance", "thread", "seal"]), clearanceMm: z.number().min(-20).max(100).nullable(), rationale: z.string().max(600) }).strict()).max(60),
+}).strict();
+
+function zeroParameters(overrides = {}) {
+  return {
+    primitive: null, profile: null, path: null, curveSegments: null, profiles: null,
+    dimensionsMm: null, radiusMm: null, innerRadiusMm: null, heightMm: null,
+    thicknessMm: null, angleDeg: null, count: null, spacingMm: null, depthMm: null,
+    cavityOpenAt: null, offsetMm: null, operation: null, axis: "z", projection: null,
+    hostComponentKey: null, artworkImageId: null, artworkCrop: null, wrapDegrees: null,
+    quantity: null, distribution: null, interfaceKey: null, transform: null,
+    ...overrides,
+  };
+}
+
+function topologyTransform(zMm = 0) {
+  return { translationMm: { x: 0, y: 0, z: zMm }, rotationDeg: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+}
+
+function topologyProfile(kind, widthMm, heightMm) {
+  const radius = Math.max(.1, widthMm / 2);
+  if (kind === "axisymmetric_closure") {
+    return [
+      { xMm: 0, yMm: 0, zMm: 0 }, { xMm: radius, yMm: 0, zMm: 0 },
+      { xMm: radius, yMm: 0, zMm: heightMm * .8 }, { xMm: radius * .96, yMm: 0, zMm: heightMm },
+      { xMm: 0, yMm: 0, zMm: heightMm },
+    ];
+  }
+  /* A provisional *continuous* profile seed.  It is immediately replaced by
+   * image measurement for an observable axisymmetric exterior; it is never a
+   * cylinder fallback.  The static fitter retains it only for an occluded
+   * region where it is explicitly marked as inference for review. */
+  return [
+    { xMm: 0, yMm: 0, zMm: 0 }, { xMm: radius * .84, yMm: 0, zMm: 0 },
+    { xMm: radius, yMm: 0, zMm: heightMm * .06 }, { xMm: radius, yMm: 0, zMm: heightMm * .62 },
+    { xMm: radius * .93, yMm: 0, zMm: heightMm * .77 }, { xMm: radius * .64, yMm: 0, zMm: heightMm * .9 },
+    { xMm: radius * .64, yMm: 0, zMm: heightMm }, { xMm: 0, yMm: 0, zMm: heightMm },
+  ];
+}
+
+/** Expand the compact vision topology decision into the existing strict graph.
+ * There is intentionally no display-name matching here: the model's selected
+ * topology, evidence measurement, and later user approvals are the only
+ * inputs. */
+export function graphOutputFromTopologyPlan(plan, requestedNames, imageIds = [], imageEvidence = null) {
+  const parsed = topologyPlanOutputSchema.parse(plan);
+  if (parsed.components.length !== requestedNames.length) throw new Error("analysis_incomplete: 입력한 컴포넌트 수와 topology plan이 일치하지 않습니다.");
+  const expectedKeys = requestedNames.map((_, index) => `component-${index + 1}`);
+  if (parsed.components.some((component, index) => component.componentKey !== expectedKeys[index])) {
+    throw new Error("analysis_incomplete: topology plan은 서버가 지정한 컴포넌트 키와 입력 순서를 정확히 유지해야 합니다.");
+  }
+  const keys = new Set(parsed.components.map((component) => component.componentKey));
+  if (keys.size !== parsed.components.length) throw new Error("analysis_incomplete: topology plan의 컴포넌트 키가 중복되었습니다.");
+  const productWidth = parsed.product.widthMm;
+  const productHeight = parsed.product.heightMm;
+  const ribMeasurement = imageEvidence?.images
+    ?.map((item) => item?.measurement?.capRibHint)
+    .find((hint) => Number.isFinite(Number(hint?.estimatedRepeatCount)) && Number(hint.estimatedRepeatCount) > 0) ?? null;
+  const planByKey = new Map(parsed.components.map((component) => [component.componentKey, component]));
+  const bodyKey = parsed.components.find((component) => component.kind === "axisymmetric_vessel")?.componentKey ?? null;
+  const components = parsed.components.map((component) => {
+    const closureHeight = Math.max(2, Math.min(productHeight * .45, productHeight * .24));
+    const isClosure = component.kind === "axisymmetric_closure";
+    const isVessel = component.kind === "axisymmetric_vessel";
+    const isAnnulus = component.kind === "axisymmetric_annulus";
+    const isArtwork = component.kind === "surface_artwork";
+    if (component.kind === "unsupported") {
+      throw new Error(`unsupported_operation: ${component.componentKey}.${component.unsupportedOperation ?? "unclassified_topology"}`);
+    }
+    if (isArtwork && (!component.hostComponentKey || !planByKey.has(component.hostComponentKey))) {
+      throw new Error(`analysis_incomplete: ${component.componentKey} surface_artwork에는 같은 요청의 hostComponentKey가 필요합니다.`);
+    }
+    const shellThickness = isClosure ? Math.max(.6, Math.min(4, productWidth * .035)) : Math.max(.5, Math.min(5, productWidth * .04));
+    const localHeight = isClosure ? closureHeight : isAnnulus ? Math.max(1, productHeight * .065) : productHeight;
+    const localWidth = isClosure ? productWidth * .96 : isAnnulus ? productWidth * .8 : productWidth;
+    const features = [];
+    if (isArtwork) {
+      const artwork = component.artwork;
+      const crop = artwork.artworkCrop ?? { x: .1, y: .38, width: .8, height: .28 };
+      features.push({
+        key: `${component.componentKey}-artwork`, operation: "surface_artwork", inputKeys: [],
+        parameters: zeroParameters({
+          dimensionsMm: { x: Math.max(.1, productWidth * (artwork.widthRatio ?? .72)), y: Math.max(.1, productHeight * (artwork.heightRatio ?? .28)), z: .08 },
+          thicknessMm: .08, offsetMm: .12, projection: artwork.projection ?? "cylindrical",
+          hostComponentKey: component.hostComponentKey, artworkImageId: artwork.artworkImageId ?? imageIds[0] ?? null,
+          artworkCrop: crop, wrapDegrees: 120, transform: topologyTransform(productHeight * (artwork.zRatio ?? .5)),
+        }), rationale: component.rationale, confidence: component.confidence,
+      });
+    } else if (isAnnulus) {
+      features.push({
+        key: `${component.componentKey}-annulus`, operation: "extrude", inputKeys: [],
+        parameters: zeroParameters({ radiusMm: localWidth / 2, innerRadiusMm: localWidth * .38, heightMm: localHeight, dimensionsMm: { x: localWidth, y: localWidth, z: localHeight }, thicknessMm: shellThickness, transform: topologyTransform() }),
+        rationale: component.rationale, confidence: component.confidence,
+      });
+    } else {
+      const baseKey = `${component.componentKey}-revolve`;
+      features.push({
+        key: baseKey, operation: "revolve", inputKeys: [],
+        parameters: zeroParameters({ profile: topologyProfile(component.kind, localWidth, localHeight), angleDeg: 360, thicknessMm: shellThickness, transform: topologyTransform() }),
+        rationale: component.rationale, confidence: component.confidence,
+      });
+      let rootKey = baseKey;
+      if (component.hasCavity) {
+        const shellKey = `${component.componentKey}-shell`;
+        features.push({ key: shellKey, operation: "shell", inputKeys: [baseKey], parameters: zeroParameters({ thicknessMm: shellThickness, cavityOpenAt: isClosure ? "bottom" : "top", transform: topologyTransform() }), rationale: "승인 전 측정 기반 벽 두께를 가진 내부 공동", confidence: component.confidence });
+        rootKey = shellKey;
+      }
+      // Repetition is an observation, not a default feature.  When Vision sees
+      // ribs but cannot safely count the hidden back half, use the measured
+      // front-image estimate as a *proposed* graph value.  It becomes an
+      // ordinary approval question, rather than silently inventing 1 rib or
+      // omitting the feature altogether.
+      const ribCount = component.ribCount ?? (component.ribsObserved ? Number(ribMeasurement?.estimatedRepeatCount) : null);
+      if (isClosure && ribCount && ribCount > 0) {
+        const ribKey = `${component.componentKey}-rib`;
+        features.push({ key: ribKey, operation: "rib", inputKeys: [rootKey], parameters: zeroParameters({ radiusMm: localWidth / 2, heightMm: localHeight * .78, spacingMm: Math.max(.12, Math.PI * localWidth / ribCount * .45), depthMm: Math.max(.15, localWidth * .018), count: ribCount, transform: topologyTransform(localHeight * .1) }), rationale: component.ribCount ? "이미지에서 관측한 반복 리브" : "이미지 에지 측정으로 제안한 반복 리브 수", confidence: component.confidence });
+        const patternKey = `${component.componentKey}-pattern`;
+        features.push({ key: patternKey, operation: "pattern", inputKeys: [rootKey, ribKey], parameters: zeroParameters({ count: ribCount, transform: topologyTransform() }), rationale: "리브의 방사형 반복", confidence: component.confidence });
+        rootKey = patternKey;
+      }
+      // Do not pretend a cap is located by its local profile. Assembly fitting
+      // moves its component transform after it sees the measured colour band.
+      features[0].parameters.transform = topologyTransform();
+    }
+    return {
+      componentKey: component.componentKey,
+      representation: isArtwork ? "visual_surface" : "brep_solid",
+      summary: component.rationale,
+      hostComponentKey: component.hostComponentKey,
+      material: component.material,
+      transform: topologyTransform(),
+      features,
+    };
+  });
+  return modelingGraphOutputSchema.parse({ product: parsed.product, components, interfaces: parsed.interfaces });
+}
+
 export const modelingGraphSchema = z.object({
   version: z.enum(["net30.modeling-graph.v1", "net30.modeling-graph.v2"]), units: z.literal("mm"), axis: z.literal("z-up"),
   components: z.array(z.object({ id: z.string(), requestedName: z.string(), representation: z.enum(["brep_solid", "visual_surface", "volume", "instance_set", "legacy_mesh"]), rootNodeIds: z.array(z.string()), hostComponentId: z.string().nullable(), material, transform, summary: z.string() }).strict()).min(1).max(30),
@@ -179,6 +364,7 @@ export function normaliseGraphCompatibility(graph) {
 
 export function graphHash(graph) { return valueHash(modelingGraphSchema.parse(normaliseGraphCompatibility(graph))); }
 export function modelingGraphJsonSchema() { return z.toJSONSchema(modelingGraphOutputSchema, { target: "draft-7" }); }
+export function modelingTopologyPlanJsonSchema() { return z.toJSONSchema(topologyPlanOutputSchema, { target: "draft-7" }); }
 export function modelingComponentRepairJsonSchema() { return z.toJSONSchema(modelingComponentRepairOutputSchema, { target: "draft-7" }); }
 export function modelingPatchJsonSchema() { return z.toJSONSchema(modelingPatchSchema, { target: "draft-7" }); }
 
